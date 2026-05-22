@@ -1,0 +1,7 @@
+node_modules
+src
+src-c
+src-fortran
+tests
+tsconfig.json
+.env
