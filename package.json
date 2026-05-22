@@ -1,0 +1,74 @@
+{
+  "name": "@computational-biology-aachen/mxlweb-core",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mathml": {
+      "types": "./dist/mathml/index.d.ts",
+      "import": "./dist/mathml/index.js"
+    },
+    "./sbml": {
+      "types": "./dist/sbml.d.ts",
+      "import": "./dist/sbml.js"
+    },
+    "./backends/js": {
+      "types": "./dist/backends/js/index.d.ts",
+      "import": "./dist/backends/js/index.js"
+    },
+    "./backends/wasm": {
+      "types": "./dist/backends/wasm/wat-codegen.d.ts",
+      "import": "./dist/backends/wasm/wat-codegen.js"
+    },
+    "./backends/js/jsWorker": {
+      "types": "./dist/backends/js/jsWorker.d.ts",
+      "import": "./dist/backends/js/jsWorker.js"
+    },
+    "./backends/js/jsWorker.ts": "./src/backends/js/jsWorker.ts",
+    "./backends/py/pyWorker": {
+      "types": "./dist/backends/py/pyWorker.d.ts",
+      "import": "./dist/backends/py/pyWorker.js"
+    },
+    "./backends/py/pyWorker.ts": "./src/backends/py/pyWorker.ts",
+    "./backends/wasm/wasmWorker": {
+      "types": "./dist/backends/wasm/wasmWorker.d.ts",
+      "import": "./dist/backends/wasm/wasmWorker.js"
+    },
+    "./backends/wasm/wasmWorker.ts": "./src/backends/wasm/wasmWorker.ts",
+    "./backends/wasm/wat-context": {
+      "types": "./dist/backends/wasm/wat-context.d.ts",
+      "import": "./dist/backends/wasm/wat-context.js"
+    },
+    "./backends/js/integrators/implicit/utils": {
+      "types": "./dist/backends/js/integrators/implicit/utils.d.ts",
+      "import": "./dist/backends/js/integrators/implicit/utils.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "emcc src-c/radau5.c src-c/dc_decsol.c src-c/decsol.c src-c/dop853.c src-c/dopri5.c src-c/radau5_wrapper.c src-c/libf2c_stubs.c -I src-c/ -o static/wasm/radau5.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=RadauModule -s ALLOW_TABLE_GROWTH=1 -s RESERVED_FUNCTION_POINTERS=8 -s EXPORTED_FUNCTIONS='[\"_run_radau5\",\"_run_dop853\",\"_run_dopri5\",\"_set_model_fn\",\"_init_output\",\"_free_output\",\"_get_out_n\",\"_get_out_t\",\"_get_out_y\",\"_malloc\",\"_free\"]' -s EXPORTED_RUNTIME_METHODS='[\"addFunction\",\"removeFunction\",\"ccall\",\"cwrap\",\"HEAPF64\",\"wasmMemory\"]' -O2 -Wno-deprecated-non-prototype"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "svelte": ">=5.55.8",
+    "svelte-check": ">=4.4.7",
+    "typescript": "^6.0.3"
+  }
+}
