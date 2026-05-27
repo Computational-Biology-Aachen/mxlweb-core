@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "05:00"
+    assignees:
+      - "marvinvanaalst"
+    commit-message:
+      prefix: "build(deps): "
+    groups:
+      dependencies:
+        patterns:
+          - "*"
