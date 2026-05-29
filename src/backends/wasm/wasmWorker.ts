@@ -313,6 +313,8 @@ onmessage = async function (event: MessageEvent) {
     method,
     protocol,
     calculateDerived,
+    rtol: reqRtol,
+    atol: reqAtol,
   } = event.data as SimulationRequest;
 
   const solver: WasmSolver =
@@ -334,14 +336,18 @@ onmessage = async function (event: MessageEvent) {
     const fcn = modelInstance.exports.fcn as (...args: unknown[]) => void;
     const modelIdx = mod.addFunction(fcn, "vidiii");
 
-    const rtol = 1e-6;
-    const atol = 1e-8;
+    const rtol = reqRtol ?? 1e-6;
+    const atol = reqAtol ?? 1e-8;
     const n = initialValues.length;
     const y = new Float64Array(initialValues);
     const parsArr = new Float64Array(pars);
 
     let allTime: number[] = [];
     let allY: number[][] = [];
+    // Parameters in effect for each output point — protocol segments override
+    // params (e.g. PPFD during a saturating pulse), and derived variables must
+    // be evaluated with the segment's params, not the base set.
+    let allPars: number[][] = [];
 
     if (protocol && protocol.length > 0) {
       let t = 0;
@@ -376,8 +382,11 @@ onmessage = async function (event: MessageEvent) {
           nTimePoints,
         );
         const skip = allTime.length > 0 ? 1 : 0;
-        allTime = allTime.concat(segTime.slice(skip));
+        const addedTime = segTime.slice(skip);
+        allTime = allTime.concat(addedTime);
         allY = allY.concat(segY.slice(skip));
+        const segPars = Array.from(parsArr);
+        for (let k = 0; k < addedTime.length; k++) allPars.push(segPars);
         if (import.meta.env.DEV) {
           console.debug(
             `[wasm proto seg ${allTime.length > 0 ? "→" : "start"}]`,
@@ -407,17 +416,20 @@ onmessage = async function (event: MessageEvent) {
       const resampled = resampleUniform(result.time, result.y, nTimePoints);
       allTime = resampled.time;
       allY = resampled.y;
+      const segPars = Array.from(parsArr);
+      allPars = allTime.map(() => segPars);
     }
 
     mod.removeFunction(modelIdx);
 
-    // Compute derived variables in JS
+    // Compute derived variables in JS, using the parameters in effect for each
+    // output point (so e.g. Fluo at a saturating pulse uses that pulse's PPFD).
     let values: number[][] = allY;
     if (calculateDerived && allDerivedFn) {
       const allDerivedFnEval = eval(`(${allDerivedFn})`);
       const selectDerivedFnEval = eval(`(${selectDerivedFn})`);
       values = allY.map((yRow, i) => {
-        const allDerived = allDerivedFnEval(allTime[i], yRow, pars);
+        const allDerived = allDerivedFnEval(allTime[i], yRow, allPars[i] ?? pars);
         return [...yRow, ...selectDerivedFnEval(allDerived)];
       });
     }

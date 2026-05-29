@@ -22,6 +22,10 @@ export interface SimulationRequest {
   type?: string;
   parNames?: string[];
   protocol?: Array<{ t_end: number } & Record<string, number>>;
+  /** Relative solver tolerance. Defaults per backend if omitted. */
+  rtol?: number;
+  /** Absolute solver tolerance. Defaults per backend if omitted. */
+  atol?: number;
 }
 
 export interface SimulationError {

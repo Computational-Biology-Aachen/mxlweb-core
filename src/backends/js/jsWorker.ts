@@ -53,9 +53,11 @@ function integrate(
   tStart: number,
   tEnd: number,
   pars: number[],
+  rtol?: number,
+  atol?: number,
 ): Integration {
   const stepSize = Math.max((tEnd - tStart) / 1000, 1e-6);
-  const kws = { initialValues: y0, tStart, tEnd, pars };
+  const kws = { initialValues: y0, tStart, tEnd, pars, rtol, atol };
   switch (pickIntegrator(method)) {
     case "euler":
       return euler(model, { ...kws, stepSize });
@@ -84,6 +86,8 @@ onmessage = function (event: MessageEvent) {
     method,
     protocol,
     calculateDerived,
+    rtol,
+    atol,
   } = event.data as SimulationRequest;
 
   try {
@@ -107,6 +111,10 @@ onmessage = function (event: MessageEvent) {
     const y = [...initialValues];
     let allTime: number[] = [];
     let allValues: number[][] = [];
+    // Parameters in effect for each point — protocol segments override params
+    // (e.g. PPFD), and derived variables must be evaluated with the segment's
+    // params, not the base set.
+    let allPars: number[][] = [];
 
     if (protocol && protocol.length > 0) {
       const runPars = pars.slice();
@@ -120,23 +128,34 @@ onmessage = function (event: MessageEvent) {
             if (idx >= 0) runPars[idx] = val as number;
           }
         }
-        const result = integrate(method, model, y, t, seg.t_end, runPars);
+        const result = integrate(
+          method,
+          model,
+          y,
+          t,
+          seg.t_end,
+          runPars,
+          rtol,
+          atol,
+        );
         if (result.err) throw new Error(result.err);
         allTime = allTime.concat(result.time);
         allValues = allValues.concat(result.values);
+        const segPars = runPars.slice();
+        for (let k = 0; k < result.time.length; k++) allPars.push(segPars);
         y.splice(0, y.length, ...result.values[result.values.length - 1]);
         t = seg.t_end;
       }
     } else {
-      const result = integrate(method, model, y, 0, tEnd, pars);
+      const result = integrate(method, model, y, 0, tEnd, pars, rtol, atol);
       if (result.err) throw new Error(result.err);
       allTime = result.time;
       allValues = result.values;
+      allPars = allTime.map(() => pars);
     }
 
-    const resampled = downsample(allTime, allValues, nTimePoints);
-
-    let values = resampled.values;
+    // Compute derived per point (using that point's params) before downsampling.
+    let derivedValues = allValues;
     if (calculateDerived && allDerivedFn) {
       try {
         // eslint-disable-next-line no-new-func
@@ -149,8 +168,8 @@ onmessage = function (event: MessageEvent) {
         const selectDerivedFnEval = new Function(
           `return (${selectDerivedFn})`,
         )() as (all: number[]) => number[];
-        values = resampled.values.map((yRow, i) => {
-          const allDerived = allDerivedFnEval(resampled.time[i], yRow, pars);
+        derivedValues = allValues.map((yRow, i) => {
+          const allDerived = allDerivedFnEval(allTime[i], yRow, allPars[i] ?? pars);
           return [...yRow, ...selectDerivedFnEval(allDerived)];
         });
       } catch {
@@ -158,9 +177,11 @@ onmessage = function (event: MessageEvent) {
       }
     }
 
+    const resampled = downsample(allTime, derivedValues, nTimePoints);
+
     postMessage({
       time: resampled.time,
-      values,
+      values: resampled.values,
       requestId,
     } as SimulationResult);
   } catch (e) {
