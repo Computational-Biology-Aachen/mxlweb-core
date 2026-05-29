@@ -7,47 +7,57 @@
   "exports": {
     "./package.json": "./package.json",
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "svelte": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
     },
     "./mathml": {
-      "types": "./dist/mathml/index.d.ts",
-      "import": "./dist/mathml/index.js"
+      "svelte": "./src/mathml/index.ts",
+      "types": "./src/mathml/index.ts",
+      "default": "./dist/mathml/index.js"
     },
     "./sbml": {
-      "types": "./dist/sbml.d.ts",
-      "import": "./dist/sbml.js"
+      "svelte": "./src/sbml.ts",
+      "types": "./src/sbml.ts",
+      "default": "./dist/sbml.js"
     },
     "./backends/js": {
-      "types": "./dist/backends/js/index.d.ts",
-      "import": "./dist/backends/js/index.js"
+      "svelte": "./src/backends/js/index.ts",
+      "types": "./src/backends/js/index.ts",
+      "default": "./dist/backends/js/index.js"
     },
     "./backends/wasm": {
-      "types": "./dist/backends/wasm/wat-codegen.d.ts",
-      "import": "./dist/backends/wasm/wat-codegen.js"
+      "svelte": "./src/backends/wasm/wat-codegen.ts",
+      "types": "./src/backends/wasm/wat-codegen.ts",
+      "default": "./dist/backends/wasm/wat-codegen.js"
     },
     "./backends/js/jsWorker": {
-      "types": "./dist/backends/js/jsWorker.d.ts",
-      "import": "./dist/backends/js/jsWorker.js"
+      "svelte": "./src/backends/js/jsWorker.ts",
+      "types": "./src/backends/js/jsWorker.ts",
+      "default": "./dist/backends/js/jsWorker.js"
     },
     "./backends/js/jsWorker.ts": "./src/backends/js/jsWorker.ts",
     "./backends/py/pyWorker": {
-      "types": "./dist/backends/py/pyWorker.d.ts",
-      "import": "./dist/backends/py/pyWorker.js"
+      "svelte": "./src/backends/py/pyWorker.ts",
+      "types": "./src/backends/py/pyWorker.ts",
+      "default": "./dist/backends/py/pyWorker.js"
     },
     "./backends/py/pyWorker.ts": "./src/backends/py/pyWorker.ts",
     "./backends/wasm/wasmWorker": {
-      "types": "./dist/backends/wasm/wasmWorker.d.ts",
-      "import": "./dist/backends/wasm/wasmWorker.js"
+      "svelte": "./src/backends/wasm/wasmWorker.ts",
+      "types": "./src/backends/wasm/wasmWorker.ts",
+      "default": "./dist/backends/wasm/wasmWorker.js"
     },
     "./backends/wasm/wasmWorker.ts": "./src/backends/wasm/wasmWorker.ts",
     "./backends/wasm/wat-context": {
-      "types": "./dist/backends/wasm/wat-context.d.ts",
-      "import": "./dist/backends/wasm/wat-context.js"
+      "svelte": "./src/backends/wasm/wat-context.ts",
+      "types": "./src/backends/wasm/wat-context.ts",
+      "default": "./dist/backends/wasm/wat-context.js"
     },
     "./backends/js/integrators/implicit/utils": {
-      "types": "./dist/backends/js/integrators/implicit/utils.d.ts",
-      "import": "./dist/backends/js/integrators/implicit/utils.js"
+      "svelte": "./src/backends/js/integrators/implicit/utils.ts",
+      "types": "./src/backends/js/integrators/implicit/utils.ts",
+      "default": "./dist/backends/js/integrators/implicit/utils.js"
     }
   },
   "scripts": {
