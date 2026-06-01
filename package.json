@@ -79,7 +79,7 @@
     "@types/node": "^25.9.1",
     "tsx": "^4.22.3",
     "pyodide": "^0.29.4",
-    "svelte": ">=5.55.9",
+    "svelte": ">=5.55.0",
     "svelte-check": ">=4.4.7",
     "typescript": "^6.0.3"
   }
