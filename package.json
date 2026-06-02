@@ -21,6 +21,11 @@
       "types": "./src/sbml.ts",
       "default": "./dist/sbml.js"
     },
+    "./pam": {
+      "svelte": "./src/pam.ts",
+      "types": "./src/pam.ts",
+      "default": "./dist/pam.js"
+    },
     "./backends/js": {
       "svelte": "./src/backends/js/index.ts",
       "types": "./src/backends/js/index.ts",
@@ -65,6 +70,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "prepare": "tsc",
     "build:wasm": "emcc src-c/radau5.c src-c/dc_decsol.c src-c/decsol.c src-c/dop853.c src-c/dopri5.c src-c/radau5_wrapper.c src-c/libf2c_stubs.c -I src-c/ -o static/wasm/radau5.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=RadauModule -s ALLOW_TABLE_GROWTH=1 -s RESERVED_FUNCTION_POINTERS=8 -s EXPORTED_FUNCTIONS='[\"_run_radau5\",\"_run_dop853\",\"_run_dopri5\",\"_set_model_fn\",\"_init_output\",\"_free_output\",\"_get_out_n\",\"_get_out_t\",\"_get_out_y\",\"_malloc\",\"_free\"]' -s EXPORTED_RUNTIME_METHODS='[\"addFunction\",\"removeFunction\",\"ccall\",\"cwrap\",\"HEAPF64\",\"wasmMemory\"]' -O2 -Wno-deprecated-non-prototype"
   },
@@ -81,6 +87,7 @@
     "pyodide": "^0.29.4",
     "svelte": ">=5.55.0",
     "svelte-check": ">=4.4.7",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }
