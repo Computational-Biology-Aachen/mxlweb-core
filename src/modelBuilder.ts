@@ -79,7 +79,7 @@ export function renderTerms(
     const isNum = coeff instanceof Num;
 
     if (!isNum) {
-      return { sign, tex: coeff.toTex(texNames) };
+      return { sign, tex: `${coeff.toTex(texNames)} \\cdot ${tex}` };
     }
 
     const isOne = coeff instanceof Num && coeff.value === 1;
@@ -118,16 +118,13 @@ export function stoichToTex(
   );
   if (filtered.length === 0) return "0";
 
-  const terms = filtered.map(
-    ({ name, value }: { name: string; value: Base }) => ({
-      tex: texNames.get(name) || name,
-      value,
-    }),
+  // Stoichiometric-matrix column: each species mapped to its coefficient
+  // expression (species : coeff), one species per aligned row.
+  const lines = filtered.map(
+    ({ name, value }) =>
+      `&${texNames.get(name) || name} : ${value.toTex(texNames)}`,
   );
-
-  const lines = renderTerms(terms, texNames);
-  if (lines.length === 1) return lines[0];
-  return `\\begin{aligned}& ${lines.join(" \\\\ & ")}\\end{aligned}`;
+  return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
 }
 
 export function defaultValue(a: string | undefined, b: string): string {
