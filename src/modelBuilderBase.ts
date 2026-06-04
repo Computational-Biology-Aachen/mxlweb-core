@@ -79,6 +79,9 @@ export abstract class ModelBuilderBase {
   /** Render the model's equations as LaTeX (formulation-specific). */
   abstract buildTex(): string;
 
+  /** A deep copy of the builder, preserving its concrete type. */
+  abstract clone(): ModelBuilderBase;
+
   // Variables
   addVariable(key: string, value: Variable) {
     this.variables.set(key, value);
