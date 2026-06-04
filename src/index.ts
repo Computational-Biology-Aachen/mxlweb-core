@@ -1,4 +1,7 @@
-export * from './modelBuilder.js';
+export * from './modelBuilderBase.js';
+export * from './modelIr.js';
+export * from './kineticModelBuilder.js';
+export * from './odeModelBuilder.js';
 export * from './backends/js/integrators/index.js';
 
 export interface SimulationRequest {

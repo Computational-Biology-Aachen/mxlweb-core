@@ -57,8 +57,8 @@ import {
   Tanh,
   Xor,
 } from "./mathml/index.js";
-import type { Stoichiometry } from "./modelBuilder.js";
-import { ModelBuilder } from "./modelBuilder.js";
+import type { Stoichiometry } from "./kineticModelBuilder.js";
+import { KineticModelBuilder } from "./kineticModelBuilder.js";
 
 const SBML_NS = "http://www.sbml.org/sbml/level3/version2/core";
 const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
@@ -276,7 +276,7 @@ export function mathMLToAst(el: Element): Base {
 
 // ─── ModelBuilder → SBML ────────────────────────────────────────────────────
 
-export function modelToSbml(model: ModelBuilder, name: string): string {
+export function modelToSbml(model: KineticModelBuilder, name: string): string {
   const modelId = name.replace(/[^A-Za-z0-9_]/g, "_") || "model";
 
   const compartmentXml = `<listOfCompartments>
@@ -380,7 +380,7 @@ export function modelToSbml(model: ModelBuilder, name: string): string {
 
 // ─── SBML → ModelBuilder ────────────────────────────────────────────────────
 
-export function sbmlToModel(xmlString: string): ModelBuilder {
+export function sbmlToModel(xmlString: string): KineticModelBuilder {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlString, "text/xml");
 
@@ -393,7 +393,7 @@ export function sbmlToModel(xmlString: string): ModelBuilder {
     throw new Error("No <model> element found in SBML");
   }
 
-  const builder = new ModelBuilder();
+  const builder = new KineticModelBuilder();
 
   // 1. Compartments — collect sizes for concentration → amount conversion
   const compartmentSizes = new Map<string, number>();
