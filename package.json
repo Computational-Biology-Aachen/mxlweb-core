@@ -83,10 +83,10 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "pyodide": "^0.29.4",
-    "svelte": ">=5.55.0",
-    "svelte-check": ">=4.4.7",
+    "svelte": ">=5.56.1",
+    "svelte-check": ">=4.5.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6",
     "wat-compiler": "^1.1.1"
