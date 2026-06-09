@@ -429,7 +429,11 @@ onmessage = async function (event: MessageEvent) {
       const allDerivedFnEval = eval(`(${allDerivedFn})`);
       const selectDerivedFnEval = eval(`(${selectDerivedFn})`);
       values = allY.map((yRow, i) => {
-        const allDerived = allDerivedFnEval(allTime[i], yRow, allPars[i] ?? pars);
+        const allDerived = allDerivedFnEval(
+          allTime[i],
+          yRow,
+          allPars[i] ?? pars,
+        );
         return [...yRow, ...selectDerivedFnEval(allDerived)];
       });
     }

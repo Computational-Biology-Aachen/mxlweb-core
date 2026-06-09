@@ -113,7 +113,13 @@ export function irToWat(ir: ModelIR): string {
     varName: name,
     expr: rhsOf(ir, name),
   }));
-  return buildModelWat(equations, ir.varNames, ir.parNames, "t", ir.intermediates);
+  return buildModelWat(
+    equations,
+    ir.varNames,
+    ir.parNames,
+    "t",
+    ir.intermediates,
+  );
 }
 
 function transitiveDerivedDeps(
@@ -179,7 +185,10 @@ export function irToPython(
 
   const selectedDerivedSet = selectedDerived ? new Set(selectedDerived) : null;
   const selectedReturn = selectedDerived
-    ? order.filter((name) => selectedDerivedSet!.has(name)).map(Name).join(", ")
+    ? order
+        .filter((name) => selectedDerivedSet!.has(name))
+        .map(Name)
+        .join(", ")
     : null;
 
   const rhsString = ir.varNames

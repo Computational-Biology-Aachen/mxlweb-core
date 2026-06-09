@@ -70,6 +70,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "lint": "prettier --check . && eslint .",
+    "format": "prettier --write .",
     "test": "vitest run",
     "prepare": "tsc",
     "build:wasm": "emcc src-c/radau5.c src-c/dc_decsol.c src-c/decsol.c src-c/dop853.c src-c/dopri5.c src-c/radau5_wrapper.c src-c/libf2c_stubs.c -I src-c/ -o static/wasm/radau5.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=RadauModule -s ALLOW_TABLE_GROWTH=1 -s RESERVED_FUNCTION_POINTERS=8 -s EXPORTED_FUNCTIONS='[\"_run_radau5\",\"_run_dop853\",\"_run_dopri5\",\"_set_model_fn\",\"_init_output\",\"_free_output\",\"_get_out_n\",\"_get_out_t\",\"_get_out_y\",\"_malloc\",\"_free\"]' -s EXPORTED_RUNTIME_METHODS='[\"addFunction\",\"removeFunction\",\"ccall\",\"cwrap\",\"HEAPF64\",\"wasmMemory\"]' -O2 -Wno-deprecated-non-prototype"
@@ -82,6 +84,13 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@eslint/compat": ">=2.1.0",
+    "@eslint/js": ">=10.0.0",
+    "eslint": ">=10.0.0",
+    "eslint-config-prettier": ">=10.1.8",
+    "globals": ">=17.6.0",
+    "prettier": ">=3.8.3",
+    "typescript-eslint": ">=8.60.1",
     "@types/node": "^25.9.1",
     "tsx": "^4.22.4",
     "pyodide": "^0.29.4",

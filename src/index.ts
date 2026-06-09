@@ -9,11 +9,11 @@
  * @module
  */
 
-export * from './modelBuilderBase.js';
-export * from './modelIr.js';
-export * from './kineticModelBuilder.js';
-export * from './odeModelBuilder.js';
-export * from './backends/js/integrators/index.js';
+export * from "./modelBuilderBase.js";
+export * from "./modelIr.js";
+export * from "./kineticModelBuilder.js";
+export * from "./odeModelBuilder.js";
+export * from "./backends/js/integrators/index.js";
 
 /**
  * A request posted to a compute worker to run one simulation.

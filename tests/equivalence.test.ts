@@ -25,11 +25,7 @@ function compileJsRhs(src: string): RhsFn {
   return new Function(`return (${src});`)() as RhsFn;
 }
 
-function compileWatRhs(
-  wat: string,
-  nVars: number,
-  nPars: number,
-): RhsFn {
+function compileWatRhs(wat: string, nVars: number, nPars: number): RhsFn {
   const bytes = wat2wasm(wat);
   const memory = new WebAssembly.Memory({ initial: 1 });
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {

@@ -181,7 +181,11 @@ onmessage = function (event: MessageEvent) {
           `return (${selectDerivedFn})`,
         )() as (all: number[]) => number[];
         derivedValues = allValues.map((yRow, i) => {
-          const allDerived = allDerivedFnEval(allTime[i], yRow, allPars[i] ?? pars);
+          const allDerived = allDerivedFnEval(
+            allTime[i],
+            yRow,
+            allPars[i] ?? pars,
+          );
           return [...yRow, ...selectDerivedFnEval(allDerived)];
         });
       } catch {
