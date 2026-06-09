@@ -1,3 +1,15 @@
+/**
+ * Pyodide (Python-in-WebAssembly) compute worker.
+ *
+ * On `__INIT__` it boots Pyodide with NumPy/SciPy from a CDN and loads the
+ * project's `main.py` integration routines. Each {@link SimulationRequest} is
+ * forwarded to the Python `integrate` / `integrate_protocol` functions, and the
+ * results are marshalled back into a {@link SimulationResult}. Runs off the main
+ * thread as a web worker.
+ *
+ * @module
+ */
+
 import { loadPyodide, version } from "pyodide";
 import type {
   SimulationError,

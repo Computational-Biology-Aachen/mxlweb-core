@@ -1,3 +1,11 @@
+/**
+ * Explicit (non-stiff) integration methods. The table below surveys the family;
+ * the exports are the subset currently implemented ({@link euler}, {@link rk2},
+ * {@link rk45}).
+ *
+ * @module
+ */
+
 // Explicit methods for non-stiff problems
 // | Method                    | Description                                | Used In                                  |
 // | ------------------------- | ------------------------------------------ | ---------------------------------------- |

@@ -2,10 +2,16 @@
 
 import type { BaseIntegratorKws, Integration, Model } from "../index.js";
 
+/** Euler options: the base integrator options plus a fixed `stepSize`. */
 interface IntegratorKws extends BaseIntegratorKws {
   stepSize: number;
 }
 
+/**
+ * The forward (explicit) Euler method: a first-order, fixed-step integrator,
+ * `y_{n+1} = y_n + h · f(t_n, y_n)`. Simple and cheap but low-accuracy and only
+ * conditionally stable — mainly useful for teaching and bootstrapping.
+ */
 export function euler(
   rhs: Model,
   { initialValues, tStart = 0, tEnd, stepSize, pars = [] }: IntegratorKws,

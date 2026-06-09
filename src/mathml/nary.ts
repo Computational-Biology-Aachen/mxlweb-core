@@ -1,10 +1,22 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
 import { Base, Nary } from "./base.js";
 
+/**
+ * Variadic operator nodes: arithmetic (`+`, `-`, `*`, `/`, integer division,
+ * remainder), comparisons (`=`, `<`, `>`, `≤`, `≥`, `≠`), logical connectives
+ * (`and`, `or`, `not`, `xor`, `implies`), `min`/`max`, and SBML `piecewise`.
+ * Each holds a `children` array; the serialisers fold over it (chained
+ * comparisons expand to pairwise conjunctions). See {@link Base} for the
+ * serialiser contract.
+ *
+ * @module
+ */
+
 ///////////////////////////////////////////////////////////////////////////////
 // n-ary fns
 ///////////////////////////////////////////////////////////////////////////////
 
+/** Maximum of all children (empty ⇒ -∞). */
 export class Max extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -29,6 +41,7 @@ export class Max extends Nary {
   }
 }
 
+/** Minimum of all children (empty ⇒ +∞). */
 export class Min extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -53,6 +66,11 @@ export class Min extends Nary {
   }
 }
 
+/**
+ * SBML piecewise expression. Children alternate `value, condition, value,
+ * condition, …` with an optional trailing `value` as the otherwise-case; the
+ * result is the first value whose condition holds.
+ */
 export class Piecewise extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -137,6 +155,7 @@ export class Piecewise extends Nary {
   }
 }
 
+/** Remainder (modulo), folded left-to-right across children. */
 export class Rem extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -170,6 +189,7 @@ export class Rem extends Nary {
   }
 }
 
+/** Logical conjunction of all children (empty ⇒ true). */
 export class And extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -194,6 +214,7 @@ export class And extends Nary {
   }
 }
 
+/** Logical negation (of the single child, or of the conjunction of several). */
 export class Not extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -230,6 +251,7 @@ export class Not extends Nary {
   }
 }
 
+/** Logical disjunction of all children (empty ⇒ false). */
 export class Or extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -254,6 +276,7 @@ export class Or extends Nary {
   }
 }
 
+/** Exclusive-or of all children (empty ⇒ 0). */
 export class Xor extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -281,6 +304,7 @@ export class Xor extends Nary {
   }
 }
 
+/** Equality across all children (pairwise `===`, all must match). */
 export class Eq extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -319,6 +343,7 @@ export class Eq extends Nary {
   }
 }
 
+/** Chained `≥` comparison across consecutive children. */
 export class GreaterEqual extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -357,6 +382,7 @@ export class GreaterEqual extends Nary {
   }
 }
 
+/** Chained `>` comparison across consecutive children. */
 export class GreaterThan extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -395,6 +421,7 @@ export class GreaterThan extends Nary {
   }
 }
 
+/** Chained `≤` comparison across consecutive children. */
 export class LessEqual extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -433,6 +460,7 @@ export class LessEqual extends Nary {
   }
 }
 
+/** Chained `<` comparison across consecutive children. */
 export class LessThan extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -471,6 +499,7 @@ export class LessThan extends Nary {
   }
 }
 
+/** Inequality — true if any consecutive pair differs. */
 export class NotEqual extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -509,6 +538,7 @@ export class NotEqual extends Nary {
   }
 }
 
+/** Sum of all children (empty ⇒ 0). In TeX, a unary {@link Minus} child renders as subtraction. */
 export class Add extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -540,6 +570,7 @@ export class Add extends Nary {
   }
 }
 
+/** Subtraction, or unary negation when given a single child. */
 export class Minus extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -579,6 +610,7 @@ export class Minus extends Nary {
   }
 }
 
+/** Product of all children (empty ⇒ 1). Sum/difference children are parenthesised. */
 export class Mul extends Nary {
   public constructor(public children: Base[]) {
     super();
@@ -618,6 +650,7 @@ export class Mul extends Nary {
   }
 }
 
+/** Division, folded left-to-right across children (empty ⇒ 0). */
 export class Divide extends Nary {
   constructor(public children: Base[]) {
     super();
@@ -654,6 +687,7 @@ export class Divide extends Nary {
   }
 }
 
+/** Integer (truncating/floor) division, folded left-to-right across children. */
 export class IntDivide extends Nary {
   constructor(public children: Base[]) {
     super();

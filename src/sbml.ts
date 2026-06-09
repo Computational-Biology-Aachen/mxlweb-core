@@ -60,6 +60,21 @@ import {
 import type { Stoichiometry } from "./kineticModelBuilder.js";
 import { KineticModelBuilder } from "./kineticModelBuilder.js";
 
+/**
+ * SBML (Systems Biology Markup Language) interop for the kinetic model builder.
+ *
+ * Bridges in both directions:
+ * - {@link mathMLToAst} parses a MathML `<apply>`/leaf element into the
+ *   {@link Base} expression AST.
+ * - {@link modelToSbml} serialises a {@link KineticModelBuilder} to an SBML L3v2
+ *   document (species, parameters, assignment rules, reactions).
+ * - {@link sbmlToModel} parses an SBML document back into a builder, handling
+ *   compartments, boundary species, initial/assignment/rate rules and reaction
+ *   stoichiometry.
+ *
+ * @module
+ */
+
 const SBML_NS = "http://www.sbml.org/sbml/level3/version2/core";
 const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
 
@@ -86,6 +101,16 @@ function parseFloatAttr(el: Element, attr: string): number {
 
 // ─── MathML → AST ───────────────────────────────────────────────────────────
 
+/**
+ * Recursively convert a MathML DOM element into an expression {@link Base} node.
+ *
+ * Handles leaves (`<ci>`, `<cn>`, the boolean/constant tokens and `<csymbol>`
+ * for `time`/`avogadro`), `<apply>` operators (arithmetic, elementary functions,
+ * comparisons, logical connectives — including the `floor(divide(...))` encoding
+ * of integer division) and `<piecewise>`.
+ *
+ * @throws if it encounters an unknown operator or element, or an empty `<apply>`.
+ */
 export function mathMLToAst(el: Element): Base {
   const tag = el.localName;
 
@@ -276,6 +301,16 @@ export function mathMLToAst(el: Element): Base {
 
 // ─── ModelBuilder → SBML ────────────────────────────────────────────────────
 
+/**
+ * Serialise a {@link KineticModelBuilder} to an SBML Level 3 Version 2 document
+ * string. Variables become species and parameters become `<parameter>`s, both
+ * in a single `default` compartment; assignments become assignment rules and
+ * reactions become `<reaction>`s with reactant/product `speciesReference`s
+ * derived from the sign of each stoichiometric coefficient.
+ *
+ * @param model The kinetic model to export.
+ * @param name Human-readable model name (also sanitised into the model `id`).
+ */
 export function modelToSbml(model: KineticModelBuilder, name: string): string {
   const modelId = name.replace(/[^A-Za-z0-9_]/g, "_") || "model";
 
@@ -380,6 +415,19 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
 
 // ─── SBML → ModelBuilder ────────────────────────────────────────────────────
 
+/**
+ * Parse an SBML document string into a {@link KineticModelBuilder}.
+ *
+ * Boundary-condition species become parameters; ordinary species become
+ * variables (concentrations are converted to amounts using the compartment
+ * size). Initial assignments, assignment rules, rate rules (turned into a
+ * reaction with unit stoichiometry) and reactions are all imported; net
+ * stoichiometry is computed by combining reactants and products and dropping
+ * boundary species. Individual elements that fail to parse are skipped with a
+ * `console.warn` rather than aborting the whole import.
+ *
+ * @throws if the XML is malformed or contains no `<model>` element.
+ */
 export function sbmlToModel(xmlString: string): KineticModelBuilder {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlString, "text/xml");

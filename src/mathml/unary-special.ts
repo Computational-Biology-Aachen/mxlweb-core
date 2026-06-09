@@ -1,10 +1,19 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
 import { Base, Name, Num } from "./base.js";
 
+/**
+ * Unary functions that also carry a second, base/degree operand and therefore
+ * extend {@link Base} directly rather than the single-child `Unary` class. See
+ * {@link Base} for the serialiser contract.
+ *
+ * @module
+ */
+
 ///////////////////////////////////////////////////////////////////////////////
 // Special unary fns
 ///////////////////////////////////////////////////////////////////////////////
 
+/** Logarithm of `child` to an arbitrary `base` (defaults to base 10). */
 export class Log extends Base {
   constructor(
     public child: Base,
@@ -62,6 +71,7 @@ export class Log extends Base {
   }
 }
 
+/** The `base`-th root of `child`, i.e. `child ** (1 / base)` (defaults to square root). */
 export class Sqrt extends Base {
   constructor(
     public child: Base,

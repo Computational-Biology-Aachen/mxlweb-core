@@ -1,3 +1,11 @@
+/**
+ * Implicit integration methods for stiff ODEs. The table below surveys the
+ * family; the exports are the subset currently implemented
+ * ({@link backwardEuler}, {@link kvaerno45}).
+ *
+ * @module
+ */
+
 // Implicit methods for stiff ODEs
 // | Method                                  | Description                               | Used In                             |
 // | --------------------------------------- | ----------------------------------------- | ----------------------------------- |

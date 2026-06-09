@@ -1,10 +1,18 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
 import { Base, Binary, Name } from "./base.js";
 
+/**
+ * Two-operand expression nodes. See {@link Base} for the serialiser contract and
+ * `base.ts` for the {@link Binary} superclass.
+ *
+ * @module
+ */
+
 ///////////////////////////////////////////////////////////////////////////////
 // Binary fns
 ///////////////////////////////////////////////////////////////////////////////
 
+/** Exponentiation, `left ** right`. */
 export class Pow extends Binary {
   constructor(
     public left: Base,
@@ -36,6 +44,7 @@ export class Pow extends Binary {
   }
 }
 
+/** Logical implication, `left ⇒ right` (i.e. `!left || right`). */
 export class Implies extends Binary {
   constructor(
     public left: Base,

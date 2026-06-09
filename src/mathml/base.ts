@@ -1,17 +1,52 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
 
+/**
+ * Mathematical expression AST shared across the kinetic/ODE model builders.
+ *
+ * Each node type subclasses {@link Base} and knows how to serialise itself to
+ * every target the library supports: JavaScript ({@link Base.toJs}), Python /
+ * NumPy ({@link Base.toPy}), LaTeX ({@link Base.toTex}), SBML MathML
+ * ({@link Base.toSBML}) and WebAssembly Text ({@link Base.toWat}). Trees are
+ * immutable: structural edits go through {@link Base.replace}, which clones the
+ * affected path and preserves node {@link Base.id}s for stable identity.
+ *
+ * Concrete node classes live in `binary.ts`, `unary.ts`, `unary-special.ts` and
+ * `nary.ts`; this module defines the base classes plus the two nullary leaves
+ * {@link Name} (a variable/parameter reference) and {@link Num} (a literal).
+ *
+ * @module
+ */
+
 let idCounter = 0;
 
-// Acts as a common ancestor for all expression node types
+/**
+ * Common ancestor for every expression-tree node.
+ *
+ * Subclasses implement the serialisers and tree operations below. Each instance
+ * gets a process-unique {@link Base.id} on construction, used to target nodes in
+ * {@link Base.replace}.
+ */
 export abstract class Base {
+  /** Process-unique identifier, assigned on construction. */
   id: number;
+  /** Serialise to a JavaScript expression string. */
   abstract toJs(): string;
+  /** Serialise to a Python/NumPy expression; `displayNames` maps internal symbol names to their Python identifiers. */
   abstract toPy(displayNames: Map<string, string>): string;
+  /** Serialise to a LaTeX expression; `texNames` maps internal symbol names to their LaTeX rendering. */
   abstract toTex(texNames: Map<string, string>): string;
+  /** Serialise to an SBML MathML fragment. */
   abstract toSBML(): string;
+  /** Serialise to a WebAssembly Text (WAT) expression, using `ctx` to resolve variable/parameter memory layout. */
   abstract toWat(ctx: WatContext): string;
+  /** Collect every variable/parameter symbol referenced in this subtree into `symbols`. */
   abstract getSymbols(symbols: Set<string>): Set<string>;
   // abstract default(): Base;
+  /**
+   * Return a copy of this subtree with the node whose id is `id` replaced by
+   * `next`. `changed` reports whether a replacement occurred; the original tree
+   * is left untouched (only the path to the replaced node is cloned).
+   */
   abstract replace(id: number, next: Base): { node: Base; changed: boolean };
 
   constructor() {
@@ -19,7 +54,10 @@ export abstract class Base {
   }
 }
 
-// Other base classes to reduce code churn
+// Other base classes to reduce code churn, grouped by arity
+// (https://en.wikipedia.org/wiki/Arity).
+
+/** Leaf node with no children (e.g. {@link Name}, {@link Num}). */
 export abstract class Nullary extends Base {
   replace(id: number, next: Base): { node: Base; changed: boolean } {
     if (this.id === id) {
@@ -29,6 +67,7 @@ export abstract class Nullary extends Base {
   }
 }
 
+/** Node with a single operand `child` (e.g. negation, `sin`). Provides shared `replace`/`getSymbols` over that child. */
 export abstract class Unary extends Base {
   abstract child: Base;
 
@@ -57,6 +96,7 @@ export abstract class Unary extends Base {
   }
 }
 
+/** Node with two operands `left` and `right` (e.g. {@link Pow}). Provides shared `replace`/`getSymbols` over both. */
 export abstract class Binary extends Base {
   abstract left: Base;
   abstract right: Base;
@@ -105,6 +145,7 @@ export abstract class Binary extends Base {
   }
 }
 
+/** Node with an arbitrary number of operands `children` (e.g. sums, products, `min`/`max`). Provides shared `replace`/`getSymbols` over all children. */
 export abstract class Nary extends Base {
   abstract children: Base[];
 
@@ -149,6 +190,11 @@ export abstract class Nary extends Base {
 // https://en.wikipedia.org/wiki/Arity
 ///////////////////////////////////////////////////////////////////////////////
 
+/**
+ * A reference to a named symbol — a model variable, parameter or the time
+ * variable. In WAT it resolves to a local, a load from the variable array, or a
+ * load from the parameter array depending on the {@link WatContext}.
+ */
 export class Name extends Nullary {
   constructor(public name: string) {
     super();
@@ -195,6 +241,7 @@ export class Name extends Nullary {
   }
 }
 
+/** A numeric literal constant. */
 export class Num extends Nullary {
   constructor(public value: number) {
     super();

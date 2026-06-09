@@ -1,3 +1,15 @@
+/**
+ * Pure-JavaScript compute worker.
+ *
+ * Receives a {@link SimulationRequest}, compiles the shipped `rhsFn` source into
+ * a {@link Model} via `new Function`, integrates it with the requested method
+ * (falling back to RK45), evaluates derived quantities per time point, applies
+ * any multi-segment protocol, downsamples to `nTimePoints`, and posts back a
+ * {@link SimulationResult}. Runs off the main thread as a web worker.
+ *
+ * @module
+ */
+
 import type {
   SimulationError,
   SimulationRequest,

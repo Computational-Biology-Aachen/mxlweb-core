@@ -9,12 +9,26 @@ import {
   type Variable,
 } from "./modelBuilderBase.js";
 
+/**
+ * Reaction-based kinetic model builder and its LaTeX rendering helpers.
+ *
+ * A model is a set of named reactions, each with a rate expression and a
+ * stoichiometry; {@link KineticModelBuilder} assembles the system of ODEs
+ * `dx/dt = N · v` from them. The free functions here render that model (and its
+ * stoichiometry) to aligned LaTeX for display.
+ *
+ * @module
+ */
+
+/** One entry of a reaction's stoichiometry: a species `name` and its coefficient `value` (an expression, usually a {@link Num}). */
 export type Stoich = {
   name: string;
   value: Base;
 };
+/** A reaction's full stoichiometry — the list of species coefficients it affects. */
 export type Stoichiometry = Array<Stoich>;
 
+/** A reaction: a rate expression `fn`, its `stoichiometry`, and optional display/LaTeX names. */
 export type Reaction = {
   fn: Base;
   stoichiometry: Stoichiometry;
@@ -22,8 +36,15 @@ export type Reaction = {
   texName?: string;
 };
 
+/** Maximum LaTeX line length before {@link renderTerms} wraps onto a new aligned row. */
 const LINE_LIMIT = 60;
 
+/**
+ * Render a list of signed `coeff · term` contributions to LaTeX, normalising
+ * signs (so negatives become subtractions) and dropping unit coefficients.
+ * Long sums are wrapped across multiple lines at {@link LINE_LIMIT} characters.
+ * Returns one string per line (`["0"]` when empty).
+ */
 export function renderTerms(
   terms: { tex: string; value: Base }[],
   texNames: Map<string, string>,
@@ -76,6 +97,11 @@ export function renderTerms(
   return lines;
 }
 
+/**
+ * Render a reaction's stoichiometry to LaTeX (zero coefficients dropped). A
+ * single species renders inline as `species: coeff`; multiple species become an
+ * aligned `species : coeff` column.
+ */
 export function stoichToTex(
   stoich: Stoichiometry,
   texNames: Map<string, string>,
@@ -98,6 +124,12 @@ export function stoichToTex(
   return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
 }
 
+/**
+ * Build the symbol → LaTeX-name lookup used by the `toTex` serialisers, drawing
+ * explicit `texName`s from every variable, parameter, assignment and reaction
+ * (falling back to {@link defaultTexName}). Symbols without a `texName` are
+ * omitted, so callers render them by their raw name.
+ */
 export function getTexNames(
   variables: Iterable<[string, Variable]>,
   parameters: Iterable<[string, Parameter]>,
@@ -204,6 +236,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return new Add(terms);
   }
 
+  /** Render the full ODE system `dx/dt = N · v` as a LaTeX `align*` block, one row per variable. */
   buildTex(): string {
     const texNames: Map<string, string> = getTexNames(
       this.variables.entries(),
