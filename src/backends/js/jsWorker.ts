@@ -105,7 +105,6 @@ onmessage = function (event: MessageEvent) {
   try {
     let model: Model;
     try {
-      // eslint-disable-next-line no-new-func
       model = new Function(`return (${rhsFn})`)() as Model;
     } catch (e) {
       postMessage({
@@ -170,13 +169,12 @@ onmessage = function (event: MessageEvent) {
     let derivedValues = allValues;
     if (calculateDerived && allDerivedFn) {
       try {
-        // eslint-disable-next-line no-new-func
         const allDerivedFnEval = new Function(`return (${allDerivedFn})`)() as (
           t: number,
           y: number[],
           pars: number[],
         ) => number[];
-        // eslint-disable-next-line no-new-func
+
         const selectDerivedFnEval = new Function(
           `return (${selectDerivedFn})`,
         )() as (all: number[]) => number[];

@@ -17,8 +17,8 @@ export function euler(
   { initialValues, tStart = 0, tEnd, stepSize, pars = [] }: IntegratorKws,
 ): Integration {
   const n = Math.ceil((tEnd - tStart) / stepSize) + 1;
-  let values: Array<Array<number>> = Array(n);
-  let time: Array<number> = Array.from(
+  const values: Array<Array<number>> = Array(n);
+  const time: Array<number> = Array.from(
     Array(n),
     (_, k) => k * stepSize + tStart,
   );

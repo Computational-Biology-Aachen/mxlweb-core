@@ -23,7 +23,7 @@ export function rk2(
 ): Integration {
   const nVars = initialValues.length;
   let t = tStart;
-  let y = initialValues.slice();
+  const y = initialValues.slice();
 
   const tValues = [t];
   const yValues = [y.slice()];

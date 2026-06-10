@@ -122,6 +122,8 @@ const WAT_CTX: WatContext = {
 const mismatchRecords: MismatchRecord[] = [];
 const wasmEvalCache = new Map<string, (sample: Sample) => number>();
 
+// Pyodide instance is dynamically typed at the JS<->Python boundary.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pyodide: any;
 
 const FAST_CANONICAL = [-3, -2, -1, -0.5, -1e-9, 1e-9, 0.5, 1, 2, 3];
@@ -194,15 +196,16 @@ function pythonize(sample: Sample): void {
   pyodide.globals.set("n", sample.n);
 }
 
-function toJsNumber(value: any): number | boolean {
+function toJsNumber(value: unknown): number | boolean {
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
   }
 
-  if (value && typeof value.toJs === "function") {
-    const converted = value.toJs();
-    if (typeof value.destroy === "function") {
-      value.destroy();
+  if (value && typeof (value as { toJs?: unknown }).toJs === "function") {
+    const proxy = value as { toJs(): unknown; destroy?: () => void };
+    const converted = proxy.toJs();
+    if (typeof proxy.destroy === "function") {
+      proxy.destroy();
     }
     return converted as number | boolean;
   }

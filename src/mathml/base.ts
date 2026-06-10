@@ -255,10 +255,10 @@ export class Num extends Nullary {
   toJs(): string {
     return `${this.value}`;
   }
-  toPy(displayNames: Map<string, string>): string {
+  toPy(_displayNames: Map<string, string>): string {
     return `${this.value}`;
   }
-  toTex(texNames: Map<string, string>): string {
+  toTex(_texNames: Map<string, string>): string {
     return `${this.value}`;
   }
   toSBML(): string {

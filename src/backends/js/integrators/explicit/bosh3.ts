@@ -15,7 +15,8 @@ type ExplicitButcherTableau = {
   c: number[];
 };
 
-const Tableau: ExplicitButcherTableau = {
+// Scaffolding for the not-yet-implemented BOSH3 integrator (see ./index.ts).
+const _Tableau: ExplicitButcherTableau = {
   aLower: [[1 / 2], [0.0, 3 / 4], [2 / 9, 1 / 3, 4 / 9]],
   bSol: [2 / 9, 1 / 3, 4 / 9, 0.0],
   bErr: [2 / 9 - 7 / 24, 1 / 3 - 1 / 4, 4 / 9 - 1 / 3, -1 / 8],

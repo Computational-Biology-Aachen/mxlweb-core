@@ -112,7 +112,7 @@ async function loadRadau(base: string): Promise<EmscriptenModule> {
   }
   const js = await response.text();
   // Emscripten MODULARIZE=1 output: eval returns a factory function
-  // eslint-disable-next-line no-new-func
+
   const factory = new Function(js + "\nreturn RadauModule;")();
   const mod: EmscriptenModule = await factory({
     locateFile: (f: string) => `${base}/wasm/${f}`,

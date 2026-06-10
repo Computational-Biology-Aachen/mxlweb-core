@@ -79,7 +79,7 @@ export function solveStages(
   maxIter: number,
 ): number[][] {
   const n = y.length;
-  let K = Array.from({ length: stages }, () => Array(n).fill(0));
+  const K = Array.from({ length: stages }, () => Array(n).fill(0));
 
   for (let iter = 0; iter < maxIter; iter++) {
     let maxErr = 0;

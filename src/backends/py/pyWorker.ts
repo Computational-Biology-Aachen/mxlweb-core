@@ -18,9 +18,13 @@ import type {
 } from "../../index.js";
 export {}; // make it a module
 
+// The loaded Python namespace and the Pyodide proxies it returns are dynamically
+// typed at the JS<->Python (Pyodide) boundary, so `any` is intentional below.
 let pyodideReady = false;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pyFuncs: any;
 let basePath = ""; // Will be set via initialization message
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pyodidePromise: Promise<any> | null = null;
 
 const indexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
@@ -89,6 +93,7 @@ onmessage = async function (event: MessageEvent) {
     calculateDerived,
   } = event.data as SimulationRequest;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let tPy: any, yPy: any, errPy: any;
   if (protocol) {
     [tPy, yPy, errPy] = pyFuncs.integrate_protocol(

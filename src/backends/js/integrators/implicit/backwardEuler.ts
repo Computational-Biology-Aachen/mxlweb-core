@@ -66,8 +66,8 @@ export function backwardEuler(
   let t = tStart;
   let y = initialValues.slice();
 
-  let tOut = [t];
-  let yOut = [y.slice()];
+  const tOut = [t];
+  const yOut = [y.slice()];
 
   for (let step = 0; step < maxSteps && t < tEnd; step++) {
     let h = stepSize;
@@ -75,7 +75,7 @@ export function backwardEuler(
 
     // Newton-Raphson iteration for backward Euler: y_{n+1} = y_n + h * f(t_{n+1}, y_{n+1})
     // Solve: y_{n+1} - y_n - h * f(t_{n+1}, y_{n+1}) = 0
-    let yNext = y.slice(); // Initial guess
+    const yNext = y.slice(); // Initial guess
 
     for (let iter = 0; iter < maxIter; iter++) {
       const fEval = model(t + h, yNext, pars);

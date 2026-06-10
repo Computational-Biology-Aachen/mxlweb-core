@@ -691,7 +691,7 @@ export class RateOf extends Unary {
   toJs(): string {
     return `0`;
   }
-  toPy(displayNames: Map<string, string>): string {
+  toPy(_displayNames: Map<string, string>): string {
     return `0`;
   }
   toTex(texNames: Map<string, string>): string {
@@ -700,7 +700,7 @@ export class RateOf extends Unary {
   toSBML(): string {
     return `<apply><csymbol definitionURL="http://www.sbml.org/sbml/symbols/rateOf">rateOf</csymbol>${this.child.toSBML()}</apply>`;
   }
-  toWat(ctx: WatContext): string {
+  toWat(_ctx: WatContext): string {
     return `(f64.const 0)`;
   }
 }

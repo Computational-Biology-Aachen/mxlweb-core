@@ -125,8 +125,8 @@ export function kvaerno45(
   let t = tStart;
   let y = initialValues.slice();
 
-  let tOut = [t];
-  let yOut = [y.slice()];
+  const tOut = [t];
+  const yOut = [y.slice()];
 
   for (let step = 0; step < maxSteps && t < tEnd; step++) {
     if (t + h > tEnd) h = tEnd - t;

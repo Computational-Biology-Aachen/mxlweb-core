@@ -40,7 +40,7 @@ export function defaultValue(a: string | undefined, b: string): string {
 }
 
 export function defaultTexName(name: string): string {
-  return `\\text\{${name}\}`;
+  return `\\text{${name}}`;
 }
 
 /** A derived computation that becomes a named local during code generation. */
@@ -146,12 +146,12 @@ export abstract class ModelBuilderBase {
   // Topologically order the intermediates so each only depends on already
   // available symbols (parameters, variables, earlier intermediates).
   sortDependencies(): string[] {
-    let order: string[] = [];
+    const order: string[] = [];
     let available: Set<string> = new Set([
       ...this.parameters.keys(),
       ...this.variables.keys(),
     ]);
-    let toSort: Array<{ k: string; args: Set<string> }> = [
+    const toSort: Array<{ k: string; args: Set<string> }> = [
       ...this.intermediateDefs()
         .entries()
         .map(([key, val]) => {

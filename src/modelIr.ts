@@ -44,7 +44,6 @@ export function evalInitialAssignment(
   const names = [...params.keys()];
   const values = [...params.values()];
   try {
-    // eslint-disable-next-line no-new-func
     const fn = new Function(...names, `return ${expr.toJs()}`);
     return fn(...values) as number;
   } catch {
