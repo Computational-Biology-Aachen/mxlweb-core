@@ -116,7 +116,7 @@ export function irToWat(ir: ModelIR): string {
     equations,
     ir.varNames,
     ir.parNames,
-    "t",
+    "time",
     ir.intermediates,
   );
 }

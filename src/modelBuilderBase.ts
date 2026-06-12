@@ -84,6 +84,7 @@ export abstract class ModelBuilderBase {
 
   // Variables
   addVariable(key: string, value: Variable) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
     this.variables.set(key, value);
     return this;
   }
@@ -98,6 +99,7 @@ export abstract class ModelBuilderBase {
 
   // Parameters
   addParameter(key: string, value: Parameter) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
     this.parameters.set(key, value);
     return this;
   }
@@ -112,6 +114,7 @@ export abstract class ModelBuilderBase {
 
   // Assignments
   addAssignment(key: string, assignment: Assign) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
     this.assignments.set(key, assignment);
     return this;
   }

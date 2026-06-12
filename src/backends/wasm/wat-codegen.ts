@@ -11,14 +11,14 @@ import type { WatContext } from "./wat-context.js";
  * @param equations     One entry per state variable: the AST for its d/dt expression.
  * @param varNames      State variable names in order (index matches y[] offset).
  * @param parNames      Parameter names in order (index matches pars[] offset).
- * @param timeVar       Optional name used as the time variable (default "t").
+ * @param timeVar       Optional name used as the time variable (default "time").
  * @param intermediates Reactions/assignments that become named WAT locals, in topological order.
  */
 export function buildModelWat(
   equations: { varName: string; expr: Base }[],
   varNames: string[],
   parNames: string[],
-  timeVar = "t",
+  timeVar = "time",
   intermediates?: { name: string; expr: Base }[],
 ): string {
   const localNames = intermediates

@@ -201,6 +201,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
 
   // Reactions
   addReaction(key: string, reaction: Reaction) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
     this.reactions.set(key, reaction);
     return this;
   }
