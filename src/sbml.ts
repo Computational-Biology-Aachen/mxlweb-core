@@ -15,6 +15,7 @@ import {
   ArcTanh,
   Asin,
   Atan,
+  Bool,
   Ceiling,
   Cos,
   Cosh,
@@ -23,6 +24,7 @@ import {
   Csc,
   Csch,
   Divide,
+  E,
   Eq,
   Exp,
   Factorial,
@@ -44,6 +46,7 @@ import {
   NotEqual,
   Num,
   Or,
+  Pi,
   Piecewise,
   Pow,
   RateOf,
@@ -116,10 +119,10 @@ export function mathMLToAst(el: Element): Base {
 
   if (tag === "ci") return new Name(el.textContent!.trim());
   if (tag === "cn") return new Num(parseFloat(el.textContent!.trim()));
-  if (tag === "true") return new Num(1);
-  if (tag === "false") return new Num(0);
-  if (tag === "pi") return new Name("pi");
-  if (tag === "exponentiale") return new Name("e");
+  if (tag === "true") return new Bool(true);
+  if (tag === "false") return new Bool(false);
+  if (tag === "pi") return new Pi();
+  if (tag === "exponentiale") return new E();
   if (tag === "notanumber") return new Num(NaN);
   if (tag === "infinity") return new Num(Infinity);
 

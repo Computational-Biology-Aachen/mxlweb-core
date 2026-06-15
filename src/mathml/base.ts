@@ -271,3 +271,78 @@ export class Num extends Nullary {
     return symbols;
   }
 }
+
+/** The mathematical constant π (MathML `<pi/>`). */
+export class Pi extends Nullary {
+  toJs(): string {
+    return `Math.PI`;
+  }
+  toPy(_displayNames: Map<string, string>): string {
+    return `np.pi`;
+  }
+  toTex(_texNames: Map<string, string>): string {
+    return `\\pi`;
+  }
+  toSBML(): string {
+    return `<pi/>`;
+  }
+  toWat(_ctx: WatContext): string {
+    return `(f64.const ${Math.PI})`;
+  }
+  getSymbols(symbols: Set<string>): Set<string> {
+    return symbols;
+  }
+}
+
+/** Euler's number e (MathML `<exponentiale/>`). */
+export class E extends Nullary {
+  toJs(): string {
+    return `Math.E`;
+  }
+  toPy(_displayNames: Map<string, string>): string {
+    return `np.e`;
+  }
+  toTex(_texNames: Map<string, string>): string {
+    return `e`;
+  }
+  toSBML(): string {
+    return `<exponentiale/>`;
+  }
+  toWat(_ctx: WatContext): string {
+    return `(f64.const ${Math.E})`;
+  }
+  getSymbols(symbols: Set<string>): Set<string> {
+    return symbols;
+  }
+}
+
+/** A boolean literal, `true` or `false` (MathML `<true/>` / `<false/>`). In WAT it is the i32 `1`/`0` the logical/relational nodes operate on. */
+export class Bool extends Nullary {
+  constructor(public value: boolean) {
+    super();
+  }
+  default(): Bool {
+    return new Bool(true);
+  }
+  update(value: boolean): Base {
+    return new Bool(value);
+  }
+  toJs(): string {
+    return `${this.value}`;
+  }
+  toPy(_displayNames: Map<string, string>): string {
+    return this.value ? `True` : `False`;
+  }
+  toTex(_texNames: Map<string, string>): string {
+    return this.value ? `\\text{true}` : `\\text{false}`;
+  }
+  toSBML(): string {
+    return this.value ? `<true/>` : `<false/>`;
+  }
+  toWat(_ctx: WatContext): string {
+    return `(i32.const ${this.value ? 1 : 0})`;
+  }
+  getSymbols(symbols: Set<string>): Set<string> {
+    return symbols;
+  }
+}
