@@ -1,0 +1,81 @@
+# MxlWeb Core
+
+> MxlWeb Core is a TypeScript package for browser-side ODE and kinetic model simulation. It provides model builders (kinetic and direct ODE), an intermediate representation (IR) with code generation to JS/WASM/Python/TeX, SBML import/export, PAM fluorometry protocol building, and multiple compute backends (pure JS, WASM from C, Pyodide). All computation runs client-side with no server dependency. Maintained by the Computational Biology group at RWTH Aachen.
+
+Targets Node.js ≥20. Part of a tool family with [MxlPy](https://github.com/Computational-Biology-Aachen/mxl-py) (Python mechanistic learning), [MxlBricks](https://github.com/Computational-Biology-Aachen/mxl-bricks) (composable reaction bricks), and [MxlWeb](https://github.com/Computational-Biology-Aachen/mxl-web) (browser simulation frontend).
+
+## Core concepts
+
+- **Two model builders.** `KineticModelBuilder` defines reactions with rate expressions and stoichiometry (dx/dt = N·v). `OdeModelBuilder` sets derivatives directly via `setDifferential()`. Both extend `ModelBuilderBase` and produce the same IR.
+- **Intermediate representation.** `ModelIR` is the shared output of both builders. It holds variables, parameters, assignments, differentials, and reactions in a canonical form that backends consume.
+- **Code generation pipeline.** From IR, generate pure-JS functions, WASM (via WAT codegen), Python source, or LaTeX. The pipeline is `Builder → IR → backend code`.
+- **MathML AST.** Expressions are represented as a tree of typed nodes (`Num`, `Name`, `Add`, `Mul`, `Pow`, `Fn`, etc.) with `toJs()`, `toPy()`, and `toTex()` codegen methods.
+- **SBML L3V1.** Full read/write roundtrip through `sbml.ts`. Models can be imported from SBML, manipulated with the builder API, and exported back.
+- **PAM fluorometry.** Protocol building and fluorescence analysis: `expandProtocol`, `findFoFmPeaks`, `calculateFvFm`, `calculateNPQ`.
+- **Subpath exports.** Each module is independently importable: `.`, `./mathml`, `./sbml`, `./pam`, `./backends/js`, `./backends/py`, `./backends/wasm`.
+
+## Reference map
+
+- **Model building** — `ModelBuilderBase` (abstract), `KineticModelBuilder` (reactions + stoichiometry), `OdeModelBuilder` (direct derivatives)
+- **IR & codegen** — `ModelIR`, `irToJs`, `irToJsDerived`, `irToWat`, `irToPython`, `evalInitialAssignment`
+- **SBML** — `sbml.ts`: `readSBML`, `writeSBML`
+- **PAM** — `pam.ts`: `expandProtocol`, `findFoFmPeaks`, `calculateFvFm`, `calculateNPQ`
+- **MathML** — `mathml/`: `Num`, `Name`, `Add`, `Mul`, `Pow`, `Div`, `Sub`, `Neg`, `Fn` and more
+- **Compute backends** — `backends/js/` (Euler, RK2, RK45, BOSH3, Tsit5, backward Euler, Kvaerno45), `backends/wasm/` (Radau5, DOP853, DOPRI5 via C→WASM), `backends/py/` (Pyodide worker)
+
+## Installation
+
+```bash
+npm install @computational-biology-aachen/mxlweb-core
+```
+
+## Quick start
+
+> Build a kinetic model, then simulate it with the JS backend.
+
+```typescript
+import { KineticModelBuilder } from '@computational-biology-aachen/mxlweb-core'
+import { simulate } from '@computational-biology-aachen/mxlweb-core/backends/js'
+
+const builder = new KineticModelBuilder()
+
+builder
+  .addVariable('S', 1.0)
+  .addVariable('P', 0.0)
+  .addParameter('k1', 0.5)
+  .addParameter('k2', 0.3)
+
+builder
+  .addReaction('v1', 'k1 * S', { S: -1, P: 1 })
+  .addReaction('v2', 'k2 * P', { P: -1 })
+
+const ir = builder.toIR()
+const result = await simulate(ir, { tEnd: 10, nSteps: 100 })
+```
+
+> For direct ODE models, use `OdeModelBuilder` and call `setDifferential('x', 'k * x')` instead of reactions.
+
+## Dev commands
+
+```bash
+npm run dev          # Watch mode with tsx
+npm run build        # Compile TypeScript
+npm run typecheck    # Type-check without emit
+npm run lint         # Prettier + ESLint
+npm run format       # Auto-format
+npm run test         # Run vitest
+npm run build:wasm   # Build WASM backends via Emscripten
+```
+
+## MCP tool reference
+
+For AI-assisted modeling, see the [mxl-mcp](https://computational-biology-aachen.github.io/mxl-mcp/mxlpy/latest) documentation.
+
+## Tool family
+
+- [MxlPy](https://github.com/Computational-Biology-Aachen/mxl-py) — Python mechanistic learning (ODEs + ML)
+- [MxlBricks](https://github.com/Computational-Biology-Aachen/mxl-bricks) — Composable reaction building blocks
+- [MxlModels](https://github.com/Computational-Biology-Aachen/mxl-models) — Flat single-file model versions (generated from MxlBricks)
+- [Mxl-Schemas](https://github.com/Computational-Biology-Aachen/mxl-schemas) — JSON schemas for model formats
+- [pysbml](https://github.com/Computational-Biology-Aachen/pysbml) — SBML import/export bridge
+- [parameteriser](https://github.com/Computational-Biology-Aachen/parameteriser) — Kinetic parameter lookup (BRENDA DB)
