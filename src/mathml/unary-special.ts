@@ -60,6 +60,15 @@ export class Log extends Base {
   toSBML(): string {
     return `<apply><log/><logbase>${this.base.toSBML()}</logbase>${this.child.toSBML()}</apply>`;
   }
+  toTs(): string {
+    return `new Log(${this.child.toTs()}, ${this.base.toTs()})`;
+  }
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add("Log");
+    this.child.getCtors(ctors);
+    this.base.getCtors(ctors);
+    return ctors;
+  }
   toWat(ctx: WatContext): string {
     return `(f64.div (call $math_log ${this.child.toWat(ctx)}) (call $math_log ${this.base.toWat(ctx)}))`;
   }
@@ -117,6 +126,15 @@ export class Sqrt extends Base {
 
   toSBML(): string {
     return `<apply><root/><degree>${this.base.toSBML()}</degree>${this.child.toSBML()}</apply>`;
+  }
+  toTs(): string {
+    return `new Sqrt(${this.child.toTs()}, ${this.base.toTs()})`;
+  }
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add("Sqrt");
+    this.child.getCtors(ctors);
+    this.base.getCtors(ctors);
+    return ctors;
   }
   toWat(ctx: WatContext): string {
     return `(call $math_pow ${this.child.toWat(ctx)} (f64.div (f64.const 1) ${this.base.toWat(ctx)}))`;

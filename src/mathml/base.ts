@@ -41,6 +41,10 @@ export abstract class Base {
   abstract toWat(ctx: WatContext): string;
   /** Collect every variable/parameter symbol referenced in this subtree into `symbols`. */
   abstract getSymbols(symbols: Set<string>): Set<string>;
+  /** Serialise to a TypeScript constructor expression that rebuilds this subtree (e.g. `new Mul([new Name("x"), new Num(2)])`). */
+  abstract toTs(): string;
+  /** Collect the mathml constructor class names used in this subtree into `ctors` (for import generation). */
+  abstract getCtors(ctors: Set<string>): Set<string>;
   // abstract default(): Base;
   /**
    * Return a copy of this subtree with the node whose id is `id` replaced by
@@ -64,6 +68,11 @@ export abstract class Nullary extends Base {
       return { node: next, changed: true };
     }
     return { node: this, changed: false };
+  }
+
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add(this.constructor.name);
+    return ctors;
   }
 }
 
@@ -93,6 +102,15 @@ export abstract class Unary extends Base {
 
   getSymbols(symbols: Set<string>): Set<string> {
     return this.child.getSymbols(symbols);
+  }
+
+  toTs(): string {
+    return `new ${this.constructor.name}(${this.child.toTs()})`;
+  }
+
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add(this.constructor.name);
+    return this.child.getCtors(ctors);
   }
 }
 
@@ -143,6 +161,17 @@ export abstract class Binary extends Base {
     this.right.getSymbols(symbols);
     return symbols;
   }
+
+  toTs(): string {
+    return `new ${this.constructor.name}(${this.left.toTs()}, ${this.right.toTs()})`;
+  }
+
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add(this.constructor.name);
+    this.left.getCtors(ctors);
+    this.right.getCtors(ctors);
+    return ctors;
+  }
 }
 
 /** Node with an arbitrary number of operands `children` (e.g. sums, products, `min`/`max`). Provides shared `replace`/`getSymbols` over all children. */
@@ -182,6 +211,20 @@ export abstract class Nary extends Base {
     }
     return symbols;
   }
+
+  toTs(): string {
+    return `new ${this.constructor.name}([${this.children
+      .map((child) => child.toTs())
+      .join(", ")}])`;
+  }
+
+  getCtors(ctors: Set<string>): Set<string> {
+    ctors.add(this.constructor.name);
+    for (const child of this.children) {
+      child.getCtors(ctors);
+    }
+    return ctors;
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -217,6 +260,9 @@ export class Name extends Nullary {
   }
   toSBML(): string {
     return `<ci>${this.name}</ci>`;
+  }
+  toTs(): string {
+    return `new Name(${JSON.stringify(this.name)})`;
   }
   toWat(ctx: WatContext): string {
     if (ctx.timeVar && this.name === ctx.timeVar) {
@@ -264,6 +310,9 @@ export class Num extends Nullary {
   toSBML(): string {
     return `<cn>${this.value}</cn>`;
   }
+  toTs(): string {
+    return `new Num(${this.value})`;
+  }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${this.value})`;
   }
@@ -286,6 +335,9 @@ export class Pi extends Nullary {
   toSBML(): string {
     return `<pi/>`;
   }
+  toTs(): string {
+    return `new Pi()`;
+  }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${Math.PI})`;
   }
@@ -307,6 +359,9 @@ export class E extends Nullary {
   }
   toSBML(): string {
     return `<exponentiale/>`;
+  }
+  toTs(): string {
+    return `new E()`;
   }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${Math.E})`;
@@ -338,6 +393,9 @@ export class Bool extends Nullary {
   }
   toSBML(): string {
     return this.value ? `<true/>` : `<false/>`;
+  }
+  toTs(): string {
+    return `new Bool(${this.value})`;
   }
   toWat(_ctx: WatContext): string {
     return `(i32.const ${this.value ? 1 : 0})`;

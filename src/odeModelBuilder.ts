@@ -49,6 +49,15 @@ export class OdeModelBuilder extends ModelBuilderBase {
     return new Map();
   }
 
+  protected extraMxlwebChains(collect: (expr: Base) => void): string[] {
+    const chains: string[] = [];
+    for (const [id, fn] of this.differentials) {
+      collect(fn);
+      chains.push(`    .setDifferential(${JSON.stringify(id)}, ${fn.toTs()})`);
+    }
+    return chains;
+  }
+
   protected dxdtExpr(varName: string): Base {
     return this.differentials.get(varName) ?? new Num(0);
   }

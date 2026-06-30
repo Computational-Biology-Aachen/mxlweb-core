@@ -214,6 +214,25 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return this;
   }
 
+  protected extraMxlwebChains(collect: (expr: Base) => void): string[] {
+    const chains: string[] = [];
+    for (const [id, rxn] of this.reactions) {
+      collect(rxn.fn);
+      const stoich = rxn.stoichiometry.map((s) => {
+        collect(s.value);
+        return `{ name: ${JSON.stringify(s.name)}, value: ${s.value.toTs()} }`;
+      });
+      const opts = this.tsFields([
+        ["fn", rxn.fn.toTs()],
+        ["stoichiometry", `[${stoich.join(", ")}]`],
+        ["displayName", this.tsString(rxn.displayName)],
+        ["texName", this.tsString(rxn.texName)],
+      ]);
+      chains.push(`    .addReaction(${JSON.stringify(id)}, ${opts})`);
+    }
+    return chains;
+  }
+
   protected extraIntermediates(): Map<string, IntermediateDef> {
     return new Map(
       [...this.reactions.entries()].map(([key, rxn]) => [

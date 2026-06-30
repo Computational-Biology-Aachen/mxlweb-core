@@ -257,4 +257,114 @@ export abstract class ModelBuilderBase {
   buildWat(): string {
     return irToWat(this.lower());
   }
+
+  /**
+   * Serialise the builder to a `model.ts` source file: an `initModel()` factory
+   * that reconstructs this model with the same fluent `addParameter` /
+   * `addVariable` / `addAssignment` (and subclass-specific) calls. Mathml
+   * expressions are emitted as their constructor source via {@link Base.toTs};
+   * imports are derived from the constructors each expression uses.
+   */
+  buildMxlweb(): string {
+    const ctors = new Set<string>();
+    const collect = (expr: Base) => {
+      expr.getCtors(ctors);
+    };
+
+    const chains: string[] = [];
+    for (const [id, p] of this.parameters) {
+      chains.push(
+        `    .addParameter(${JSON.stringify(id)}, ${this.tsParameter(p)})`,
+      );
+    }
+    for (const [id, v] of this.variables) {
+      if (v.value instanceof Base) collect(v.value);
+      chains.push(
+        `    .addVariable(${JSON.stringify(id)}, ${this.tsVariable(v)})`,
+      );
+    }
+    for (const [id, a] of this.assignments) {
+      collect(a.fn);
+      chains.push(
+        `    .addAssignment(${JSON.stringify(id)}, ${this.tsAssign(a)})`,
+      );
+    }
+    chains.push(...this.extraMxlwebChains(collect));
+
+    const className = this.constructor.name;
+    const mathmlNames = [...ctors].sort();
+    const mathmlImport =
+      mathmlNames.length > 0
+        ? `import {\n${mathmlNames
+            .map((n) => `  ${n},`)
+            .join(
+              "\n",
+            )}\n} from "@computational-biology-aachen/mxlweb-core/mathml";\n`
+        : "";
+
+    return `import { ${className} } from "@computational-biology-aachen/mxlweb-core";
+${mathmlImport}
+export function initModel(): ${className} {
+  return new ${className}()
+${chains.join("\n")};
+}
+`;
+  }
+
+  /**
+   * Subclass-specific fluent calls appended after parameters/variables/
+   * assignments (the ODE builder's `setDifferential`, the kinetic builder's
+   * `addReaction`). `collect` must be called on every emitted expression so its
+   * constructors are imported. Default: none.
+   */
+  protected extraMxlwebChains(_collect: (expr: Base) => void): string[] {
+    return [];
+  }
+
+  protected tsSlider(s: SliderArgs): string {
+    const parts = [
+      `min: ${JSON.stringify(s.min)}`,
+      `max: ${JSON.stringify(s.max)}`,
+      `step: ${JSON.stringify(s.step)}`,
+    ];
+    if (s.desc !== undefined) parts.push(`desc: ${JSON.stringify(s.desc)}`);
+    return `{ ${parts.join(", ")} }`;
+  }
+
+  protected tsFields(entries: Array<[string, string | undefined]>): string {
+    const parts = entries
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => `${k}: ${v}`);
+    return `{ ${parts.join(", ")} }`;
+  }
+
+  private tsParameter(p: Parameter): string {
+    return this.tsFields([
+      ["value", `${p.value}`],
+      ["displayName", this.tsString(p.displayName)],
+      ["texName", this.tsString(p.texName)],
+      ["slider", p.slider !== undefined ? this.tsSlider(p.slider) : undefined],
+    ]);
+  }
+
+  private tsVariable(v: Variable): string {
+    return this.tsFields([
+      ["value", v.value instanceof Base ? v.value.toTs() : `${v.value}`],
+      ["displayName", this.tsString(v.displayName)],
+      ["texName", this.tsString(v.texName)],
+      ["slider", v.slider !== undefined ? this.tsSlider(v.slider) : undefined],
+    ]);
+  }
+
+  protected tsAssign(a: Assign): string {
+    return this.tsFields([
+      ["fn", a.fn.toTs()],
+      ["displayName", this.tsString(a.displayName)],
+      ["texName", this.tsString(a.texName)],
+    ]);
+  }
+
+  protected tsString(value: string | undefined): string | undefined {
+    return value !== undefined ? JSON.stringify(value) : undefined;
+  }
 }
