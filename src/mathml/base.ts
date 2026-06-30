@@ -20,6 +20,23 @@ import type { WatContext } from "../backends/wasm/wat-context.js";
 let idCounter = 0;
 
 /**
+ * Serialised form of an expression node — the `node` shape of the shared
+ * mxl-schemas `.mxl.json` format. The `type` discriminator is the node's class
+ * name; which operand fields are present depends on the node's arity (`value`
+ * for leaves, `child`/`base` for {@link Log}/{@link Sqrt}, `left`/`right` for
+ * {@link Binary}, `children` for {@link Nary}).
+ */
+export type JsonNode = {
+  type: string;
+  value?: number | string | boolean;
+  child?: JsonNode;
+  base?: JsonNode;
+  left?: JsonNode;
+  right?: JsonNode;
+  children?: JsonNode[];
+};
+
+/**
  * Common ancestor for every expression-tree node.
  *
  * Subclasses implement the serialisers and tree operations below. Each instance
@@ -43,6 +60,8 @@ export abstract class Base {
   abstract getSymbols(symbols: Set<string>): Set<string>;
   /** Serialise to a TypeScript constructor expression that rebuilds this subtree (e.g. `new Mul([new Name("x"), new Num(2)])`). */
   abstract toTs(): string;
+  /** Serialise to the shared mxl-schemas `.mxl.json` node tree (see {@link JsonNode}). */
+  abstract toJson(): JsonNode;
   /** Collect the mathml constructor class names used in this subtree into `ctors` (for import generation). */
   abstract getCtors(ctors: Set<string>): Set<string>;
   // abstract default(): Base;
@@ -73,6 +92,10 @@ export abstract class Nullary extends Base {
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     return ctors;
+  }
+
+  toJson(): JsonNode {
+    return { type: this.constructor.name };
   }
 }
 
@@ -106,6 +129,10 @@ export abstract class Unary extends Base {
 
   toTs(): string {
     return `new ${this.constructor.name}(${this.child.toTs()})`;
+  }
+
+  toJson(): JsonNode {
+    return { type: this.constructor.name, child: this.child.toJson() };
   }
 
   getCtors(ctors: Set<string>): Set<string> {
@@ -166,6 +193,14 @@ export abstract class Binary extends Base {
     return `new ${this.constructor.name}(${this.left.toTs()}, ${this.right.toTs()})`;
   }
 
+  toJson(): JsonNode {
+    return {
+      type: this.constructor.name,
+      left: this.left.toJson(),
+      right: this.right.toJson(),
+    };
+  }
+
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     this.left.getCtors(ctors);
@@ -218,6 +253,13 @@ export abstract class Nary extends Base {
       .join(", ")}])`;
   }
 
+  toJson(): JsonNode {
+    return {
+      type: this.constructor.name,
+      children: this.children.map((child) => child.toJson()),
+    };
+  }
+
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     for (const child of this.children) {
@@ -263,6 +305,9 @@ export class Name extends Nullary {
   }
   toTs(): string {
     return `new Name(${JSON.stringify(this.name)})`;
+  }
+  toJson(): JsonNode {
+    return { type: "Name", value: this.name };
   }
   toWat(ctx: WatContext): string {
     if (ctx.timeVar && this.name === ctx.timeVar) {
@@ -312,6 +357,9 @@ export class Num extends Nullary {
   }
   toTs(): string {
     return `new Num(${this.value})`;
+  }
+  toJson(): JsonNode {
+    return { type: "Num", value: this.value };
   }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${this.value})`;
@@ -396,6 +444,9 @@ export class Bool extends Nullary {
   }
   toTs(): string {
     return `new Bool(${this.value})`;
+  }
+  toJson(): JsonNode {
+    return { type: "Bool", value: this.value };
   }
   toWat(_ctx: WatContext): string {
     return `(i32.const ${this.value ? 1 : 0})`;

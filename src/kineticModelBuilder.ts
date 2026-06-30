@@ -1,10 +1,20 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Add, Base, Minus, Mul, Name, Num } from "./mathml/index.js";
+import {
+  Add,
+  Base,
+  type JsonNode,
+  Minus,
+  Mul,
+  Name,
+  Num,
+} from "./mathml/index.js";
 import {
   type Assign,
   defaultTexName,
   type IntermediateDef,
   ModelBuilderBase,
+  type MxlEntity,
+  type MxlKind,
   type Parameter,
   type Variable,
 } from "./modelBuilderBase.js";
@@ -240,6 +250,34 @@ export class KineticModelBuilder extends ModelBuilderBase {
         { fn: rxn.fn, displayName: rxn.displayName, texName: rxn.texName },
       ]),
     );
+  }
+
+  protected mxlKind(): MxlKind {
+    return "kinetic";
+  }
+
+  protected mxlModel(): Record<string, Record<string, MxlEntity>> {
+    return {
+      variables: this.mxlVariables(),
+      parameters: this.mxlParameters(),
+      reactions: this.mxlReactions(),
+      derived: this.mxlDerived(),
+      readouts: {},
+    };
+  }
+
+  private mxlReactions(): Record<string, MxlEntity> {
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, rxn] of this.reactions) {
+      const stoichiometry: Record<string, JsonNode> = {};
+      for (const { name, value } of rxn.stoichiometry) {
+        stoichiometry[name] = value.toJson();
+      }
+      const entry: MxlEntity = { fn: rxn.fn.toJson(), stoichiometry };
+      this.mxlApplyMeta(entry, rxn.displayName, rxn.texName);
+      out[id] = entry;
+    }
+    return out;
   }
 
   protected dxdtExpr(varName: string): Base {

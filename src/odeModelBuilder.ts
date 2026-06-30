@@ -4,6 +4,8 @@ import {
   defaultTexName,
   type IntermediateDef,
   ModelBuilderBase,
+  type MxlEntity,
+  type MxlKind,
 } from "./modelBuilderBase.js";
 
 /**
@@ -60,6 +62,21 @@ export class OdeModelBuilder extends ModelBuilderBase {
 
   protected dxdtExpr(varName: string): Base {
     return this.differentials.get(varName) ?? new Num(0);
+  }
+
+  protected mxlKind(): MxlKind {
+    return "ode";
+  }
+
+  protected mxlModel(): Record<string, Record<string, MxlEntity>> {
+    return {
+      variables: this.mxlVariables((id) => ({
+        fn: (this.differentials.get(id) ?? new Num(0)).toJson(),
+      })),
+      parameters: this.mxlParameters(),
+      derived: this.mxlDerived(),
+      readouts: {},
+    };
   }
 
   buildTex(): string {

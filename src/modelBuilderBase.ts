@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Base } from "./mathml/index.js";
+import { Base, type JsonNode } from "./mathml/index.js";
 import {
   evalInitialAssignment,
   irToJs,
@@ -50,6 +50,29 @@ export type IntermediateDef = {
   texName?: string;
 };
 
+/** The model-formulation discriminator written to (and selecting) an `.mxl.json` schema. */
+export type MxlKind = "kinetic" | "ode" | "steady-state";
+
+/** One entity (variable/parameter/derived/reaction) in the `.mxl.json` model section. */
+export type MxlEntity = {
+  value?: JsonNode;
+  fn?: JsonNode;
+  stoichiometry?: Record<string, JsonNode>;
+  displayName?: string;
+  texName?: string;
+  slider?: { min: string; max: string; step: string; desc?: string };
+};
+
+/** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
+export type MxlJsonDocument = {
+  $schema: string;
+  spec_version: "1.0";
+  kind: MxlKind;
+  model_id: string;
+  description?: string;
+  model: Record<string, Record<string, MxlEntity>>;
+};
+
 /**
  * Shared state and code generation for every model builder.
  *
@@ -81,6 +104,12 @@ export abstract class ModelBuilderBase {
 
   /** A deep copy of the builder, preserving its concrete type. */
   abstract clone(): ModelBuilderBase;
+
+  /** The `.mxl.json` discriminator for this formulation. */
+  protected abstract mxlKind(): MxlKind;
+
+  /** Build the formulation-specific `model` section of the `.mxl.json` document. */
+  protected abstract mxlModel(): Record<string, Record<string, MxlEntity>>;
 
   // Variables
   addVariable(key: string, value: Variable) {
@@ -319,6 +348,87 @@ ${chains.join("\n")};
    */
   protected extraMxlwebChains(_collect: (expr: Base) => void): string[] {
     return [];
+  }
+
+  /**
+   * Serialise the builder to the shared mxl-schemas `.mxl.json` format: a
+   * version-controllable, schema-validated data file describing the model as
+   * trees of math nodes (see {@link MxlJsonDocument}). The `kind` discriminator
+   * and `model` section are formulation-specific ({@link mxlKind} /
+   * {@link mxlModel}); everything else is the common envelope. `modelId` is
+   * required (the schema mandates it); `description` is omitted when absent.
+   */
+  buildMxlJson(modelId: string, description?: string): string {
+    const kind = this.mxlKind();
+    const doc: MxlJsonDocument = {
+      $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/${kind}-model.schema.json`,
+      spec_version: "1.0",
+      kind,
+      model_id: modelId,
+      ...(description !== undefined ? { description } : {}),
+      model: this.mxlModel(),
+    };
+    return JSON.stringify(doc, null, 2);
+  }
+
+  /** Serialise an initial/parameter value to a node: a bare number becomes a `Num` node. */
+  protected mxlValueNode(value: number | Base): JsonNode {
+    return value instanceof Base ? value.toJson() : { type: "Num", value };
+  }
+
+  /** Attach the optional presentation fields (display/LaTeX names, slider) to an entity. */
+  protected mxlApplyMeta(
+    entry: MxlEntity,
+    displayName: string | undefined,
+    texName: string | undefined,
+    slider?: SliderArgs,
+  ): void {
+    if (displayName !== undefined) entry.displayName = displayName;
+    if (texName !== undefined) entry.texName = texName;
+    if (slider !== undefined) {
+      entry.slider = { min: slider.min, max: slider.max, step: slider.step };
+      if (slider.desc !== undefined) entry.slider.desc = slider.desc;
+    }
+  }
+
+  /**
+   * Serialise the state variables. `extra` contributes formulation-specific
+   * fields per variable (the ODE builder adds its `fn` derivative); it is
+   * applied after `value` and before the presentation metadata.
+   */
+  protected mxlVariables(
+    extra?: (id: string, v: Variable) => Partial<MxlEntity>,
+  ): Record<string, MxlEntity> {
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, v] of this.variables) {
+      const entry: MxlEntity = { value: this.mxlValueNode(v.value) };
+      if (extra !== undefined) Object.assign(entry, extra(id, v));
+      this.mxlApplyMeta(entry, v.displayName, v.texName, v.slider);
+      out[id] = entry;
+    }
+    return out;
+  }
+
+  /** Serialise the constant parameters. */
+  protected mxlParameters(): Record<string, MxlEntity> {
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, p] of this.parameters) {
+      const entry: MxlEntity = { value: { type: "Num", value: p.value } };
+      this.mxlApplyMeta(entry, p.displayName, p.texName, p.slider);
+      out[id] = entry;
+    }
+    return out;
+  }
+
+  /** Serialise the assignments as the `derived` section. */
+  protected mxlDerived(): Record<string, MxlEntity> {
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, a] of this.assignments) {
+      const entry: MxlEntity = { fn: a.fn.toJson() };
+      this.mxlApplyMeta(entry, a.displayName, a.texName);
+      out[id] = entry;
+    }
+    return out;
   }
 
   protected tsSlider(s: SliderArgs): string {

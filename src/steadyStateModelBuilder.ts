@@ -4,6 +4,8 @@ import {
   defaultTexName,
   type IntermediateDef,
   ModelBuilderBase,
+  type MxlEntity,
+  type MxlKind,
 } from "./modelBuilderBase.js";
 
 /**
@@ -43,6 +45,17 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
   // satisfies the base contract.
   protected dxdtExpr(): Base {
     return new Num(0);
+  }
+
+  protected mxlKind(): MxlKind {
+    return "steady-state";
+  }
+
+  protected mxlModel(): Record<string, Record<string, MxlEntity>> {
+    return {
+      parameters: this.mxlParameters(),
+      derived: this.mxlDerived(),
+    };
   }
 
   /**

@@ -6,6 +6,7 @@ import {
 } from "@computational-biology-aachen/mxlweb-core";
 import {
   Add,
+  Bool,
   Divide,
   LessEqual,
   Log,
@@ -14,13 +15,16 @@ import {
   Mul,
   Name,
   Num,
+  Pi,
   Piecewise,
+  Pow,
   Sqrt,
 } from "@computational-biology-aachen/mxlweb-core/mathml";
 import { describe, expect, it } from "vitest";
 
 const MATHML = {
   Add,
+  Bool,
   Divide,
   LessEqual,
   Log,
@@ -29,7 +33,9 @@ const MATHML = {
   Mul,
   Name,
   Num,
+  Pi,
   Piecewise,
+  Pow,
   Sqrt,
 };
 
@@ -153,5 +159,174 @@ describe("buildMxlweb round-trip", () => {
     expect(rebuilt).toBeInstanceOf(KineticModelBuilder);
     expect(rebuilt.buildJs()).toBe(m.buildJs());
     expect(rebuilt.buildTex()).toBe(m.buildTex());
+  });
+});
+
+describe("Base.toJson", () => {
+  it("serialises every node arity to the mxl-schemas node shape", () => {
+    expect(new Num(2.5).toJson()).toEqual({ type: "Num", value: 2.5 });
+    expect(new Name("x").toJson()).toEqual({ type: "Name", value: "x" });
+    expect(new Bool(true).toJson()).toEqual({ type: "Bool", value: true });
+    // Value-less leaf: only the discriminator.
+    expect(new Pi().toJson()).toEqual({ type: "Pi" });
+    // Unary → child, binary → left/right, Log/Sqrt → child + base.
+    expect(new Minus([new Name("x")]).toJson()).toEqual({
+      type: "Minus",
+      children: [{ type: "Name", value: "x" }],
+    });
+    expect(new Pow(new Name("x"), new Num(2)).toJson()).toEqual({
+      type: "Pow",
+      left: { type: "Name", value: "x" },
+      right: { type: "Num", value: 2 },
+    });
+    expect(new Log(new Name("x"), new Num(10)).toJson()).toEqual({
+      type: "Log",
+      child: { type: "Name", value: "x" },
+      base: { type: "Num", value: 10 },
+    });
+  });
+
+  it("nests n-ary children recursively", () => {
+    const expr = new Divide([
+      new Mul([new Name("Vmax"), new Name("S")]),
+      new Add([new Name("Km"), new Name("S")]),
+    ]);
+    expect(expr.toJson()).toEqual({
+      type: "Divide",
+      children: [
+        {
+          type: "Mul",
+          children: [
+            { type: "Name", value: "Vmax" },
+            { type: "Name", value: "S" },
+          ],
+        },
+        {
+          type: "Add",
+          children: [
+            { type: "Name", value: "Km" },
+            { type: "Name", value: "S" },
+          ],
+        },
+      ],
+    });
+  });
+});
+
+describe("buildMxlJson", () => {
+  it("kinetic model: envelope, reactions, stoichiometry and metadata", () => {
+    const m = new KineticModelBuilder()
+      .addVariable("A", { value: 1, displayName: "Species A", texName: "A" })
+      .addVariable("B", { value: 0 })
+      .addParameter("k", {
+        value: 0.5,
+        slider: { min: "0", max: "1", step: "0.01", desc: "rate" },
+      })
+      .addReaction("v1", {
+        fn: new Mul([new Name("k"), new Name("A")]),
+        stoichiometry: [
+          { name: "A", value: new Num(-1) },
+          { name: "B", value: new Num(1) },
+        ],
+        displayName: "first reaction",
+      })
+      .addAssignment("total", {
+        fn: new Add([new Name("A"), new Name("B")]),
+      });
+
+    const doc = JSON.parse(m.buildMxlJson("kinetic_demo", "a demo"));
+
+    expect(doc.spec_version).toBe("1.0");
+    expect(doc.kind).toBe("kinetic");
+    expect(doc.model_id).toBe("kinetic_demo");
+    expect(doc.description).toBe("a demo");
+    expect(doc.$schema).toBe(
+      "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/kinetic-model.schema.json",
+    );
+    expect(Object.keys(doc.model)).toEqual([
+      "variables",
+      "parameters",
+      "reactions",
+      "derived",
+      "readouts",
+    ]);
+
+    expect(doc.model.variables.A).toEqual({
+      value: { type: "Num", value: 1 },
+      displayName: "Species A",
+      texName: "A",
+    });
+    expect(doc.model.parameters.k.slider).toEqual({
+      min: "0",
+      max: "1",
+      step: "0.01",
+      desc: "rate",
+    });
+    expect(doc.model.reactions.v1).toEqual({
+      fn: {
+        type: "Mul",
+        children: [
+          { type: "Name", value: "k" },
+          { type: "Name", value: "A" },
+        ],
+      },
+      stoichiometry: {
+        A: { type: "Num", value: -1 },
+        B: { type: "Num", value: 1 },
+      },
+      displayName: "first reaction",
+    });
+    expect(doc.model.derived.total.fn.type).toBe("Add");
+    expect(doc.model.readouts).toEqual({});
+  });
+
+  it("ode model: derivative on each variable, missing differential is zero", () => {
+    const m = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addVariable("y", { value: 2 })
+      .addParameter("k", { value: 0.5 })
+      .setDifferential(
+        "x",
+        new Minus([new Mul([new Name("k"), new Name("x")])]),
+      );
+
+    const doc = JSON.parse(m.buildMxlJson("ode_demo"));
+
+    expect(doc.kind).toBe("ode");
+    expect(doc.description).toBeUndefined();
+    expect("reactions" in doc.model).toBe(false);
+    expect(doc.model.variables.x.fn.type).toBe("Minus");
+    // A variable with no differential exports dx/dt = 0.
+    expect(doc.model.variables.y.fn).toEqual({ type: "Num", value: 0 });
+    expect(doc.model.readouts).toEqual({});
+  });
+
+  it("steady-state model: only parameters + derived, no readouts", () => {
+    const m = new SteadyStateModelBuilder()
+      .addParameter("S", {
+        value: 1,
+        slider: { min: "0", max: "10", step: "0.1" },
+      })
+      .addParameter("Vmax", { value: 2, texName: "V_{max}" })
+      .addAssignment("v", {
+        displayName: "rate",
+        fn: new Divide([
+          new Mul([new Name("Vmax"), new Name("S")]),
+          new Num(2),
+        ]),
+      });
+
+    const doc = JSON.parse(m.buildMxlJson("ss_demo"));
+
+    expect(doc.kind).toBe("steady-state");
+    expect(doc.$schema).toContain("steady-state-model.schema.json");
+    expect(Object.keys(doc.model)).toEqual(["parameters", "derived"]);
+    expect(doc.model.parameters.S.slider).toEqual({
+      min: "0",
+      max: "10",
+      step: "0.1",
+    });
+    expect(doc.model.derived.v.displayName).toBe("rate");
+    expect(doc.model.derived.v.fn.type).toBe("Divide");
   });
 });
