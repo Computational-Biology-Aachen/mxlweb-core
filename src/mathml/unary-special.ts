@@ -1,5 +1,5 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
-import { Base, type JsonNode, Name, Num } from "./base.js";
+import { Base, type JsonNode, Name, Num, reviveNode } from "./base.js";
 
 /**
  * Unary functions that also carry a second, base/degree operand and therefore
@@ -69,6 +69,9 @@ export class Log extends Base {
       child: this.child.toJson(),
       base: this.base.toJson(),
     };
+  }
+  static fromJson(json: JsonNode): Log {
+    return new Log(reviveNode(json.child!), reviveNode(json.base!));
   }
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add("Log");
@@ -143,6 +146,9 @@ export class Sqrt extends Base {
       child: this.child.toJson(),
       base: this.base.toJson(),
     };
+  }
+  static fromJson(json: JsonNode): Sqrt {
+    return new Sqrt(reviveNode(json.child!), reviveNode(json.base!));
   }
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add("Sqrt");

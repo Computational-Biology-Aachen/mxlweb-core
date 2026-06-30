@@ -20,6 +20,28 @@ import type { WatContext } from "../backends/wasm/wat-context.js";
 let idCounter = 0;
 
 /**
+ * The node reviver the static `fromJson` methods use to reconstruct child nodes.
+ * It is injected by `./json.ts` (via {@link setNodeReviver}) rather than
+ * imported, to avoid a module-load cycle: the reviver must import every concrete
+ * node class, and those classes extend the base classes defined here.
+ */
+let nodeReviver: (json: JsonNode) => Base = () => {
+  throw new Error(
+    "math node reviver not initialised — import from ./mathml so json.ts loads",
+  );
+};
+
+/** Register the node reviver. Called once by `./json.ts` on load. */
+export function setNodeReviver(revive: (json: JsonNode) => Base): void {
+  nodeReviver = revive;
+}
+
+/** Reconstruct a child node during `fromJson`; see {@link setNodeReviver}. */
+export function reviveNode(json: JsonNode): Base {
+  return nodeReviver(json);
+}
+
+/**
  * Serialised form of an expression node — the `node` shape of the shared
  * mxl-schemas `.mxl.json` format. The `type` discriminator is the node's class
  * name; which operand fields are present depends on the node's arity (`value`
@@ -135,6 +157,11 @@ export abstract class Unary extends Base {
     return { type: this.constructor.name, child: this.child.toJson() };
   }
 
+  /** Reconstruct from a {@link JsonNode}; the concrete subclass is the `this` receiver (see {@link reviveNode}). */
+  static fromJson(this: new (child: Base) => Unary, json: JsonNode): Unary {
+    return new this(reviveNode(json.child!));
+  }
+
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     return this.child.getCtors(ctors);
@@ -201,6 +228,14 @@ export abstract class Binary extends Base {
     };
   }
 
+  /** Reconstruct from a {@link JsonNode}; the concrete subclass is the `this` receiver (see {@link reviveNode}). */
+  static fromJson(
+    this: new (left: Base, right: Base) => Binary,
+    json: JsonNode,
+  ): Binary {
+    return new this(reviveNode(json.left!), reviveNode(json.right!));
+  }
+
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     this.left.getCtors(ctors);
@@ -260,6 +295,11 @@ export abstract class Nary extends Base {
     };
   }
 
+  /** Reconstruct from a {@link JsonNode}; the concrete subclass is the `this` receiver (see {@link reviveNode}). */
+  static fromJson(this: new (children: Base[]) => Nary, json: JsonNode): Nary {
+    return new this((json.children ?? []).map((child) => reviveNode(child)));
+  }
+
   getCtors(ctors: Set<string>): Set<string> {
     ctors.add(this.constructor.name);
     for (const child of this.children) {
@@ -308,6 +348,9 @@ export class Name extends Nullary {
   }
   toJson(): JsonNode {
     return { type: "Name", value: this.name };
+  }
+  static fromJson(json: JsonNode): Name {
+    return new Name(json.value as string);
   }
   toWat(ctx: WatContext): string {
     if (ctx.timeVar && this.name === ctx.timeVar) {
@@ -361,6 +404,9 @@ export class Num extends Nullary {
   toJson(): JsonNode {
     return { type: "Num", value: this.value };
   }
+  static fromJson(json: JsonNode): Num {
+    return new Num(json.value as number);
+  }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${this.value})`;
   }
@@ -386,6 +432,9 @@ export class Pi extends Nullary {
   toTs(): string {
     return `new Pi()`;
   }
+  static fromJson(_json: JsonNode): Pi {
+    return new Pi();
+  }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${Math.PI})`;
   }
@@ -410,6 +459,9 @@ export class E extends Nullary {
   }
   toTs(): string {
     return `new E()`;
+  }
+  static fromJson(_json: JsonNode): E {
+    return new E();
   }
   toWat(_ctx: WatContext): string {
     return `(f64.const ${Math.E})`;
@@ -447,6 +499,9 @@ export class Bool extends Nullary {
   }
   toJson(): JsonNode {
     return { type: "Bool", value: this.value };
+  }
+  static fromJson(json: JsonNode): Bool {
+    return new Bool(json.value as boolean);
   }
   toWat(_ctx: WatContext): string {
     return `(i32.const ${this.value ? 1 : 0})`;
