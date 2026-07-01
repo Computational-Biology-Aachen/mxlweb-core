@@ -23,15 +23,45 @@ import { mathImports } from "./wat-codegen.js";
 export {}; // make it a module
 
 // ------------------------------------------------------------
-// WAT text → WASM binary
-// Uses the browser's built-in WebAssembly.validate / compile
-// after encoding the WAT text using the wasm-wat package, OR
-// falls back to a dynamic import of @webassembly/wat-compiler.
+// WAT text → WASM binary, via the vendored `wat-compiler` CJS bundle
+// (static/wasm/wat-compiler.js).
+//
+// wat-compiler ships a class method literally named `import(...)`, which
+// Vite's dev-server import scanner (es-module-lexer) can't distinguish from
+// a dynamic `import()` call — it rewrites the method into invalid JS
+// (`import(__vite__injectQuery(...), ...)`) the moment the module is served,
+// throwing "Unexpected token '('"/"missing ) after formal parameters" on
+// every simulation. Loading it via fetch + Function, like `loadRadau` below
+// does for the Emscripten glue, sidesteps Vite's transform pipeline entirely.
 // ------------------------------------------------------------
+let watCompilerPromise: Promise<(code: string) => Uint8Array> | null = null;
+
+async function loadWatCompiler(
+  base: string,
+): Promise<(code: string) => Uint8Array> {
+  const url = `${base}/wasm/wat-compiler.js`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load wat-compiler from ${url}`);
+  }
+  const js = await response.text();
+  const factory = new Function("module", "exports", js);
+  const mod: { exports: { default?: (code: string) => Uint8Array } } = {
+    exports: {},
+  };
+  factory(mod, mod.exports);
+  const wat2wasm = mod.exports.default;
+  if (!wat2wasm) {
+    throw new Error("wat-compiler bundle did not export a default function");
+  }
+  return wat2wasm;
+}
+
 async function watToWasm(wat: string): Promise<Uint8Array> {
-  // Dynamic import — only loads when first simulation runs
-  const { default: wat2wasm } = await import("wat-compiler");
-  return wat2wasm(wat) as Uint8Array;
+  // Loads lazily — only fetched when the first simulation runs.
+  watCompilerPromise ??= loadWatCompiler(basePath);
+  const wat2wasm = await watCompilerPromise;
+  return wat2wasm(wat);
 }
 
 // ------------------------------------------------------------
