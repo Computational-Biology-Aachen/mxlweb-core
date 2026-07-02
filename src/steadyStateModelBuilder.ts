@@ -124,4 +124,103 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
   ${rhsString}
 \end{align*}`;
   }
+
+  /**
+   * Generate an [mxlpy](https://github.com/Computational-Biology-Aachen/mxlpy)
+   * model module as Python source: a `get_model() -> Model` factory plus the
+   * module-level rate/derived/initial-assignment functions it references.
+   *
+   * Each reaction, assignment and expression-valued initial value becomes its
+   * own generated `def` (body `return <expr>`); the factory then wires them up
+   * via `add_parameter` / `add_variable` / `add_derived` / `add_reaction`.
+   * Numeric stoichiometry coefficients are emitted as floats; non-numeric ones
+   * become `Derived` entries. Function arguments follow model declaration order
+   * (variables, parameters, derived, reactions), with mxlpy's reserved `time`
+   * argument placed first.
+   */
+  buildMxlpy(): string {
+    const displayNames = this.getDisplayNames();
+    const name = (id: string) => displayNames.get(id) ?? id;
+
+    // Declaration-order index, used to order generated-function arguments.
+    const declOrder = new Map<string, number>();
+    for (const id of [...this.parameters.keys(), ...this.assignments.keys()]) {
+      declOrder.set(id, declOrder.size);
+    }
+
+    const orderArgs = (expr: Base): string[] => {
+      const symbols = [...expr.getSymbols(new Set<string>())];
+      const known = symbols
+        .filter((s) => s !== "time")
+        .sort(
+          (a, b) =>
+            (declOrder.get(a) ?? Infinity) - (declOrder.get(b) ?? Infinity),
+        );
+      return symbols.includes("time") ? ["time", ...known] : known;
+    };
+
+    const argList = (args: string[]) =>
+      args.map((a) => `"${name(a)}"`).join(", ");
+
+    const defs: string[] = [];
+    // Emit a module-level `def <fnName>(...): return <expr>` and return the
+    // ordered arg ids so the call site can build a matching `args=[...]`.
+    const emitFn = (fnName: string, expr: Base): string[] => {
+      const args = orderArgs(expr);
+      const params = args.map(name).join(", ");
+      defs.push(
+        `def ${fnName}(${params}):\n    return ${expr.toPy(displayNames)}`,
+      );
+      return args;
+    };
+
+    let usesInitial = false;
+    let usesDerived = false;
+    const body: string[] = [];
+
+    for (const [id, p] of this.parameters) {
+      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
+    }
+
+    for (const [id, v] of this.variables) {
+      if (v.value instanceof Base) {
+        usesInitial = true;
+        const fnName = `_init_${name(id)}`;
+        const args = emitFn(fnName, v.value);
+        body.push(
+          `m.add_variable("${name(id)}", InitialAssignment(${fnName}, args=[${argList(args)}]))`,
+        );
+      } else {
+        body.push(`m.add_variable("${name(id)}", ${v.value})`);
+      }
+    }
+
+    for (const [id, ass] of this.assignments) {
+      const fnName = `_derived_${name(id)}`;
+      const args = emitFn(fnName, ass.fn);
+      body.push(
+        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+      );
+    }
+
+    const imports = ["Model"];
+    if (usesDerived) imports.push("Derived");
+    if (usesInitial) imports.push("InitialAssignment");
+    imports.sort();
+
+    const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";
+    const factory = ["m = SteadyStateModelBuilder()", ...body, "return m"]
+      .map((line) => `    ${line}`)
+      .join("\n");
+
+    return `import math
+
+import numpy as np
+
+from mxlpy import ${imports.join(", ")}
+
+${defsBlock}def get_model() -> SteadyStateModelBuilder:
+${factory}
+`;
+  }
 }
