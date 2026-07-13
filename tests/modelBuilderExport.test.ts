@@ -5,11 +5,14 @@ import {
   SteadyStateModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
 import {
+  Abs,
   Add,
   Bool,
   Divide,
   LessEqual,
+  LessThan,
   Log,
+  Max,
   Min,
   Minus,
   Mul,
@@ -23,11 +26,14 @@ import {
 import { describe, expect, it } from "vitest";
 
 const MATHML = {
+  Abs,
   Add,
   Bool,
   Divide,
   LessEqual,
+  LessThan,
   Log,
+  Max,
   Min,
   Minus,
   Mul,
@@ -328,5 +334,79 @@ describe("buildMxlJson", () => {
     });
     expect(doc.model.derived.v.displayName).toBe("rate");
     expect(doc.model.derived.v.fn.type).toBe("Divide");
+  });
+});
+
+describe("buildMxlweb under a minified production build", () => {
+  // Reproduces the "export as code" bug from a real deployment: a
+  // Piecewise/Abs/Sqrt-shaped model (mirroring bellasio2019) downloaded from a
+  // minified site produced imports like `import { B, E, H, R, ee, z } from
+  // ".../mathml"` with a body still calling `new Add(...)`, `new Mul(...)`,
+  // etc. — because `buildMxlweb()` sourced both the import list and the class
+  // name it *instantiates* by different means, and one of them silently
+  // followed the bundler's renamed classes. Simulating that renaming here
+  // must not corrupt the generated source.
+  it("generates code that still evaluates after every constructor.name is mangled", () => {
+    const mangled = [
+      KineticModelBuilder,
+      ...Object.values(MATHML),
+    ] as unknown as (new (...args: never[]) => unknown)[];
+    for (const ctor of mangled) {
+      Object.defineProperty(ctor, "name", {
+        value: "MANGLED",
+        configurable: true,
+      });
+    }
+
+    const m = new KineticModelBuilder()
+      .addParameter("Vmax", { value: 2 })
+      .addParameter("Km", { value: 1 })
+      .addVariable("S", { value: 1 })
+      .addVariable("Ract", { value: 1 })
+      .addAssignment("Ract_eq", {
+        fn: new Divide([new Name("S"), new Add([new Name("S"), new Num(1)])]),
+      })
+      .addReaction("v_rate", {
+        // A Piecewise/LessThan/Abs/Sqrt/Max mix — every arity category —
+        // matching the shape that broke in production.
+        fn: new Piecewise([
+          new Divide([
+            new Abs(new Minus([new Name("Ract_eq"), new Name("Ract")])),
+            new Max([new Sqrt(new Name("Km"), new Num(2)), new Num(1e-9)]),
+          ]),
+          new LessThan([new Name("Ract"), new Name("Ract_eq")]),
+          new Mul([new Name("Vmax"), new Name("S")]),
+        ]),
+        stoichiometry: [{ name: "S", value: new Num(-1) }],
+      });
+
+    const src = m.buildMxlweb();
+
+    // The class actually instantiated in the body must be the one imported —
+    // this is exactly the invariant that broke (import { e } vs new e()
+    // vs. the body's real usage being out of sync with the import list).
+    expect(src).toContain("import { KineticModelBuilder }");
+    expect(src).toContain("new KineticModelBuilder()");
+    for (const name of [
+      "Divide",
+      "Add",
+      "Num",
+      "Piecewise",
+      "Abs",
+      "Minus",
+      "Max",
+      "Sqrt",
+      "LessThan",
+      "Mul",
+      "Name",
+    ]) {
+      expect(src, `${name} used in body must also be imported`).toMatch(
+        new RegExp(`\\bimport \\{[^}]*\\b${name}\\b[^}]*\\}`, "s"),
+      );
+    }
+
+    const rebuilt = evalMxlweb(src);
+    expect(rebuilt).toBeInstanceOf(KineticModelBuilder);
+    expect(rebuilt.buildJs()).toBe(m.buildJs());
   });
 });

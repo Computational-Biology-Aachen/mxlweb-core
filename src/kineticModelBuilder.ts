@@ -194,6 +194,7 @@ function reactionTerm(coeff: Base, rxnName: string): Base {
  * dx/dt is assembled by summing `stoich · rate` over all reactions.
  */
 export class KineticModelBuilder extends ModelBuilderBase {
+  readonly builderType = "KineticModelBuilder";
   reactions: SvelteMap<string, Reaction> = new SvelteMap();
 
   constructor() {

@@ -25,6 +25,7 @@ import {
  * with `variables = []`.
  */
 export class SteadyStateModelBuilder extends ModelBuilderBase {
+  readonly builderType = "SteadyStateModelBuilder";
   constructor() {
     super();
   }

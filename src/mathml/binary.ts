@@ -14,6 +14,7 @@ import { Base, Binary, Name } from "./base.js";
 
 /** Exponentiation, `left ** right`. */
 export class Pow extends Binary {
+  readonly nodeType = "Pow";
   constructor(
     public left: Base,
     public right: Base,
@@ -46,6 +47,7 @@ export class Pow extends Binary {
 
 /** Logical implication, `left ⇒ right` (i.e. `!left || right`). */
 export class Implies extends Binary {
+  readonly nodeType = "Implies";
   constructor(
     public left: Base,
     public right: Base,

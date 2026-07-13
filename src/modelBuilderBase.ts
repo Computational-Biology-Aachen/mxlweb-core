@@ -85,6 +85,15 @@ export type MxlJsonDocument = {
  * backends — is computed once from the resulting {@link ModelIR}.
  */
 export abstract class ModelBuilderBase {
+  /**
+   * The `initModel(): X` / `new X()` identifier {@link buildMxlweb} emits.
+   * Explicit rather than `this.constructor.name`: consuming sites minify this
+   * package's source into their own bundle, and their bundler may rename
+   * classes (esbuild does this by default), which would otherwise corrupt the
+   * generated code.
+   */
+  abstract readonly builderType: string;
+
   parameters: SvelteMap<string, Parameter> = new SvelteMap();
   variables: SvelteMap<string, Variable> = new SvelteMap();
   assignments: SvelteMap<string, Assign> = new SvelteMap();
@@ -320,7 +329,7 @@ export abstract class ModelBuilderBase {
     }
     chains.push(...this.extraMxlwebChains(collect));
 
-    const className = this.constructor.name;
+    const className = this.builderType;
     const mathmlNames = [...ctors].sort();
     const mathmlImport =
       mathmlNames.length > 0

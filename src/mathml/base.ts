@@ -68,6 +68,15 @@ export type JsonNode = {
 export abstract class Base {
   /** Process-unique identifier, assigned on construction. */
   id: number;
+  /**
+   * The node's serialisation discriminator — the literal class name as it
+   * appears in `@computational-biology-aachen/mxlweb-core/mathml`. Used by
+   * {@link Base.toTs}, {@link Base.toJson} and {@link Base.getCtors} instead
+   * of `this.constructor.name`, which is not stable: consuming sites minify
+   * this package's source as part of their own bundle, and their bundler is
+   * free to rename classes (esbuild does this by default).
+   */
+  abstract readonly nodeType: string;
   /** Serialise to a JavaScript expression string. */
   abstract toJs(): string;
   /** Serialise to a Python/NumPy expression; `displayNames` maps internal symbol names to their Python identifiers. */
@@ -112,12 +121,12 @@ export abstract class Nullary extends Base {
   }
 
   getCtors(ctors: Set<string>): Set<string> {
-    ctors.add(this.constructor.name);
+    ctors.add(this.nodeType);
     return ctors;
   }
 
   toJson(): JsonNode {
-    return { type: this.constructor.name };
+    return { type: this.nodeType };
   }
 }
 
@@ -150,11 +159,11 @@ export abstract class Unary extends Base {
   }
 
   toTs(): string {
-    return `new ${this.constructor.name}(${this.child.toTs()})`;
+    return `new ${this.nodeType}(${this.child.toTs()})`;
   }
 
   toJson(): JsonNode {
-    return { type: this.constructor.name, child: this.child.toJson() };
+    return { type: this.nodeType, child: this.child.toJson() };
   }
 
   /** Reconstruct from a {@link JsonNode}; the concrete subclass is the `this` receiver (see {@link reviveNode}). */
@@ -163,7 +172,7 @@ export abstract class Unary extends Base {
   }
 
   getCtors(ctors: Set<string>): Set<string> {
-    ctors.add(this.constructor.name);
+    ctors.add(this.nodeType);
     return this.child.getCtors(ctors);
   }
 }
@@ -217,12 +226,12 @@ export abstract class Binary extends Base {
   }
 
   toTs(): string {
-    return `new ${this.constructor.name}(${this.left.toTs()}, ${this.right.toTs()})`;
+    return `new ${this.nodeType}(${this.left.toTs()}, ${this.right.toTs()})`;
   }
 
   toJson(): JsonNode {
     return {
-      type: this.constructor.name,
+      type: this.nodeType,
       left: this.left.toJson(),
       right: this.right.toJson(),
     };
@@ -237,7 +246,7 @@ export abstract class Binary extends Base {
   }
 
   getCtors(ctors: Set<string>): Set<string> {
-    ctors.add(this.constructor.name);
+    ctors.add(this.nodeType);
     this.left.getCtors(ctors);
     this.right.getCtors(ctors);
     return ctors;
@@ -283,14 +292,14 @@ export abstract class Nary extends Base {
   }
 
   toTs(): string {
-    return `new ${this.constructor.name}([${this.children
+    return `new ${this.nodeType}([${this.children
       .map((child) => child.toTs())
       .join(", ")}])`;
   }
 
   toJson(): JsonNode {
     return {
-      type: this.constructor.name,
+      type: this.nodeType,
       children: this.children.map((child) => child.toJson()),
     };
   }
@@ -301,7 +310,7 @@ export abstract class Nary extends Base {
   }
 
   getCtors(ctors: Set<string>): Set<string> {
-    ctors.add(this.constructor.name);
+    ctors.add(this.nodeType);
     for (const child of this.children) {
       child.getCtors(ctors);
     }
@@ -321,6 +330,7 @@ export abstract class Nary extends Base {
  * load from the parameter array depending on the {@link WatContext}.
  */
 export class Name extends Nullary {
+  readonly nodeType = "Name";
   constructor(public name: string) {
     super();
   }
@@ -377,6 +387,7 @@ export class Name extends Nullary {
 
 /** A numeric literal constant. */
 export class Num extends Nullary {
+  readonly nodeType = "Num";
   constructor(public value: number) {
     super();
   }
@@ -417,6 +428,7 @@ export class Num extends Nullary {
 
 /** The mathematical constant π (MathML `<pi/>`). */
 export class Pi extends Nullary {
+  readonly nodeType = "Pi";
   toJs(): string {
     return `Math.PI`;
   }
@@ -445,6 +457,7 @@ export class Pi extends Nullary {
 
 /** Euler's number e (MathML `<exponentiale/>`). */
 export class E extends Nullary {
+  readonly nodeType = "E";
   toJs(): string {
     return `Math.E`;
   }
@@ -473,6 +486,7 @@ export class E extends Nullary {
 
 /** A boolean literal, `true` or `false` (MathML `<true/>` / `<false/>`). In WAT it is the i32 `1`/`0` the logical/relational nodes operate on. */
 export class Bool extends Nullary {
+  readonly nodeType = "Bool";
   constructor(public value: boolean) {
     super();
   }

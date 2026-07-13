@@ -15,6 +15,7 @@ import { Base, type JsonNode, Name, Num, reviveNode } from "./base.js";
 
 /** Logarithm of `child` to an arbitrary `base` (defaults to base 10). */
 export class Log extends Base {
+  readonly nodeType = "Log";
   constructor(
     public child: Base,
     public base: Base,
@@ -92,6 +93,7 @@ export class Log extends Base {
 
 /** The `base`-th root of `child`, i.e. `child ** (1 / base)` (defaults to square root). */
 export class Sqrt extends Base {
+  readonly nodeType = "Sqrt";
   constructor(
     public child: Base,
     public base: Base,

@@ -17,6 +17,7 @@ import { Base, Unary } from "./base.js";
 
 /** Absolute value, `|child|`. */
 export class Abs extends Unary {
+  readonly nodeType = "Abs";
   constructor(public child: Base) {
     super();
   }
@@ -39,6 +40,7 @@ export class Abs extends Unary {
 
 /** Round up to the nearest integer, `⌈child⌉`. */
 export class Ceiling extends Unary {
+  readonly nodeType = "Ceiling";
   constructor(public child: Base) {
     super();
   }
@@ -61,6 +63,7 @@ export class Ceiling extends Unary {
 
 /** Natural exponential, `e^child`. */
 export class Exp extends Unary {
+  readonly nodeType = "Exp";
   constructor(public child: Base) {
     super();
   }
@@ -83,6 +86,7 @@ export class Exp extends Unary {
 
 /** Factorial of the rounded operand, `round(child)!`. */
 export class Factorial extends Unary {
+  readonly nodeType = "Factorial";
   constructor(public child: Base) {
     super();
   }
@@ -106,6 +110,7 @@ export class Factorial extends Unary {
 
 /** Round down to the nearest integer, `⌊child⌋`. */
 export class Floor extends Unary {
+  readonly nodeType = "Floor";
   constructor(public child: Base) {
     super();
   }
@@ -128,6 +133,7 @@ export class Floor extends Unary {
 
 /** Natural logarithm, `ln(child)`. The WAT form clamps the argument to ≥1e-30 so transient negative states during implicit solves don't produce NaNs. */
 export class Ln extends Unary {
+  readonly nodeType = "Ln";
   constructor(public child: Base) {
     super();
   }
@@ -153,6 +159,7 @@ export class Ln extends Unary {
 
 /** Sine. */
 export class Sin extends Unary {
+  readonly nodeType = "Sin";
   constructor(public child: Base) {
     super();
   }
@@ -175,6 +182,7 @@ export class Sin extends Unary {
 
 /** Cosine. */
 export class Cos extends Unary {
+  readonly nodeType = "Cos";
   constructor(public child: Base) {
     super();
   }
@@ -197,6 +205,7 @@ export class Cos extends Unary {
 
 /** Tangent. */
 export class Tan extends Unary {
+  readonly nodeType = "Tan";
   constructor(public child: Base) {
     super();
   }
@@ -219,6 +228,7 @@ export class Tan extends Unary {
 
 /** Secant, `1 / cos(child)`. */
 export class Sec extends Unary {
+  readonly nodeType = "Sec";
   constructor(public child: Base) {
     super();
   }
@@ -241,6 +251,7 @@ export class Sec extends Unary {
 
 /** Cosecant, `1 / sin(child)`. */
 export class Csc extends Unary {
+  readonly nodeType = "Csc";
   constructor(public child: Base) {
     super();
   }
@@ -263,6 +274,7 @@ export class Csc extends Unary {
 
 /** Cotangent, `1 / tan(child)`. */
 export class Cot extends Unary {
+  readonly nodeType = "Cot";
   constructor(public child: Base) {
     super();
   }
@@ -285,6 +297,7 @@ export class Cot extends Unary {
 
 /** Inverse sine, `arcsin(child)`. */
 export class Asin extends Unary {
+  readonly nodeType = "Asin";
   constructor(public child: Base) {
     super();
   }
@@ -307,6 +320,7 @@ export class Asin extends Unary {
 
 /** Inverse cosine, `arccos(child)`. */
 export class Acos extends Unary {
+  readonly nodeType = "Acos";
   constructor(public child: Base) {
     super();
   }
@@ -329,6 +343,7 @@ export class Acos extends Unary {
 
 /** Inverse tangent, `arctan(child)`. */
 export class Atan extends Unary {
+  readonly nodeType = "Atan";
   constructor(public child: Base) {
     super();
   }
@@ -351,6 +366,7 @@ export class Atan extends Unary {
 
 /** Inverse cotangent, `arctan(1 / child)`. */
 export class Acot extends Unary {
+  readonly nodeType = "Acot";
   constructor(public child: Base) {
     super();
   }
@@ -373,6 +389,7 @@ export class Acot extends Unary {
 
 /** Inverse secant, `arccos(1 / child)`. */
 export class ArcSec extends Unary {
+  readonly nodeType = "ArcSec";
   constructor(public child: Base) {
     super();
   }
@@ -395,6 +412,7 @@ export class ArcSec extends Unary {
 
 /** Inverse cosecant, `arcsin(1 / child)`. */
 export class ArcCsc extends Unary {
+  readonly nodeType = "ArcCsc";
   constructor(public child: Base) {
     super();
   }
@@ -417,6 +435,7 @@ export class ArcCsc extends Unary {
 
 /** Hyperbolic sine. */
 export class Sinh extends Unary {
+  readonly nodeType = "Sinh";
   constructor(public child: Base) {
     super();
   }
@@ -439,6 +458,7 @@ export class Sinh extends Unary {
 
 /** Hyperbolic cosine. */
 export class Cosh extends Unary {
+  readonly nodeType = "Cosh";
   constructor(public child: Base) {
     super();
   }
@@ -461,6 +481,7 @@ export class Cosh extends Unary {
 
 /** Hyperbolic tangent. */
 export class Tanh extends Unary {
+  readonly nodeType = "Tanh";
   constructor(public child: Base) {
     super();
   }
@@ -483,6 +504,7 @@ export class Tanh extends Unary {
 
 /** Hyperbolic secant, `1 / cosh(child)`. */
 export class Sech extends Unary {
+  readonly nodeType = "Sech";
   constructor(public child: Base) {
     super();
   }
@@ -505,6 +527,7 @@ export class Sech extends Unary {
 
 /** Hyperbolic cosecant, `1 / sinh(child)`. */
 export class Csch extends Unary {
+  readonly nodeType = "Csch";
   constructor(public child: Base) {
     super();
   }
@@ -527,6 +550,7 @@ export class Csch extends Unary {
 
 /** Hyperbolic cotangent, `1 / tanh(child)`. */
 export class Coth extends Unary {
+  readonly nodeType = "Coth";
   constructor(public child: Base) {
     super();
   }
@@ -549,6 +573,7 @@ export class Coth extends Unary {
 
 /** Inverse hyperbolic sine, `arcsinh(child)`. */
 export class ArcSinh extends Unary {
+  readonly nodeType = "ArcSinh";
   constructor(public child: Base) {
     super();
   }
@@ -571,6 +596,7 @@ export class ArcSinh extends Unary {
 
 /** Inverse hyperbolic cosine, `arccosh(child)`. */
 export class ArcCosh extends Unary {
+  readonly nodeType = "ArcCosh";
   constructor(public child: Base) {
     super();
   }
@@ -593,6 +619,7 @@ export class ArcCosh extends Unary {
 
 /** Inverse hyperbolic tangent, `arctanh(child)`. */
 export class ArcTanh extends Unary {
+  readonly nodeType = "ArcTanh";
   constructor(public child: Base) {
     super();
   }
@@ -615,6 +642,7 @@ export class ArcTanh extends Unary {
 
 /** Inverse hyperbolic cosecant, `arcsinh(1 / child)`. */
 export class ArcCsch extends Unary {
+  readonly nodeType = "ArcCsch";
   constructor(public child: Base) {
     super();
   }
@@ -637,6 +665,7 @@ export class ArcCsch extends Unary {
 
 /** Inverse hyperbolic secant, `arccosh(1 / child)`. */
 export class ArcSech extends Unary {
+  readonly nodeType = "ArcSech";
   constructor(public child: Base) {
     super();
   }
@@ -659,6 +688,7 @@ export class ArcSech extends Unary {
 
 /** Inverse hyperbolic cotangent, `arctanh(1 / child)`. */
 export class ArcCoth extends Unary {
+  readonly nodeType = "ArcCoth";
   constructor(public child: Base) {
     super();
   }
@@ -685,6 +715,7 @@ export class ArcCoth extends Unary {
  * those evaluation contexts).
  */
 export class RateOf extends Unary {
+  readonly nodeType = "RateOf";
   constructor(public child: Base) {
     super();
   }

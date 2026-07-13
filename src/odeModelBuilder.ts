@@ -18,6 +18,7 @@ import {
  * builder's, since both lower into the same shared IR.
  */
 export class OdeModelBuilder extends ModelBuilderBase {
+  readonly builderType = "OdeModelBuilder";
   differentials: SvelteMap<string, Base> = new SvelteMap();
 
   constructor() {
