@@ -176,7 +176,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     };
 
     let usesInitial = false;
-    let usesDerived = false;
+    const usesDerived = false;
     const body: string[] = [];
 
     for (const [id, p] of this.parameters) {
