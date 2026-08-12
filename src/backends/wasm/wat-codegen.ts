@@ -2,20 +2,18 @@ import type { Base } from "../../mathml/base.js";
 import type { WatContext } from "./wat-context.js";
 
 /**
- * buildModelWat — generate a complete WAT module for the ODE RHS.
+ * buildWatModule — generate a complete WAT module exporting a single "fcn"
+ * function of shape void(i32 n, f64 t, i32 y_ptr, i32 out_ptr, i32 pars_ptr),
+ * writing `outputs` (in order) as consecutive f64s starting at out_ptr.
  *
- * Exported function signature (matches fcn_dispatch in radau5_wrapper.c):
- *   void model_fn(int n, double t, double* y, double* dydt, double* pars)
- * Emscripten addFunction type string: "vidiii"
- *
- * @param equations     One entry per state variable: the AST for its d/dt expression.
- * @param varNames      State variable names in order (index matches y[] offset).
- * @param parNames      Parameter names in order (index matches pars[] offset).
- * @param timeVar       Optional name used as the time variable (default "time").
- * @param intermediates Reactions/assignments that become named WAT locals, in topological order.
+ * This shape is generic: it backs both the ODE RHS (outputs = d/dt per state
+ * variable, writing into dydt) and derived-quantity evaluation (outputs =
+ * selected derived expressions, writing into a derived-value buffer) — see
+ * buildModelWat / buildDerivedWat below. Each caller compiles to its own
+ * WebAssembly.Instance, so both can export under the same "fcn" name.
  */
-export function buildModelWat(
-  equations: { varName: string; expr: Base }[],
+function buildWatModule(
+  outputs: { expr: Base }[],
   varNames: string[],
   parNames: string[],
   timeVar = "time",
@@ -42,10 +40,10 @@ export function buildModelWat(
         .join("\n") + "\n"
     : "";
 
-  const stores = equations
-    .map((eq, i) => {
+  const stores = outputs
+    .map((out, i) => {
       const offset = i * 8;
-      return `    (f64.store (i32.add (local.get 3) (i32.const ${offset})) ${eq.expr.toWat(ctx)})`;
+      return `    (f64.store (i32.add (local.get 3) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
     })
     .join("\n");
 
@@ -82,6 +80,53 @@ export function buildModelWat(
 ${localDecls}${localSets}${stores}
   )
 )`;
+}
+
+/**
+ * buildModelWat — generate a complete WAT module for the ODE RHS.
+ *
+ * Exported function signature (matches fcn_dispatch in radau5_wrapper.c):
+ *   void model_fn(int n, double t, double* y, double* dydt, double* pars)
+ * Emscripten addFunction type string: "vidiii"
+ *
+ * @param equations     One entry per state variable: the AST for its d/dt expression.
+ * @param varNames      State variable names in order (index matches y[] offset).
+ * @param parNames      Parameter names in order (index matches pars[] offset).
+ * @param timeVar       Optional name used as the time variable (default "time").
+ * @param intermediates Reactions/assignments that become named WAT locals, in topological order.
+ */
+export function buildModelWat(
+  equations: { varName: string; expr: Base }[],
+  varNames: string[],
+  parNames: string[],
+  timeVar = "time",
+  intermediates?: { name: string; expr: Base }[],
+): string {
+  return buildWatModule(equations, varNames, parNames, timeVar, intermediates);
+}
+
+/**
+ * buildDerivedWat — generate a complete WAT module computing selected derived
+ * quantities from (t, y, pars), for use as a fit target (see ADR 0004 in the
+ * mxlweb repo). Same signature shape as buildModelWat, registered separately
+ * via set_derived_fn (fit_wrapper.c) rather than set_model_fn.
+ *
+ * @param outputs       One entry per requested derived quantity, in the order
+ *                      they'll be written to the output buffer.
+ * @param varNames      State variable names in order (index matches y[] offset).
+ * @param parNames      Parameter names in order (index matches pars[] offset).
+ * @param timeVar       Optional name used as the time variable (default "time").
+ * @param intermediates Pruned, topologically-sorted dependencies of `outputs`
+ *                      (see transitiveDerivedDeps in modelIr.ts).
+ */
+export function buildDerivedWat(
+  outputs: { name: string; expr: Base }[],
+  varNames: string[],
+  parNames: string[],
+  timeVar = "time",
+  intermediates?: { name: string; expr: Base }[],
+): string {
+  return buildWatModule(outputs, varNames, parNames, timeVar, intermediates);
 }
 
 /**

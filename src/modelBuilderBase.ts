@@ -6,6 +6,7 @@ import {
   irToJsDerived,
   irToPython,
   irToWat,
+  irToWatDerived,
   type ModelIR,
 } from "./modelIr.js";
 
@@ -294,6 +295,11 @@ export abstract class ModelBuilderBase {
 
   buildWat(): string {
     return irToWat(this.lower());
+  }
+
+  /** WAT module computing `selectedDerived` (see ADR 0004 in the mxlweb repo). */
+  buildWatDerived(selectedDerived: string[]): string {
+    return irToWatDerived(this.lower(), selectedDerived);
   }
 
   /**

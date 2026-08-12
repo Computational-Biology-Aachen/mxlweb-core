@@ -1,4 +1,4 @@
-import { buildModelWat } from "./backends/wasm/wat-codegen.js";
+import { buildDerivedWat, buildModelWat } from "./backends/wasm/wat-codegen.js";
 import { Base, Num } from "./mathml/index.js";
 
 /**
@@ -118,6 +118,33 @@ export function irToWat(ir: ModelIR): string {
     ir.parNames,
     "time",
     ir.intermediates,
+  );
+}
+
+/**
+ * irToWatDerived — WAT module computing `selectedDerived` (in that exact
+ * order) from (t, y, pars). Used by the fit backend (ADR 0004) to evaluate
+ * derived-quantity fit targets without leaving WASM during a fit.
+ */
+export function irToWatDerived(ir: ModelIR, selectedDerived: string[]): string {
+  const byName = new Map(ir.intermediates.map((m) => [m.name, m.expr]));
+  for (const key of selectedDerived) {
+    if (!byName.has(key)) {
+      throw new Error(`irToWatDerived: unknown derived key "${key}"`);
+    }
+  }
+  const needed = transitiveDerivedDeps(ir, selectedDerived);
+  const intermediates = ir.intermediates.filter((m) => needed.has(m.name));
+  const outputs = selectedDerived.map((key) => ({
+    name: key,
+    expr: byName.get(key)!,
+  }));
+  return buildDerivedWat(
+    outputs,
+    ir.varNames,
+    ir.parNames,
+    "time",
+    intermediates,
   );
 }
 
