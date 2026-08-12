@@ -141,6 +141,10 @@ export interface FitInitResult {
   requestId: string;
   ok: boolean;
   error?: string;
+  /** Residual norm at the initial guess, before any fit_chunk call — present
+   * iff ok=true. Lets a progress/convergence plot anchor at nfev=0 instead
+   * of starting from whatever the first chunk happens to reach. */
+  initialResidualNorm?: number;
 }
 
 /**

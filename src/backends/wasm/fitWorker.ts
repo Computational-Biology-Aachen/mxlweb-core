@@ -165,7 +165,11 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
   }
 
   session = { modelFnIdx, derivedFnIdx, nPars: req.pars.length };
-  postInitResult({ requestId: req.requestId, ok: true });
+  postInitResult({
+    requestId: req.requestId,
+    ok: true,
+    initialResidualNorm: mod._fit_get_residual_norm(),
+  });
 }
 
 function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {

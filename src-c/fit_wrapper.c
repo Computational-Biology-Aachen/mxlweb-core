@@ -323,6 +323,24 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
   }
 
   g_fit = s;
+
+  /* Evaluate the residual at the starting point so the caller has a real
+   * "before optimization" data point (fit_get_residual_norm()/fit_get_nfev()
+   * are valid immediately after fit_init, reporting nfev=0 — this evaluation
+   * is accounting-invisible, not counted against the optimizer's own budget,
+   * since it exists purely for reporting the initial state). */
+  {
+    int m = n_targets * n_points;
+    double *fvec0 = (double *)malloc((size_t)m * sizeof(double));
+    if (fvec0) {
+      fit_fcn(NULL, m, n_fit, s->x, fvec0, 1);
+      double ss = 0.0;
+      for (int k = 0; k < m; k++) ss += fvec0[k] * fvec0[k];
+      s->last_residual_norm = sqrt(ss);
+      free(fvec0);
+    }
+  }
+
   return 0;
 }
 
