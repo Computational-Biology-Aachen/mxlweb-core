@@ -184,11 +184,12 @@ function runFit(
   mod._fit_get_params(outPtr);
   const kFinal = mod.HEAPF64[outPtr / 8];
   mod._free(outPtr);
+  const residualNorm = mod._fit_get_residual_norm();
   mod._fit_free();
   mod.removeFunction(modelIdx);
   if (derivedIdx !== null) mod.removeFunction(derivedIdx);
 
-  return { kFinal, info, chunks };
+  return { kFinal, info, chunks, residualNorm };
 }
 
 describe("fit_wrapper.c: chunked LM fit recovery", () => {
@@ -217,9 +218,15 @@ describe("fit_wrapper.c: chunked LM fit recovery", () => {
     // mid-fit rather than trivially at the first or last evaluation.
     const loose = runFit("state", 0.1, 0.5, 0.5);
     expect(loose.info).toBe(-2);
+    // The reported residual must be the *trial* point that tripped the
+    // check, not a stale value from whatever the previously accepted point
+    // was — lmdif only writes trial evaluations into its own scratch fvec,
+    // not the caller-visible one fit_chunk would otherwise recompute from.
+    expect(loose.residualNorm).toBeLessThanOrEqual(0.5);
 
     const full = runFit("state", 0.1, 0.5, -1);
     expect(full.info).not.toBe(-2);
+    expect(loose.residualNorm).toBeGreaterThan(full.residualNorm);
 
     // Stopping at a looser residual means less total optimization work than
     // running to full convergence.

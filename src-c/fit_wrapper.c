@@ -266,19 +266,22 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
    * the Jacobian's columns. Checking the target on those would fire on a
    * neighbor of x rather than x itself, and possibly by pure chance.
    *
-   * Note x here isn't necessarily s->x: after the first call, lmdif reuses
-   * this same iflag==1 evaluation to *try* a candidate step before deciding
-   * whether to accept it — s->x only gets overwritten with that candidate
-   * later, once accepted. Aborting here (via a negative iflag) skips that
-   * bookkeeping entirely, so without the explicit copy below fit_get_params
-   * would keep reporting whatever x was before this candidate — silently
-   * discarding the very point whose residual we just confirmed meets the
-   * target. */
+   * Note x/fvec here aren't necessarily s->x/fit_chunk's own fvec buffer:
+   * after the first call, lmdif reuses this same iflag==1 evaluation to
+   * *try* a candidate step, writing into its own scratch buffers (a trial x,
+   * a trial fvec) before deciding whether to accept it — s->x and the
+   * caller-visible fvec only get overwritten with that candidate later, once
+   * accepted. Aborting here (via a negative iflag) skips that bookkeeping
+   * entirely, so without capturing both explicitly here, fit_get_params()
+   * and fit_get_residual_norm() would keep reporting whatever was current
+   * *before* this candidate — silently discarding the very point whose
+   * residual we just confirmed meets the target. */
   if (iflag == 1 && s->target_residual_norm >= 0.0) {
     double ss = 0.0;
     for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
     if (sqrt(ss) <= s->target_residual_norm) {
       memcpy(s->x, x, (size_t)n * sizeof(double));
+      s->last_residual_norm = sqrt(ss);
       return FIT_TARGET_REACHED;
     }
   }
@@ -494,9 +497,17 @@ int fit_chunk(int maxfev) {
   s->total_nfev += totalNfev;
   s->last_info = info;
 
-  double ss = 0.0;
-  for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
-  s->last_residual_norm = sqrt(ss);
+  /* fit_fcn already set s->last_residual_norm itself when it triggered
+   * FIT_TARGET_REACHED, from the *trial* fvec it was actually called with —
+   * not this fvec, which lmdif only ever writes the *accepted* point into
+   * (see fit_fcn's iflag==1 comment). Recomputing from fvec here would read
+   * whatever the previous accepted point was, silently discarding however
+   * much progress the un-accepted trial that triggered the stop made. */
+  if (info != FIT_TARGET_REACHED) {
+    double ss = 0.0;
+    for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
+    s->last_residual_norm = sqrt(ss);
+  }
   free(xPrev);
 
   free(fvec);
