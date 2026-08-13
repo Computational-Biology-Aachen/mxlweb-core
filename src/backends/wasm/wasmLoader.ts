@@ -73,6 +73,7 @@ export interface EmscriptenModule {
     solverId: number,
     rtol: number,
     atol: number,
+    targetResidualNorm: number,
   ): number;
   _fit_chunk(maxfev: number): number;
   _fit_get_nfev(): number;

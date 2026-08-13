@@ -135,6 +135,10 @@ export interface FitInitRequest {
   solver: FitSolver;
   rtol: number;
   atol: number;
+  /** Stop as soon as the residual norm drops to or below this (reported via
+   * FitProgress.info === 9) — undefined relies on lmdif's own convergence
+   * criteria only. */
+  targetResidualNorm?: number;
 }
 
 export interface FitInitResult {
@@ -161,9 +165,12 @@ export interface FitChunkRequest {
 
 /**
  * Progress/result from one chunk. `done` is false only when `info` is
- * MINPACK's "maxfev reached" code (5) — every other non-negative value means
- * `lmdif` itself considers the fit finished (converged, degenerate step, or
- * improper input); negative `info` is a fatal error (see `err`).
+ * MINPACK's "maxfev reached" code (5) — every other value means the fit is
+ * finished: by `lmdif` itself (0-4, 6-8: converged, degenerate step, or
+ * improper input), because the residual norm crossed
+ * `FitInitRequest.targetResidualNorm` (`info === -2`, not a MINPACK code —
+ * despite being negative this is *not* an error), or a genuine fatal error
+ * (any other negative `info`, see `err`).
  */
 export interface FitProgress {
   requestId: string;

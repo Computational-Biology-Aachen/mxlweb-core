@@ -71,6 +71,20 @@ void set_derived_fn(int table_idx) {
  * step, or improper input) — see cminpack lmdif.c's info assignment sites. */
 #define LMDIF_INFO_MAXFEV_REACHED 5
 
+/* Not a MINPACK code (those only ever assign 0-8): fit_fcn returns this via
+ * iflag to short-circuit lmdif the moment the caller's target residual norm
+ * is reached, rather than waiting for lmdif's own ftol/xtol tolerances to
+ * declare convergence — those are *relative*-improvement tests and can
+ * easily stay unsatisfied long after the *absolute* residual the caller
+ * actually cares about has been crossed. Must be negative: lmdif.c only
+ * ever inspects a callback's returned iflag via `if (iflag < 0)` to decide
+ * whether to abort early (see lmdif.c's fcn_mn call sites) — a
+ * non-negative return is simply ignored and iteration continues regardless
+ * of its value. Distinct from -1 (used elsewhere in this file for genuine
+ * allocation failures) so fitWorker.ts can special-case it as "done, not an
+ * error" rather than reporting it as a fatal fit failure. */
+#define FIT_TARGET_REACHED (-2)
+
 typedef struct {
   int n_y;
   double *y0; /* length n_y, fixed initial conditions */
@@ -96,6 +110,10 @@ typedef struct {
   double t_end;
   int solver_id;
   double rtol, atol;
+
+  /* Absolute residual-norm early-stop, checked in fit_fcn; negative disables
+   * the check (rely on lmdif's own convergence criteria only). */
+  double target_residual_norm;
 
   double *x; /* length n_fit, current (possibly log-space) parameter estimate */
 
@@ -168,8 +186,6 @@ static void interp_at(int n_y, int out_n, const double *out_t, const double *out
 static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int iflag) {
   (void)p;
   (void)m;
-  (void)n;
-  (void)iflag;
   FitSession *s = g_fit;
 
   /* Build the full parameter vector for this trial: fixed values from
@@ -244,6 +260,28 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
   free(y_work);
   free(y_interp);
   free(derived_out);
+
+  /* iflag==1 is lmdif's "evaluate at this x" call — the actual trial point,
+   * as opposed to fdjac2's iflag==2 perturbed calls used only to estimate
+   * the Jacobian's columns. Checking the target on those would fire on a
+   * neighbor of x rather than x itself, and possibly by pure chance.
+   *
+   * Note x here isn't necessarily s->x: after the first call, lmdif reuses
+   * this same iflag==1 evaluation to *try* a candidate step before deciding
+   * whether to accept it — s->x only gets overwritten with that candidate
+   * later, once accepted. Aborting here (via a negative iflag) skips that
+   * bookkeeping entirely, so without the explicit copy below fit_get_params
+   * would keep reporting whatever x was before this candidate — silently
+   * discarding the very point whose residual we just confirmed meets the
+   * target. */
+  if (iflag == 1 && s->target_residual_norm >= 0.0) {
+    double ss = 0.0;
+    for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
+    if (sqrt(ss) <= s->target_residual_norm) {
+      memcpy(s->x, x, (size_t)n * sizeof(double));
+      return FIT_TARGET_REACHED;
+    }
+  }
   return 1;
 }
 
@@ -256,13 +294,18 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
  * set_derived_fn() if n_derived>0) before this. data_t must be ascending.
  * data_y is target-major: data_y[k*n_points + j].
  *
+ * target_residual_norm: fit_chunk stops as soon as the residual norm drops
+ * to or below this (see FIT_TARGET_REACHED) — pass a negative value to
+ * disable and rely on lmdif's own convergence criteria only.
+ *
  * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
  * parameter's initial value is <= 0 (log undefined).
  */
 int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_idx,
              int *log_flags, int n_targets, int *target_kind, int *target_index,
              double *target_scale, int n_points, double *data_t, double *data_y,
-             double t_end, int n_derived, int solver_id, double rtol, double atol) {
+             double t_end, int n_derived, int solver_id, double rtol, double atol,
+             double target_residual_norm) {
   fit_free();
 
   FitSession *s = (FitSession *)calloc(1, sizeof(FitSession));
@@ -305,6 +348,7 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
   s->solver_id = solver_id;
   s->rtol = rtol;
   s->atol = atol;
+  s->target_residual_norm = target_residual_norm;
   s->total_nfev = 0;
   s->last_info = 0;
   s->last_residual_norm = 0.0;
@@ -364,6 +408,9 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
  *          1-4 = lmdif converged (see MINPACK info codes);
  *          0,6,7,8 = lmdif stopped without full convergence (degenerate
  *            step / improper input) — treat as done, not an error;
+ *          -2 = FIT_TARGET_REACHED — residual norm crossed the caller's
+ *            target_residual_norm (see fit_init); done, not an error,
+ *            despite being negative like a real MINPACK failure;
  *          -1 = allocation failure.
  */
 int fit_chunk(int maxfev) {
@@ -424,6 +471,11 @@ int fit_chunk(int maxfev) {
     totalNfev += nfev;
     budgetLeft -= nfev;
     if (info == 5) break; /* out of budget — caller calls fit_chunk again */
+    /* Target reached — stop immediately, skipping the movedLittle
+     * re-verification below: that heuristic exists to double-check lmdif's
+     * own (relative) convergence claims, but crossing the caller's absolute
+     * target is a stronger, self-verifying signal that needs none of that. */
+    if (info == FIT_TARGET_REACHED) break;
 
     double diff = 0.0, base = 0.0;
     for (int i = 0; i < n; i++) {

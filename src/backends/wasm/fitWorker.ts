@@ -55,6 +55,11 @@ const SOLVER_ID: Record<FitSolver, number> = {
   dopri5: 2,
 };
 
+// Matches fit_wrapper.c's FIT_TARGET_REACHED — negative (so lmdif itself
+// treats it as an early-exit signal, see fit_fcn's iflag return) but not a
+// real failure, unlike every other negative `info` value.
+const FIT_TARGET_REACHED = -2;
+
 interface FitSession {
   modelFnIdx: number;
   derivedFnIdx: number | null;
@@ -148,6 +153,7 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
       SOLVER_ID[req.solver],
       req.rtol,
       req.atol,
+      req.targetResidualNorm ?? -1,
     );
   } finally {
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
@@ -210,7 +216,7 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     params,
     done: info !== 5,
     err:
-      info < 0
+      info < 0 && info !== FIT_TARGET_REACHED
         ? {
             message: `Fit failed (code ${info}).`,
             hints: ["Check the browser console."],

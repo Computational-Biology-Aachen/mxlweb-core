@@ -113,7 +113,12 @@ function compileWatFn(wat: string): number {
   return mod.addFunction(fcn, "vidiii");
 }
 
-function runFit(targetKind: "state" | "derived", k0: number, trueK: number) {
+function runFit(
+  targetKind: "state" | "derived",
+  k0: number,
+  trueK: number,
+  targetResidualNorm = -1,
+) {
   const y0Val = 10;
   const dataT = [0, 1, 2, 3, 4, 5];
   const modelValue = (k: number, t: number) => y0Val * Math.exp(-k * t);
@@ -163,6 +168,7 @@ function runFit(targetKind: "state" | "derived", k0: number, trueK: number) {
     0, // solver = radau5
     1e-8,
     1e-10,
+    targetResidualNorm,
   );
   for (const ptr of Object.values(ptrs)) mod._free(ptr);
   if (rc !== 0) throw new Error(`fit_init failed: ${rc}`);
@@ -202,5 +208,26 @@ describe("fit_wrapper.c: chunked LM fit recovery", () => {
     const { kFinal, chunks } = runFit("state", 0.1, 0.5);
     expect(chunks).toBeGreaterThan(1);
     expect(kFinal).toBeCloseTo(0.5, 2);
+  });
+
+  it("stops early once the residual norm crosses targetResidualNorm", () => {
+    // A loose target — well above lmdif's own eventual converged residual
+    // (~1e-6 or below for this noiseless problem) but not satisfied by the
+    // k0=0.1 starting guess either, so the check has to actually engage
+    // mid-fit rather than trivially at the first or last evaluation.
+    const loose = runFit("state", 0.1, 0.5, 0.5);
+    expect(loose.info).toBe(-2);
+
+    const full = runFit("state", 0.1, 0.5, -1);
+    expect(full.info).not.toBe(-2);
+
+    // Stopping at a looser residual means less total optimization work than
+    // running to full convergence.
+    expect(loose.chunks).toBeLessThanOrEqual(full.chunks);
+    // Recovered k should have moved from the starting guess (the target
+    // check must fire on an actual accepted trial point, not leave x
+    // stranded at k0) but not be fully converged onto trueK either.
+    expect(loose.kFinal).not.toBeCloseTo(0.1, 1);
+    expect(loose.kFinal).not.toBeCloseTo(0.5, 2);
   });
 });
