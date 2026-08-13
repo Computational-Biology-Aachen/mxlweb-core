@@ -37,7 +37,7 @@ browser tools an order of magnitude slower than it needs to be.
 
 **Deployment shape.** All three consumer sites (MxlWeb, ComPhot, GreenSloth) are
 static, client-side-only SvelteKit sites with no server component. Depending on a
-Python runtime at all (even via Pyodide) as the *default* path would work against fast,
+Python runtime at all (even via Pyodide) as the _default_ path would work against fast,
 cold-start-free page loads.
 
 **Correctness assurance without code sharing.** For SBML specifically, `sbml.ts`'s
@@ -56,7 +56,7 @@ check that runs both implementations against each other.
   maintainer who wants stronger guarantees here would need to build that check
   deliberately (mirroring the `.mxl.json` schema-drift test in
   [ADR 0006](0006-mxl-json-schema-vendoring.md)).
-- The mxlpy side does still *reach into* this world — mxlpy's `meta/` codegen can
-  *export* to mxlweb's format via metaprogramming (generating the MxlWeb TypeScript AST
+- The mxlpy side does still _reach into_ this world — mxlpy's `meta/` codegen can
+  _export_ to mxlweb's format via metaprogramming (generating the MxlWeb TypeScript AST
   from an mxlpy `Model`). That is a one-way, build/authoring-time bridge, not a runtime
   dependency, and does not contradict this ADR.

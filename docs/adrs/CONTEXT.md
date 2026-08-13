@@ -1,6 +1,6 @@
 # mxlweb-core: Architecture Context
 
-This is the entry point for understanding *why* `mxlweb-core` is shaped the way it is —
+This is the entry point for understanding _why_ `mxlweb-core` is shaped the way it is —
 written down ahead of a maintainer handoff, alongside the equivalent
 `docs/adrs/CONTEXT.md` in the sibling `mxlpy` repo. See that repo's ADRs for the Python
 side of this tool family; this page covers the independent TypeScript implementation.
@@ -51,7 +51,7 @@ projections), arrived at independently in TypeScript:
 ## See Also
 
 - `mxlpy`'s `docs/adrs/CONTEXT.md` — the Python side of this tool family, including the
-  `meta/` codegen that can *export into* `mxlweb-core`'s TypeScript AST/`.mxl.json`
+  `meta/` codegen that can _export into_ `mxlweb-core`'s TypeScript AST/`.mxl.json`
   format (a one-way, build-time bridge, not a runtime dependency).
 - The consumer sites' own `docs/adrs/` (`mxlweb`, `greensloth`) for how this engine is
   actually deployed and used.

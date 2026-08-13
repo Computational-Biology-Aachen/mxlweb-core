@@ -24,7 +24,7 @@ bolted on. There is no plan to decouple the reactive state from Svelte.
 ## 3. Rationale
 
 Every current and planned consumer (MxlWeb, ComPhot, GreenSloth) is Svelte/SvelteKit,
-and the builders' whole reason for existing is to back *live, reactive* UIs (sliders,
+and the builders' whole reason for existing is to back _live, reactive_ UIs (sliders,
 in-place equation editing). Making state reactive at the source avoids every consumer
 re-wrapping or mirroring builder state into its own reactive layer. The `svelte`/
 `default` export condition split is the escape hatch for non-Svelte contexts (tests,

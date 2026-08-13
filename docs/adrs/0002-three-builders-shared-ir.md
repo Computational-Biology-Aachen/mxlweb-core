@@ -32,7 +32,7 @@ Note the three are **not** three equal siblings:
   (`setDifferential()`).
 - `SteadyStateModelBuilder` is structurally different, not just a third authoring
   style: it has no state variables, no differential equations, and no time integration
-  at all — it's an algebraic system whose assignments *are* the outputs. It reuses the
+  at all — it's an algebraic system whose assignments _are_ the outputs. It reuses the
   same base class and IR machinery for convenience (shared derived-quantity codegen via
   `ModelBuilderBase.buildJsDerived`), not because it's conceptually a third kind of
   dynamic model.
@@ -53,7 +53,7 @@ builder produced it — the per-builder logic is confined entirely to the loweri
 ## 4. Consequences
 
 - A new model-authoring paradigm should be evaluated against this split: is it a new
-  way to *author* a time-dynamic ODE system (extend the kinetic/ODE distinction), or
+  way to _author_ a time-dynamic ODE system (extend the kinetic/ODE distinction), or
   is it a structurally different modeling category like steady-state (its own builder,
   reusing IR machinery where it fits)?
 - Don't assume all three builders are conceptually equivalent when reasoning about the

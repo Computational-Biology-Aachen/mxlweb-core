@@ -17,7 +17,7 @@ Python/NumPy (`toPy`), LaTeX (`toTex`), SBML MathML (`toSBML`), and WebAssembly 
 ## 2. Decision
 
 Use SBML's Content MathML as the canonical expression representation and reuse it as
-the *single* internal AST for everything, rather than inventing a separate internal
+the _single_ internal AST for everything, rather than inventing a separate internal
 representation and converting to MathML only at SBML-export time.
 
 Additionally, trees are **immutable**: structural edits go through `Base.replace()`,
