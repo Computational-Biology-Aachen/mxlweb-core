@@ -60,6 +60,31 @@ export type NNBlockConfig = {
   trained: boolean;
 };
 
+/**
+ * Whether `name` is a weight/bias generated for NN block `blockKey` — the
+ * generator's naming convention is `${blockKey}_w${layerIdx}_${i}_${j}` /
+ * `${blockKey}_b${layerIdx}_${i}` (`nnBlock.ts`), so a bare `startsWith`
+ * prefix check is unsafe: a hand-authored parameter like `corr_water_temp`
+ * would false-positive match block `"corr"`'s `_w` prefix. Requiring a
+ * digit (the layer index) immediately after the prefix rules that out,
+ * since every real generated name has one there and essentially no
+ * hand-typed name does. Exported so a caller that already has a specific
+ * block key in hand (e.g. `Fit.svelte` collecting one *trained* block's
+ * weights) doesn't need its own copy of this check.
+ */
+export function isNNBlockOwnedParamName(
+  name: string,
+  blockKey: string,
+): boolean {
+  for (const infix of ["_w", "_b"]) {
+    const prefix = `${blockKey}${infix}`;
+    if (name.startsWith(prefix) && /^\d/.test(name.slice(prefix.length))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function defaultValue(a: string | undefined, b: string): string {
   if (a === undefined) return b;
   return a;
@@ -256,7 +281,7 @@ export abstract class ModelBuilderBase {
     if (!config) return this;
     this.unwireNNBlockOutputs(key, config.targets);
     for (const name of this.parameters.keys()) {
-      if (name.startsWith(`${key}_w`) || name.startsWith(`${key}_b`)) {
+      if (isNNBlockOwnedParamName(name, key)) {
         this.removeParameter(name);
       }
     }
@@ -270,15 +295,13 @@ export abstract class ModelBuilderBase {
    * UI, never expanded into individual parameter-table rows, fit checkboxes,
    * scan-target options, or sliders. Every mxl-web surface that lists
    * `parameters` for one of those purposes must exclude this set rather than
-   * reimplementing the `${key}_w`/`${key}_b` prefix match itself.
+   * reimplementing the naming-convention match itself.
    */
   nnBlockOwnedParameterNames(): Set<string> {
     const owned = new Set<string>();
     for (const key of this.nnBlocks.keys()) {
-      const weightPrefix = `${key}_w`;
-      const biasPrefix = `${key}_b`;
       for (const name of this.parameters.keys()) {
-        if (name.startsWith(weightPrefix) || name.startsWith(biasPrefix)) {
+        if (isNNBlockOwnedParamName(name, key)) {
           owned.add(name);
         }
       }

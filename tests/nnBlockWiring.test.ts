@@ -174,3 +174,64 @@ describe("SteadyStateModelBuilder.addNNBlock", () => {
     expect([...builder.parameters.keys()]).toEqual(["p"]);
   });
 });
+
+// nnBlockOwnedParameterNames/nnBlockOwnedReactionNames are the single
+// source of truth mxl-web's UI filters through so a block's generated
+// weights/biases/reaction never leak in as individual editable rows (ADR
+// 0005 §2.1.3) — a review after the first UI implementation pass found
+// three independent, slightly different reimplementations of this same
+// prefix match with no shared home, and none applied to ModelEditor's own
+// parameter/reaction tables at all.
+describe("ModelBuilderBase.nnBlockOwnedParameterNames", () => {
+  it("covers exactly the generated weights/biases, not hand-authored parameters", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .addNNBlock("corr", smallBlock);
+    const owned = builder.nnBlockOwnedParameterNames();
+    expect(owned.has("k")).toBe(false);
+    const generated = [...builder.parameters.keys()].filter((n) => n !== "k");
+    expect(generated.length).toBeGreaterThan(0);
+    for (const name of generated) expect(owned.has(name)).toBe(true);
+  });
+
+  it("is empty once the block is removed", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", smallBlock);
+    builder.removeNNBlock("corr");
+    expect(builder.nnBlockOwnedParameterNames().size).toBe(0);
+  });
+
+  it("doesn't cross-match one block's prefix against another's similarly-named parameter", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("corr_wise_choice", { value: 1 })
+      .addNNBlock("corr", smallBlock);
+    expect(builder.nnBlockOwnedParameterNames().has("corr_wise_choice")).toBe(
+      false,
+    );
+  });
+});
+
+describe("KineticModelBuilder.nnBlockOwnedReactionNames", () => {
+  it("covers exactly the block-generated reaction, not hand-authored ones", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addReaction("v1", {
+        fn: new Name("x"),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      })
+      .addNNBlock("corr", smallBlock);
+    const owned = builder.nnBlockOwnedReactionNames();
+    expect(owned.has("v1")).toBe(false);
+    expect([...builder.reactions.keys()].filter((k) => k !== "v1")).toEqual([
+      ...owned,
+    ]);
+  });
+
+  it("is empty for a builder with no NN blocks", () => {
+    const builder = new KineticModelBuilder().addVariable("x", { value: 1 });
+    expect(builder.nnBlockOwnedReactionNames().size).toBe(0);
+  });
+});
