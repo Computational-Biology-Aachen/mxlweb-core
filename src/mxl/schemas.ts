@@ -85,10 +85,59 @@ export const kineticSchema: JsonSchema = {
             $ref: "#/$defs/readout",
           },
         },
+        nn_blocks: {
+          type: "object",
+          description:
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005). Weights/biases are ordinary parameters, named `<block>_w{layer}_{i}_{j}` / `<block>_b{layer}_{i}`; this section only records the architecture needed to regenerate or re-edit a block, and is optional — a document with no NN blocks simply omits it.",
+          additionalProperties: {
+            $ref: "#/$defs/nnBlock",
+          },
+        },
       },
     },
   },
   $defs: {
+    nnBlock: {
+      type: "object",
+      description:
+        "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
+      required: ["inputs", "depth", "width", "seed", "targets", "trained"],
+      additionalProperties: false,
+      properties: {
+        inputs: {
+          type: "array",
+          description:
+            "Names of existing variables/parameters/derived quantities the block reads.",
+          items: { type: "string" },
+        },
+        depth: {
+          type: "integer",
+          description: "Number of hidden layers.",
+          minimum: 1,
+        },
+        width: {
+          type: "integer",
+          description: "Uniform width of every hidden layer.",
+          minimum: 1,
+        },
+        seed: {
+          type: "integer",
+          description:
+            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated.",
+        },
+        targets: {
+          type: "array",
+          description:
+            "Which existing variable(s) this block corrects — one entry per output, in order.",
+          items: { type: "string" },
+        },
+        trained: {
+          type: "boolean",
+          description:
+            "Whether this block's weights are included when fitting the model.",
+        },
+      },
+    },
     variable: {
       type: "object",
       description:
@@ -388,10 +437,59 @@ export const odeSchema: JsonSchema = {
             $ref: "#/$defs/readout",
           },
         },
+        nn_blocks: {
+          type: "object",
+          description:
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005). Weights/biases are ordinary parameters, named `<block>_w{layer}_{i}_{j}` / `<block>_b{layer}_{i}`; this section only records the architecture needed to regenerate or re-edit a block, and is optional — a document with no NN blocks simply omits it.",
+          additionalProperties: {
+            $ref: "#/$defs/nnBlock",
+          },
+        },
       },
     },
   },
   $defs: {
+    nnBlock: {
+      type: "object",
+      description:
+        "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
+      required: ["inputs", "depth", "width", "seed", "targets", "trained"],
+      additionalProperties: false,
+      properties: {
+        inputs: {
+          type: "array",
+          description:
+            "Names of existing variables/parameters/derived quantities the block reads.",
+          items: { type: "string" },
+        },
+        depth: {
+          type: "integer",
+          description: "Number of hidden layers.",
+          minimum: 1,
+        },
+        width: {
+          type: "integer",
+          description: "Uniform width of every hidden layer.",
+          minimum: 1,
+        },
+        seed: {
+          type: "integer",
+          description:
+            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated.",
+        },
+        targets: {
+          type: "array",
+          description:
+            "Which existing variable(s) this block corrects — one entry per output, in order.",
+          items: { type: "string" },
+        },
+        trained: {
+          type: "boolean",
+          description:
+            "Whether this block's weights are included when fitting the model.",
+        },
+      },
+    },
     variable: {
       type: "object",
       description:

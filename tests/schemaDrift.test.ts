@@ -9,11 +9,12 @@ import { describe, expect, it } from "vitest";
 
 // Guards the vendored copies in `src/mxl/schemas.ts` against the canonical
 // mxl-schemas source. The copy lets the parser validate offline/in-browser;
-// this test fails if it drifts. The canonical source is the sibling
-// `mxl-schemas` repo, checked out as a submodule next to this package in the
-// meta-repo. When it is not present (e.g. the standalone mxlweb-core checkout)
-// the comparison is skipped rather than failing the suite.
-const SCHEMA_DIR = resolve(process.cwd(), "../mxl-schemas/v1");
+// this test fails if it drifts. The canonical source is the `mxl-schemas`
+// submodule, checked out at `misc/mxl-schemas` in the 0-admin meta-repo
+// (this package lives at `pkg-js/mxlweb-core`). When it is not present (e.g.
+// the standalone mxlweb-core checkout) the comparison is skipped rather than
+// failing the suite.
+const SCHEMA_DIR = resolve(process.cwd(), "../../misc/mxl-schemas/v1");
 
 const CASES: Array<[string, string, Record<string, unknown>]> = [
   ["kinetic", "kinetic-model.schema.json", kineticSchema],

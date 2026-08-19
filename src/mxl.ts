@@ -96,9 +96,37 @@ function addDerived(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
   }
 }
 
+/**
+ * Revive `nn_blocks` — deliberately *before* `addParameters` in both
+ * `buildKinetic`/`buildOde` below: `addNNBlock` always Glorot-reinitializes
+ * its weights fresh from `seed`, so importing it after `parameters` would
+ * clobber the document's actual (possibly fitting-updated) weight values
+ * with freshly-regenerated ones. Running `addParameters` second lets its
+ * `parameters` section — which already includes every block's weights,
+ * serialised with `mxlNNBlocks`'s sibling `mxlParameters` — overwrite them
+ * back to the correct values, the same trick `buildMxlweb`'s export uses.
+ */
+function addNNBlocks(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
+  for (const [id, entry] of Object.entries(section(doc, "nn_blocks"))) {
+    // Every field is required by the schema, already validated by the time
+    // this runs (mxlJsonToModel validates before calling buildKinetic/
+    // buildOde) — non-null assertions are safe here, same as elsewhere in
+    // this file (e.g. entry.fn!).
+    builder.addNNBlock(id, {
+      inputs: entry.inputs!,
+      depth: entry.depth!,
+      width: entry.width!,
+      seed: entry.seed!,
+      targets: entry.targets!,
+      trained: entry.trained!,
+    });
+  }
+}
+
 function buildKinetic(doc: MxlJsonDocument): KineticModelBuilder {
   const builder = new KineticModelBuilder();
   addVariables(builder, doc);
+  addNNBlocks(builder, doc);
   addParameters(builder, doc);
   for (const [id, entry] of Object.entries(section(doc, "reactions"))) {
     const reaction: Reaction = {
@@ -117,6 +145,7 @@ function buildKinetic(doc: MxlJsonDocument): KineticModelBuilder {
 function buildOde(doc: MxlJsonDocument): OdeModelBuilder {
   const builder = new OdeModelBuilder();
   addVariables(builder, doc);
+  addNNBlocks(builder, doc);
   addParameters(builder, doc);
   for (const [id, entry] of Object.entries(section(doc, "variables"))) {
     if (entry.fn !== undefined) {

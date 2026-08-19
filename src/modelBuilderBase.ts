@@ -78,7 +78,7 @@ export type IntermediateDef = {
 /** The model-formulation discriminator written to (and selecting) an `.mxl.json` schema. */
 export type MxlKind = "kinetic" | "ode" | "steady-state";
 
-/** One entity (variable/parameter/derived/reaction) in the `.mxl.json` model section. */
+/** One entity (variable/parameter/derived/reaction/nn_block) in the `.mxl.json` model section. */
 export type MxlEntity = {
   value?: JsonNode;
   fn?: JsonNode;
@@ -86,6 +86,13 @@ export type MxlEntity = {
   displayName?: string;
   texName?: string;
   slider?: { min: string; max: string; step: string; desc?: string };
+  /** `nn_blocks` entries only — see {@link NNBlockConfig}. */
+  inputs?: string[];
+  depth?: number;
+  width?: number;
+  seed?: number;
+  targets?: string[];
+  trained?: boolean;
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
@@ -444,6 +451,18 @@ export abstract class ModelBuilderBase {
     };
 
     const chains: string[] = [];
+    // NN blocks first, deliberately: addNNBlock always Glorot-reinitializes
+    // its weights fresh from `seed`, so it would clobber any fitting-updated
+    // values if it ran after the parameter loop below. Emitting it first and
+    // letting the parameter loop's .addParameter() calls run second means
+    // every parameter — including a block's weights/biases — ends up with
+    // whatever value is *actually* in `this.parameters` right now, fitted or
+    // not, rather than a freshly-regenerated one.
+    for (const [id, b] of this.nnBlocks) {
+      chains.push(
+        `    .addNNBlock(${JSON.stringify(id)}, ${this.tsNNBlock(b)})`,
+      );
+    }
     for (const [id, p] of this.parameters) {
       chains.push(
         `    .addParameter(${JSON.stringify(id)}, ${this.tsParameter(p)})`,
@@ -574,6 +593,37 @@ ${chains.join("\n")};
     return out;
   }
 
+  /**
+   * Serialise `nnBlocks` as the `nn_blocks` section (architecture only — the
+   * weight/bias values round-trip as ordinary entries in `parameters`,
+   * already covered by {@link mxlParameters}). Not called by
+   * `SteadyStateModelBuilder`, whose schema has no `nn_blocks` section.
+   *
+   * Deliberately additive, not a replacement: `KineticModelBuilder.
+   * mxlReactions` still serialises a block's wired reaction(s) in full,
+   * literal expression tree and all — unlike `buildMxlweb`'s TS source
+   * (only ever consumed by this package, where re-deriving the reaction via
+   * `addNNBlock` makes the literal tree pure waste), `.mxl.json` is a
+   * cross-tool-family interchange format. A consumer that doesn't
+   * understand `nn_blocks` at all (e.g. a version of MxlPy predating this
+   * section) must still be able to simulate the model faithfully from the
+   * ordinary `reactions`/`parameters` sections alone.
+   */
+  protected mxlNNBlocks(): Record<string, MxlEntity> {
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, b] of this.nnBlocks) {
+      out[id] = {
+        inputs: b.inputs,
+        depth: b.depth,
+        width: b.width,
+        seed: b.seed,
+        targets: b.targets,
+        trained: b.trained,
+      };
+    }
+    return out;
+  }
+
   protected tsSlider(s: SliderArgs): string {
     const parts = [
       `min: ${JSON.stringify(s.min)}`,
@@ -619,5 +669,16 @@ ${chains.join("\n")};
 
   protected tsString(value: string | undefined): string | undefined {
     return value !== undefined ? JSON.stringify(value) : undefined;
+  }
+
+  private tsNNBlock(b: NNBlockConfig): string {
+    return this.tsFields([
+      ["inputs", JSON.stringify(b.inputs)],
+      ["depth", `${b.depth}`],
+      ["width", `${b.width}`],
+      ["seed", `${b.seed}`],
+      ["targets", JSON.stringify(b.targets)],
+      ["trained", `${b.trained}`],
+    ]);
   }
 }

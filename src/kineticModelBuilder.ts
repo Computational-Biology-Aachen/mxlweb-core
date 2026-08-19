@@ -249,8 +249,20 @@ export class KineticModelBuilder extends ModelBuilderBase {
   }
 
   protected extraMxlwebChains(collect: (expr: Base) => void): string[] {
+    // Block-wired reactions (wireNNBlockOutputs) are skipped here: emitting
+    // them as literal .addReaction(...) source would serialize the block's
+    // entire generated expression tree — tens of thousands of nested
+    // constructor calls for a 6x64 block (ADR 0005 §2.1) — when the
+    // .addNNBlock(...) chain the base class already emits reconstructs the
+    // exact same reaction from six config fields instead.
+    const blockOwnedReactionKeys = new Set(
+      [...this.nnBlocks.entries()].flatMap(([blockKey, config]) =>
+        config.targets.map((_, i) => nnBlockReactionKey(blockKey, i)),
+      ),
+    );
     const chains: string[] = [];
     for (const [id, rxn] of this.reactions) {
+      if (blockOwnedReactionKeys.has(id)) continue;
       collect(rxn.fn);
       const stoich = rxn.stoichiometry.map((s) => {
         collect(s.value);
@@ -287,6 +299,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       reactions: this.mxlReactions(),
       derived: this.mxlDerived(),
       readouts: {},
+      nn_blocks: this.mxlNNBlocks(),
     };
   }
 
