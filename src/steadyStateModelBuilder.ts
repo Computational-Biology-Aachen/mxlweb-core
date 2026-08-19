@@ -48,6 +48,20 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     return new Num(0);
   }
 
+  /**
+   * NN blocks (ADR 0005) correct a differential equation — there is none
+   * here (no state variables, no dx/dt at all), so there's no sensible
+   * wiring target. Throwing at `addNNBlock` time is more honest than a
+   * silent no-op, which would let `Parameter`s and an `nnBlocks` entry
+   * appear while nothing ever actually consumed the block's output.
+   */
+  protected wireNNBlockOutputs(): void {
+    throw new Error(
+      "NN blocks aren't supported on SteadyStateModelBuilder — there's no differential equation for a correction term to feed into",
+    );
+  }
+  protected unwireNNBlockOutputs(): void {}
+
   protected mxlKind(): MxlKind {
     return "steady-state";
   }
