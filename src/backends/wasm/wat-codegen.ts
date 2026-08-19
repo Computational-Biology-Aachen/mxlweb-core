@@ -130,6 +130,116 @@ export function buildDerivedWat(
 }
 
 /**
+ * buildAdjointWat — generate a complete WAT module exporting a single "fcn"
+ * function of shape
+ *   void(i32 n, f64 t, i32 y_ptr, i32 lambda_ptr, i32 pars_ptr,
+ *        i32 out_dlambda_ptr, i32 out_dtheta_ptr)
+ * computing the continuous adjoint's right-hand side (ADR 0005 §2.3/§4):
+ * `dlambda[i] = -d(lambda^T f)/dy_i` and `dtheta[k] = -d(lambda^T f)/dtheta_k`,
+ * i.e. the augmented backward ODE a C-side integrator solves alongside the
+ * (Hermite-interpolated, not re-integrated — ADR 0005 §2.3.1) forward
+ * trajectory.
+ *
+ * `lambda` is a *runtime* input here (the current numeric adjoint state,
+ * supplied by the backward integrator each step) — symbolically it's just
+ * `n` more named leaves, resolved via `WatContext.lambdaIndex` exactly like
+ * `y`/`pars` resolve via `varIndex`/`parIndex` (see `Name.toWat`).
+ *
+ * `dlambda`/`dtheta` must already be the *summed* final gradient expression
+ * per output (i.e. built by walking `intermediates` in reverse — see
+ * `modelIr.ts`'s `buildAdjointGraph`) — this function only lays out the WAT
+ * module and its locals, the same way `buildModelWat` doesn't itself compute
+ * dx/dt, only emits what it's given. `intermediates` here is expected to be
+ * the forward pass's own list (recomputed fresh, same as `buildDerivedWat`
+ * already does for a separately-compiled function) *followed by* the
+ * adjoint-accumulator locals `buildAdjointGraph` produces — one combined
+ * locals-in-dependency-order list, forward values and backward
+ * accumulations resolved identically via `Name` + `ctx.localNames`.
+ */
+export function buildAdjointWat(
+  dlambda: { varName: string; expr: Base }[],
+  dtheta: { thetaName: string; expr: Base }[],
+  varNames: string[],
+  parNames: string[],
+  lambdaNames: string[],
+  timeVar = "time",
+  intermediates?: { name: string; expr: Base }[],
+): string {
+  const localNames = intermediates
+    ? new Set(intermediates.map((l) => l.name))
+    : undefined;
+
+  const ctx: WatContext = {
+    varIndex: new Map(varNames.map((n, i) => [n, i])),
+    parIndex: new Map(parNames.map((n, i) => [n, i])),
+    lambdaIndex: new Map(lambdaNames.map((n, i) => [n, i])),
+    timeVar,
+    localNames,
+  };
+
+  const localDecls = intermediates
+    ? intermediates.map((l) => `    (local $${l.name} f64)`).join("\n") + "\n"
+    : "";
+
+  const localSets = intermediates
+    ? intermediates
+        .map((l) => `    (local.set $${l.name} ${l.expr.toWat(ctx)})`)
+        .join("\n") + "\n"
+    : "";
+
+  const dlambdaStores = dlambda
+    .map((out, i) => {
+      const offset = i * 8;
+      return `    (f64.store (i32.add (local.get 5) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
+    })
+    .join("\n");
+
+  const dthetaStores = dtheta
+    .map((out, i) => {
+      const offset = i * 8;
+      return `    (f64.store (i32.add (local.get 6) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
+    })
+    .join("\n");
+
+  return `(module
+  ;; Shared memory from Emscripten runtime
+  (import "env" "memory" (memory 1))
+
+  ;; Single-argument math imports
+  (import "math" "exp"       (func $math_exp       (param f64) (result f64)))
+  (import "math" "log"       (func $math_log       (param f64) (result f64)))
+  (import "math" "sin"       (func $math_sin       (param f64) (result f64)))
+  (import "math" "cos"       (func $math_cos       (param f64) (result f64)))
+  (import "math" "tan"       (func $math_tan       (param f64) (result f64)))
+  (import "math" "asin"      (func $math_asin      (param f64) (result f64)))
+  (import "math" "acos"      (func $math_acos      (param f64) (result f64)))
+  (import "math" "atan"      (func $math_atan      (param f64) (result f64)))
+  (import "math" "sinh"      (func $math_sinh      (param f64) (result f64)))
+  (import "math" "cosh"      (func $math_cosh      (param f64) (result f64)))
+  (import "math" "tanh"      (func $math_tanh      (param f64) (result f64)))
+  (import "math" "asinh"     (func $math_asinh     (param f64) (result f64)))
+  (import "math" "acosh"     (func $math_acosh     (param f64) (result f64)))
+  (import "math" "atanh"     (func $math_atanh     (param f64) (result f64)))
+  (import "math" "factorial" (func $math_factorial (param f64) (result f64)))
+
+  ;; Two-argument math imports
+  (import "math" "pow" (func $math_pow (param f64 f64) (result f64)))
+  (import "math" "max" (func $math_max (param f64 f64) (result f64)))
+  (import "math" "min" (func $math_min (param f64 f64) (result f64)))
+  (import "math" "rem" (func $math_rem (param f64 f64) (result f64)))
+
+  ;; Adjoint RHS: void(i32 n, f64 t, i32 y_ptr, i32 lambda_ptr, i32 pars_ptr,
+  ;;                    i32 out_dlambda_ptr, i32 out_dtheta_ptr)
+  ;; Param locals: 0=n, 1=t, 2=y_ptr, 3=lambda_ptr, 4=pars_ptr,
+  ;;               5=out_dlambda_ptr, 6=out_dtheta_ptr
+  (func (export "fcn") (param i32) (param f64) (param i32) (param i32) (param i32) (param i32) (param i32)
+${localDecls}${localSets}${dlambdaStores}
+${dthetaStores}
+  )
+)`;
+}
+
+/**
  * mathImports — JS imports object for instantiating a model WASM module.
  * Provide as the "math" namespace in WebAssembly.instantiate imports.
  */
