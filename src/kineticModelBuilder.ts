@@ -171,8 +171,15 @@ export function getTexNames(
   return texNames;
 }
 
-/** The generated reaction key for one output of an NN block (ADR 0005 §2.1) — shared between `wireNNBlockOutputs` and `unwireNNBlockOutputs` so they always agree on naming. */
-function nnBlockReactionKey(blockKey: string, outputIdx: number): string {
+/**
+ * The generated reaction key for one output of an NN block (ADR 0005 §2.1) —
+ * shared between `wireNNBlockOutputs`/`unwireNNBlockOutputs` so they always
+ * agree on naming, and exported so a caller with just an `NNBlockConfig` in
+ * hand (e.g. `TableReactions.svelte`, filtering rows without a full
+ * `KineticModelBuilder` instance) can reconstruct the same keys instead of
+ * reimplementing the `_out` naming convention.
+ */
+export function nnBlockReactionKey(blockKey: string, outputIdx: number): string {
   return `${blockKey}_out${outputIdx}`;
 }
 
