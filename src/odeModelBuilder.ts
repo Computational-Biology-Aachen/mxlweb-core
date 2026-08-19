@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Base, Num } from "./mathml/index.js";
+import { Add, Base, Num } from "./mathml/index.js";
 import {
   defaultTexName,
   type IntermediateDef,
@@ -31,8 +31,20 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
     cl.differentials = new SvelteMap(this.differentials);
+    cl.nnBlocks = new SvelteMap(this.nnBlocks);
     return cl;
   }
+
+  /**
+   * No stored wiring needed: unlike `KineticModelBuilder`, there's no
+   * reaction/stoichiometry mechanism to reuse, and mutating the stored
+   * `differentials` entry directly would make `removeNNBlock` unable to
+   * cleanly subtract a block's contribution back out. `dxdtExpr` below sums
+   * {@link ModelBuilderBase.nnBlockOutputsByTarget} fresh instead, so adding
+   * or removing a block is just adding/removing its `nnBlocks` entry.
+   */
+  protected wireNNBlockOutputs(): void {}
+  protected unwireNNBlockOutputs(): void {}
 
   /** Set the dx/dt expression for an existing variable. */
   setDifferential(key: string, fn: Base) {
@@ -62,7 +74,10 @@ export class OdeModelBuilder extends ModelBuilderBase {
   }
 
   protected dxdtExpr(varName: string): Base {
-    return this.differentials.get(varName) ?? new Num(0);
+    const own = this.differentials.get(varName) ?? new Num(0);
+    const blockTerms = this.nnBlockOutputsByTarget().get(varName);
+    if (!blockTerms || blockTerms.length === 0) return own;
+    return new Add([own, ...blockTerms]);
   }
 
   protected mxlKind(): MxlKind {

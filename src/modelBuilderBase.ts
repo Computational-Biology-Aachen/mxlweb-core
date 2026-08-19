@@ -9,6 +9,7 @@ import {
   irToWatDerived,
   type ModelIR,
 } from "./modelIr.js";
+import { buildNNBlock } from "./nnBlock.js";
 
 export type SliderArgs = {
   min: string;
@@ -33,6 +34,29 @@ export type Assign = {
   fn: Base;
   displayName?: string;
   texName?: string;
+};
+
+/**
+ * A UDE/NODE correction term (ADR 0005 in the mxlweb repo, §2.1/§2.1.3).
+ * Architecture and identity only — the generated `Parameter` entries
+ * (weights/biases) live in {@link ModelBuilderBase.parameters} like any other
+ * parameter, and the generated expression is recomputed fresh from this
+ * config wherever it's needed rather than stored, since it's a pure function
+ * of the architecture (see {@link ModelBuilderBase.nnBlockOutputsByTarget}).
+ */
+export type NNBlockConfig = {
+  /** Names of existing variables/parameters/derived quantities the block reads. */
+  inputs: string[];
+  /** Number of hidden layers — see `nnBlock.ts`'s {@link NNBlockSpec.depth}. */
+  depth: number;
+  /** Uniform hidden-layer width — see `nnBlock.ts`'s {@link NNBlockSpec.width}. */
+  width: number;
+  /** Seed for reproducible Glorot initialization (used once, at `addNNBlock` time). */
+  seed: number;
+  /** Which existing variable(s) this block corrects — one per output, so its length *is* the block's output count. */
+  targets: string[];
+  /** Whether this block's weights are included when fitting (ADR 0005 §2.1.3's per-block toggle) — a UI/fit-config concern downstream (`mxl-web`), not interpreted here. */
+  trained: boolean;
 };
 
 export function defaultValue(a: string | undefined, b: string): string {
@@ -98,6 +122,7 @@ export abstract class ModelBuilderBase {
   parameters: SvelteMap<string, Parameter> = new SvelteMap();
   variables: SvelteMap<string, Variable> = new SvelteMap();
   assignments: SvelteMap<string, Assign> = new SvelteMap();
+  nnBlocks: SvelteMap<string, NNBlockConfig> = new SvelteMap();
 
   /**
    * Builder-specific intermediate computations, beyond assignments, that must
@@ -108,6 +133,21 @@ export abstract class ModelBuilderBase {
 
   /** The fully lowered dx/dt expression for a single state variable. */
   protected abstract dxdtExpr(varName: string): Base;
+
+  /**
+   * Builder-specific wiring for a freshly-added NN block's output
+   * expressions (ADR 0005 §2.1) — `KineticModelBuilder` adds one ordinary
+   * reaction per output (stoichiometry `{ target: 1 }`); `OdeModelBuilder`
+   * needs no stored wiring at all, since its `dxdtExpr` already sums
+   * {@link nnBlockOutputsByTarget} fresh on every call.
+   */
+  protected abstract wireNNBlockOutputs(
+    key: string,
+    outputs: Base[],
+    targets: string[],
+  ): void;
+  /** Inverse of {@link wireNNBlockOutputs}, called by {@link removeNNBlock}. */
+  protected abstract unwireNNBlockOutputs(key: string, targets: string[]): void;
 
   /** Render the model's equations as LaTeX (formulation-specific). */
   abstract buildTex(): string;
@@ -164,6 +204,94 @@ export abstract class ModelBuilderBase {
   removeAssignment(key: string) {
     this.assignments.delete(key);
     return this;
+  }
+
+  // NN blocks (ADR 0005 §2.1/§2.1.3)
+  /**
+   * Generates the block via `buildNNBlock` (Glorot-initialized from
+   * `config.seed`), adds every resulting weight/bias as an ordinary
+   * `Parameter`, records `config` for later re-editing, and wires the
+   * outputs in via the builder-specific hook.
+   */
+  addNNBlock(key: string, config: NNBlockConfig) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
+    const { parameters, outputs } = buildNNBlock({
+      name: key,
+      inputs: config.inputs,
+      depth: config.depth,
+      width: config.width,
+      outputs: config.targets.length,
+      seed: config.seed,
+    });
+    // Wire first, mutate second: SteadyStateModelBuilder's override throws
+    // (no dx/dt for a correction term to feed into) — calling it before
+    // touching `parameters`/`nnBlocks` means that throw leaves the builder
+    // completely untouched instead of half-mutated.
+    this.wireNNBlockOutputs(key, outputs, config.targets);
+    for (const [name, p] of parameters) this.addParameter(name, p);
+    this.nnBlocks.set(key, config);
+    return this;
+  }
+  /**
+   * Re-architects an existing block — equivalent to remove-then-add, so
+   * existing weight values are discarded and freshly Glorot-initialized
+   * rather than preserved (a changed depth/width/input count generally
+   * changes which weight even corresponds to which, so there's nothing
+   * meaningful to carry over).
+   */
+  updateNNBlock(key: string, config: NNBlockConfig) {
+    this.removeNNBlock(key);
+    return this.addNNBlock(key, config);
+  }
+  removeNNBlock(key: string) {
+    const config = this.nnBlocks.get(key);
+    if (!config) return this;
+    this.unwireNNBlockOutputs(key, config.targets);
+    const weightPrefix = `${key}_w`;
+    const biasPrefix = `${key}_b`;
+    for (const name of [...this.parameters.keys()]) {
+      if (name.startsWith(weightPrefix) || name.startsWith(biasPrefix)) {
+        this.removeParameter(name);
+      }
+    }
+    this.nnBlocks.delete(key);
+    return this;
+  }
+
+  /**
+   * Fresh output expressions for every NN block, keyed by target variable.
+   * Recomputed on every call rather than cached: the expression *shape* is a
+   * pure function of each block's config (weight/bias `Name` references, not
+   * their current values — those live in `this.parameters` and are what
+   * fitting actually mutates), so regenerating is correct, and only runs on
+   * structural edits/compiles, not per fit-iteration or per value edit (see
+   * ADR 0005 §2.2's note on `buildModelWat`'s structure-only dependency).
+   * Recomputes once per `dxdtExpr` call rather than once per `.lower()` —
+   * fine for the handful of blocks a model realistically has, not optimized
+   * further for now.
+   */
+  protected nnBlockOutputsByTarget(): Map<string, Base[]> {
+    const byTarget = new Map<string, Base[]>();
+    for (const [key, config] of this.nnBlocks) {
+      const { outputs } = buildNNBlock({
+        name: key,
+        inputs: config.inputs,
+        depth: config.depth,
+        width: config.width,
+        outputs: config.targets.length,
+        seed: config.seed,
+      });
+      outputs.forEach((output, i) => {
+        const target = config.targets[i];
+        const existing = byTarget.get(target);
+        if (existing) {
+          existing.push(output);
+        } else {
+          byTarget.set(target, [output]);
+        }
+      });
+    }
+    return byTarget;
   }
 
   private intermediateDefs(): Map<string, IntermediateDef> {

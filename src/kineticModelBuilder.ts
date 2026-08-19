@@ -171,6 +171,11 @@ export function getTexNames(
   return texNames;
 }
 
+/** The generated reaction key for one output of an NN block (ADR 0005 §2.1) — shared between `wireNNBlockOutputs` and `unwireNNBlockOutputs` so they always agree on naming. */
+function nnBlockReactionKey(blockKey: string, outputIdx: number): string {
+  return `${blockKey}_out${outputIdx}`;
+}
+
 // Build a single additive term `coeff · v(rxn)` as an AST, simplifying the
 // common ±1 / unary-minus cases so generated code stays readable.
 function reactionTerm(coeff: Base, rxnName: string): Base {
@@ -207,7 +212,25 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
     cl.reactions = new SvelteMap(this.reactions);
+    cl.nnBlocks = new SvelteMap(this.nnBlocks);
     return cl;
+  }
+
+  /** An NN block's output becomes an ordinary reaction with stoichiometry `{ target: 1 }` — a UDE correction term *is* a reaction whose rate law happens to be machine-generated (ADR 0005 §2.1). */
+  protected wireNNBlockOutputs(
+    key: string,
+    outputs: Base[],
+    targets: string[],
+  ): void {
+    outputs.forEach((fn, i) => {
+      this.addReaction(nnBlockReactionKey(key, i), {
+        fn,
+        stoichiometry: [{ name: targets[i], value: new Num(1) }],
+      });
+    });
+  }
+  protected unwireNNBlockOutputs(key: string, targets: string[]): void {
+    targets.forEach((_, i) => this.removeReaction(nnBlockReactionKey(key, i)));
   }
 
   // Reactions
