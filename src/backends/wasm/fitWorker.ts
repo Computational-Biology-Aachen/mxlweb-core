@@ -5,6 +5,11 @@
  * from the plain simulation worker's one-shot request/response, and keeping
  * the two apart avoids overloading wasmWorker.ts's protocol.
  *
+ * Currently the only backend is lmdif (ADR 0004); ADR 0005 adds a second
+ * ("adjoint") backend for NN-augmented/large-parameter-count fits, selected
+ * automatically at FIT_INIT — not yet implemented, see `handleFitInit`'s
+ * early rejection of `req.backend === "adjoint"`.
+ *
  * Architecture:
  *   1. On __INIT__: load the same Emscripten module as wasmWorker.ts (it
  *      exports both the integrators and fit_wrapper.c's fit_* functions).
@@ -13,9 +18,9 @@
  *      set_model_fn/set_derived_fn, marshal the fit setup into the WASM heap,
  *      and call fit_init. The marshalled arrays are freed immediately after —
  *      fit_init copies everything into its own session state.
- *   3. On FIT_CHUNK: call fit_chunk(maxfev) and report progress. The caller
- *      drives the loop by sending another FIT_CHUNK while `done` is false;
- *      cancellation is just not sending one.
+ *   3. On FIT_CHUNK: call fit_chunk(maxIterations) and report progress. The
+ *      caller drives the loop by sending another FIT_CHUNK while `done` is
+ *      false; cancellation is just not sending one.
  *   4. On FIT_FREE: release the WASM-side session and function-table slots.
  */
 import type {
@@ -25,6 +30,7 @@ import type {
   FitInitResult,
   FitProgress,
   FitSolver,
+  FitStopReason,
   SimulationError,
 } from "../../index.js";
 import {
@@ -60,7 +66,41 @@ const SOLVER_ID: Record<FitSolver, number> = {
 // real failure, unlike every other negative `info` value.
 const FIT_TARGET_REACHED = -2;
 
+/**
+ * Maps lmdif's raw `info` code to a backend-agnostic {@link FitStopReason}
+ * (ADR 0005 §2.5, `index.ts`'s `FitStopReason` doc comment has the full
+ * table). Only called once `handleFitChunk` has already established the fit
+ * is actually finished (`info !== 5`) — `5` ("this chunk's own maxIterations
+ * budget was reached") is *not* a terminal state at the worker level: the
+ * overall session budget is tracked client-side (`Fit.svelte`, ADR 0004
+ * §2.7), which caps each chunk's `maxIterations` but never reports back
+ * "the whole session's budget is now exhausted" through this protocol. So
+ * `"budget_reached"` is currently unreachable from the "lm" backend; it's
+ * reserved for the "adjoint" backend, which does own a real
+ * iterations-exhausted concept within a single session.
+ */
+function infoToReason(info: number): FitStopReason {
+  switch (info) {
+    case 1:
+    case 3:
+      return "converged_residual";
+    case 2:
+      return "converged_step";
+    case 4:
+    case 8:
+      return "converged_gradient";
+    case 6:
+    case 7:
+      return "plateau";
+    case FIT_TARGET_REACHED:
+      return "target_reached";
+    default:
+      return "error"; // 0 (bad input) and any other negative code
+  }
+}
+
 interface FitSession {
+  backend: "lm";
   modelFnIdx: number;
   derivedFnIdx: number | null;
   nPars: number;
@@ -91,6 +131,16 @@ function fitInitError(rc: number): string {
 }
 
 async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
+  if (req.backend === "adjoint") {
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error:
+        "The adjoint backend (ADR 0005) is not implemented yet — omit `backend` to use the default lm backend.",
+    });
+    return;
+  }
+
   const modelInstance = await compileModel(req.rhsWat, mod, basePath);
   const modelFn = modelInstance.exports.fcn as (...args: unknown[]) => void;
   const modelFnIdx = mod.addFunction(modelFn, "vidiii");
@@ -170,7 +220,7 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
     return;
   }
 
-  session = { modelFnIdx, derivedFnIdx, nPars: req.pars.length };
+  session = { backend: "lm", modelFnIdx, derivedFnIdx, nPars: req.pars.length };
   postInitResult({
     requestId: req.requestId,
     ok: true,
@@ -186,17 +236,18 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     };
     postProgress({
       requestId: req.requestId,
-      info: -1,
+      backend: "lm",
       nfev: 0,
       residualNorm: 0,
       params: [],
       done: true,
+      reason: "error",
       err,
     });
     return;
   }
 
-  const info = mod._fit_chunk(req.maxfev);
+  const info = mod._fit_chunk(req.maxIterations);
   const outPtr = mod._malloc(session.nPars * 8);
   let params: number[];
   try {
@@ -208,13 +259,17 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     mod._free(outPtr);
   }
 
+  // info === 5 ("this chunk's own maxIterations reached") is not a terminal
+  // state — see infoToReason's doc comment.
+  const done = info !== 5;
   postProgress({
     requestId: req.requestId,
-    info,
+    backend: session.backend,
     nfev: mod._fit_get_nfev(),
     residualNorm: mod._fit_get_residual_norm(),
     params,
-    done: info !== 5,
+    done,
+    reason: done ? infoToReason(info) : undefined,
     err:
       info < 0 && info !== FIT_TARGET_REACHED
         ? {
@@ -256,11 +311,12 @@ onmessage = async function (event: MessageEvent) {
     } else {
       postProgress({
         requestId: event.data.requestId,
-        info: -1,
+        backend: session?.backend ?? "lm",
         nfev: 0,
         residualNorm: 0,
         params: [],
         done: true,
+        reason: "error",
         err: { message, hints: ["Check the browser console for details"] },
       });
     }

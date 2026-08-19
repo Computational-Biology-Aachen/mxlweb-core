@@ -91,6 +91,40 @@ export interface SimulationResult {
 export type FitSolver = "radau5" | "dop853" | "dopri5";
 
 /**
+ * Which algorithm actually ran a fit session (ADR 0005). Chosen once, inside
+ * `fit_init`, and never user-facing — see {@link FitInitRequest.backend}.
+ */
+export type FitBackend = "lm" | "adjoint";
+
+/**
+ * Backend-agnostic reason a fit session stopped (ADR 0005 §2.5). `lmdif`'s
+ * raw `info` code is mapped onto this in `fitWorker.ts` rather than surfaced
+ * directly, so callers never need to know which backend ran:
+ *
+ * | `info`            | MINPACK meaning                         | reason                |
+ * | ------------------ | --------------------------------------- | --------------------- |
+ * | 1, 3               | sum-of-squares reduction below `ftol`   | `converged_residual`  |
+ * | 2                  | solution change below `xtol`            | `converged_step`      |
+ * | 4, 8               | residuals ⊥ Jacobian columns (`gtol`)   | `converged_gradient`  |
+ * | 6, 7               | `ftol`/`xtol` too small to improve      | `plateau`              |
+ * | 5                  | `maxIterations` exhausted               | `budget_reached`      |
+ * | -2 (custom)        | `targetResidualNorm` crossed            | `target_reached`      |
+ * | 0, other negative  | bad input / genuine failure             | `error`                |
+ *
+ * `converged_step` has no "adjoint" equivalent (a first-order optimizer's
+ * step size reflects its learning-rate schedule, not solution proximity) and
+ * is never emitted on that path.
+ */
+export type FitStopReason =
+  | "converged_residual"
+  | "converged_gradient"
+  | "converged_step"
+  | "plateau"
+  | "target_reached"
+  | "budget_reached"
+  | "error";
+
+/**
  * One fit target: either a raw state variable or a derived quantity computed
  * by `derivedWat` (see {@link FitInitRequest}). `scale` normalizes this
  * target's residuals (e.g. `max(|data|)` for its column) so targets of very
@@ -135,10 +169,22 @@ export interface FitInitRequest {
   solver: FitSolver;
   rtol: number;
   atol: number;
-  /** Stop as soon as the residual norm drops to or below this (reported via
-   * FitProgress.info === 9) — undefined relies on lmdif's own convergence
-   * criteria only. */
+  /** Stop as soon as the residual norm drops to or below this (reported as
+   * `reason: "target_reached"`) — undefined relies on the backend's own
+   * convergence criteria only. Shared across both backends (ADR 0005 §2.5). */
   targetResidualNorm?: number;
+  /** "adjoint" backend only: stop once the loss gradient's norm drops below
+   * this. Ignored under "lm" (see `FitStopReason`'s `converged_gradient`,
+   * which "lm" derives from `lmdif`'s own `gtol` instead). */
+  gradNormTol?: number;
+  /** "adjoint" backend only: stop if the loss hasn't improved by at least
+   * `minDelta` for `patience` consecutive iterations. */
+  plateau?: { patience: number; minDelta: number };
+  /** Escape hatch for tests/debugging only — never wired into `FitEditor`.
+   * Omitted, backend selection is automatic (ADR 0005 §2.4): measured against
+   * `fitIdx.length` and the wall-clock cost of the one forward solve `fit_init`
+   * already performs for `initialResidualNorm`. */
+  backend?: FitBackend;
 }
 
 export interface FitInitResult {
@@ -152,33 +198,36 @@ export interface FitInitResult {
 }
 
 /**
- * Runs `lmdif` for at most `maxfev` more function evaluations, continuing
- * from wherever the previous chunk left off (a restart, not a true resume —
- * see ADR 0004 §2.7). Send another `FitChunkRequest` while the resulting
+ * Runs the active backend for at most `maxIterations` more units of work,
+ * continuing from wherever the previous chunk left off (a restart, not a
+ * true resume — see ADR 0004 §2.7). The unit is backend-specific: function
+ * evaluations under "lm" (this field was `maxfev` before ADR 0005), optimizer
+ * steps under "adjoint". Send another `FitChunkRequest` while the resulting
  * {@link FitProgress}'s `done` is false to keep going; simply stop sending
  * them to cancel.
  */
 export interface FitChunkRequest {
   requestId: string;
-  maxfev: number;
+  maxIterations: number;
 }
 
 /**
- * Progress/result from one chunk. `done` is false only when `info` is
- * MINPACK's "maxfev reached" code (5) — every other value means the fit is
- * finished: by `lmdif` itself (0-4, 6-8: converged, degenerate step, or
- * improper input), because the residual norm crossed
- * `FitInitRequest.targetResidualNorm` (`info === -2`, not a MINPACK code —
- * despite being negative this is *not* an error), or a genuine fatal error
- * (any other negative `info`, see `err`).
+ * Progress/result from one chunk — shape shared by both backends (ADR 0005
+ * §2.5), so callers never need to know which one ran. `done` is false only
+ * when `reason` is undefined (still running); see {@link FitStopReason} for
+ * every way a session can finish, including the `lmdif`→reason mapping.
  */
 export interface FitProgress {
   requestId: string;
-  info: number;
+  backend: FitBackend;
   nfev: number;
   residualNorm: number;
+  /** "adjoint" backend only; absent under "lm". */
+  gradNorm?: number;
   params: number[];
   done: boolean;
+  /** Present iff done. */
+  reason?: FitStopReason;
   err?: SimulationError;
 }
 
