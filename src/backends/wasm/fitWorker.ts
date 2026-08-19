@@ -5,10 +5,11 @@
  * from the plain simulation worker's one-shot request/response, and keeping
  * the two apart avoids overloading wasmWorker.ts's protocol.
  *
- * Currently the only backend is lmdif (ADR 0004); ADR 0005 adds a second
- * ("adjoint") backend for NN-augmented/large-parameter-count fits, selected
- * automatically at FIT_INIT — not yet implemented, see `handleFitInit`'s
- * early rejection of `req.backend === "adjoint"`.
+ * Two backends (ADR 0005): "lm" (ADR 0004's original lmdif driver) and
+ * "adjoint" (Adam over the continuous adjoint, adjoint_wrapper.c) — chosen
+ * by the caller (`FitInitRequest.backend`) before this worker ever sees the
+ * request; this file just dispatches to whichever the request already
+ * asked for.
  *
  * Architecture:
  *   1. On __INIT__: load the same Emscripten module as wasmWorker.ts (it
@@ -66,6 +67,22 @@ const SOLVER_ID: Record<FitSolver, number> = {
 // real failure, unlike every other negative `info` value.
 const FIT_TARGET_REACHED = -2;
 
+// Adam hyperparameters (ADR 0005 §2.4) — deliberately not user-configurable
+// anywhere in the wire protocol: mxlweb's audience should never need to
+// know an optimizer choice exists. lr=1e-4 matches prior real usage across
+// adam/adamw/adabelief in this problem domain; beta1/beta2/eps are the
+// standard Adam defaults.
+const ADAM_LR = 1e-4;
+const ADAM_BETA1 = 0.9;
+const ADAM_BETA2 = 0.999;
+const ADAM_EPS = 1e-8;
+
+// Matches adjoint_wrapper.c's ADJOINT_INFO_* constants.
+const ADJOINT_INFO_CONVERGED_GRADIENT = 1;
+const ADJOINT_INFO_PLATEAU = 2;
+const ADJOINT_INFO_TARGET_REACHED = 3;
+const ADJOINT_INFO_BUDGET_REACHED = 4;
+
 /**
  * Maps lmdif's raw `info` code to a backend-agnostic {@link FitStopReason}
  * (ADR 0005 §2.5, `index.ts`'s `FitStopReason` doc comment has the full
@@ -99,10 +116,38 @@ function infoToReason(info: number): FitStopReason {
   }
 }
 
+/**
+ * Maps adjoint_wrapper.c's ADJOINT_INFO_* code to a {@link FitStopReason}.
+ * `ADJOINT_INFO_BUDGET_REACHED` is deliberately *not* terminal here (mapped
+ * to `done: false`, like lmdif's info===5) rather than `"budget_reached"`:
+ * it's this *chunk's* own `maxIterations` budget, not a whole-session total
+ * — exactly mirroring the "lm" backend's own chunking (the overall session
+ * budget is tracked client-side for both backends, ADR 0004 §2.7). An
+ * earlier version of this file's doc comment claimed budget_reached was
+ * reserved as a genuine session-terminal signal unique to "adjoint" — that
+ * was written before this chunking design was worked out in adjoint_
+ * wrapper.c and turned out not to hold; both backends behave the same way
+ * here.
+ */
+function adjointInfoToReason(info: number): FitStopReason {
+  switch (info) {
+    case ADJOINT_INFO_CONVERGED_GRADIENT:
+      return "converged_gradient";
+    case ADJOINT_INFO_PLATEAU:
+      return "plateau";
+    case ADJOINT_INFO_TARGET_REACHED:
+      return "target_reached";
+    default:
+      return "error"; // any negative value — a solver failure or allocation error
+  }
+}
+
 interface FitSession {
-  backend: "lm";
-  modelFnIdx: number;
-  derivedFnIdx: number | null;
+  backend: "lm" | "adjoint";
+  /** "lm": the forward model_fn. "adjoint": also the forward model_fn (registered via set_forward_model_fn instead of set_model_fn — see handleAdjointInit). */
+  primaryFnIdx: number;
+  /** "lm": derived_fn, if any target needed one. "adjoint": the adjoint_fn — always present, never null (adjointWat is required for this backend). */
+  secondaryFnIdx: number | null;
   nPars: number;
 }
 let session: FitSession | null = null;
@@ -132,12 +177,7 @@ function fitInitError(rc: number): string {
 
 async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
   if (req.backend === "adjoint") {
-    postInitResult({
-      requestId: req.requestId,
-      ok: false,
-      error:
-        "The adjoint backend (ADR 0005) is not implemented yet — omit `backend` to use the default lm backend.",
-    });
+    await handleAdjointInit(req, mod);
     return;
   }
 
@@ -220,11 +260,131 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
     return;
   }
 
-  session = { backend: "lm", modelFnIdx, derivedFnIdx, nPars: req.pars.length };
+  session = {
+    backend: "lm",
+    primaryFnIdx: modelFnIdx,
+    secondaryFnIdx: derivedFnIdx,
+    nPars: req.pars.length,
+  };
   postInitResult({
     requestId: req.requestId,
     ok: true,
     initialResidualNorm: mod._fit_get_residual_norm(),
+  });
+}
+
+/**
+ * The "adjoint" backend's FIT_INIT path (ADR 0005 §2.3.3/§2.3.4). Compiles
+ * `rhsWat` (registered as the *forward* model, `set_forward_model_fn` —
+ * distinct from "lm"'s `set_model_fn`, since adjoint_wrapper.c toggles
+ * between the forward RHS and its own native adjoint dispatcher across one
+ * Adam step, see that file's doc comment) and `adjointWat` (required here,
+ * unlike the "lm" path where it's never generated at all). v1-restricted to
+ * state-variable targets — see `adjointWat`'s own doc comment on
+ * `FitInitRequest`.
+ */
+async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
+  if (!req.adjointWat) {
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error: 'backend: "adjoint" requires adjointWat.',
+    });
+    return;
+  }
+  if (req.targets.some((t) => t.kind === "derived")) {
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error:
+        'The "adjoint" backend only supports state-variable fit targets, not derived quantities — see adjointWat\'s doc comment on FitInitRequest.',
+    });
+    return;
+  }
+
+  const forwardInstance = await compileModel(req.rhsWat, mod, basePath);
+  const forwardFn = forwardInstance.exports.fcn as (
+    ...args: unknown[]
+  ) => void;
+  const forwardFnIdx = mod.addFunction(forwardFn, "vidiii");
+  mod._set_forward_model_fn(forwardFnIdx);
+
+  const adjointInstance = await compileModel(req.adjointWat, mod, basePath);
+  const adjointFn = adjointInstance.exports.fcn as (
+    ...args: unknown[]
+  ) => void;
+  const adjointFnIdx = mod.addFunction(adjointFn, "vidiiiii");
+  mod._set_adjoint_fn(adjointFnIdx);
+
+  const ptrs = {
+    y0: allocF64(mod, req.y0),
+    pars: allocF64(mod, req.pars),
+    thetaIdx: allocI32(mod, req.fitIdx),
+    targetIndex: allocI32(
+      mod,
+      req.targets.map((t) => t.index),
+    ),
+    targetScale: allocF64(
+      mod,
+      req.targets.map((t) => t.scale),
+    ),
+    dataT: allocF64(mod, req.dataT),
+    dataY: allocF64(mod, req.dataY),
+  };
+
+  let rc: number;
+  try {
+    rc = mod._adjoint_init(
+      req.y0.length,
+      ptrs.y0,
+      req.pars.length,
+      ptrs.pars,
+      req.fitIdx.length,
+      ptrs.thetaIdx,
+      req.targets.length,
+      ptrs.targetIndex,
+      ptrs.targetScale,
+      req.dataT.length,
+      ptrs.dataT,
+      ptrs.dataY,
+      req.tEnd,
+      SOLVER_ID[req.solver],
+      req.rtol,
+      req.atol,
+      ADAM_LR,
+      ADAM_BETA1,
+      ADAM_BETA2,
+      ADAM_EPS,
+      req.targetResidualNorm ?? -1,
+      req.gradNormTol ?? -1,
+      req.plateau?.patience ?? 0,
+      req.plateau?.minDelta ?? 0,
+    );
+  } finally {
+    for (const ptr of Object.values(ptrs)) mod._free(ptr);
+  }
+
+  if (rc !== 0) {
+    mod.removeFunction(forwardFnIdx);
+    mod.removeFunction(adjointFnIdx);
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error: `adjoint_init failed (code ${rc}).`,
+    });
+    return;
+  }
+
+  session = {
+    backend: "adjoint",
+    primaryFnIdx: forwardFnIdx,
+    secondaryFnIdx: adjointFnIdx,
+    nPars: req.pars.length,
+  };
+  postInitResult({
+    requestId: req.requestId,
+    ok: true,
+    initialResidualNorm: mod._adjoint_get_residual_norm(),
   });
 }
 
@@ -244,6 +404,11 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
       reason: "error",
       err,
     });
+    return;
+  }
+
+  if (session.backend === "adjoint") {
+    handleAdjointChunk(req, mod, session);
     return;
   }
 
@@ -280,11 +445,51 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
   });
 }
 
+/** The "adjoint" backend's FIT_CHUNK path — see `adjointInfoToReason`'s doc comment for why `ADJOINT_INFO_BUDGET_REACHED` maps to `done: false`, not a terminal reason. */
+function handleAdjointChunk(
+  req: FitChunkRequest,
+  mod: EmscriptenModule,
+  s: FitSession,
+) {
+  const info = mod._adjoint_chunk(req.maxIterations);
+  const outPtr = mod._malloc(s.nPars * 8);
+  let params: number[];
+  try {
+    mod._adjoint_get_params(outPtr);
+    params = Array.from(mod.HEAPF64.subarray(outPtr / 8, outPtr / 8 + s.nPars));
+  } finally {
+    mod._free(outPtr);
+  }
+
+  const done = info !== ADJOINT_INFO_BUDGET_REACHED;
+  postProgress({
+    requestId: req.requestId,
+    backend: "adjoint",
+    nfev: mod._adjoint_get_steps(),
+    residualNorm: mod._adjoint_get_residual_norm(),
+    gradNorm: mod._adjoint_get_grad_norm(),
+    params,
+    done,
+    reason: done ? adjointInfoToReason(info) : undefined,
+    err:
+      info < 0
+        ? {
+            message: `Adjoint fit failed (code ${info}).`,
+            hints: ["Check the browser console."],
+          }
+        : undefined,
+  });
+}
+
 function handleFitFree(req: FitFreeRequest, mod: EmscriptenModule) {
-  mod._fit_free();
+  if (session?.backend === "adjoint") {
+    mod._adjoint_free();
+  } else {
+    mod._fit_free();
+  }
   if (session) {
-    mod.removeFunction(session.modelFnIdx);
-    if (session.derivedFnIdx !== null) mod.removeFunction(session.derivedFnIdx);
+    mod.removeFunction(session.primaryFnIdx);
+    if (session.secondaryFnIdx !== null) mod.removeFunction(session.secondaryFnIdx);
     session = null;
   }
   postMessage({ type: "FIT_FREE_RESULT", requestId: req.requestId });
