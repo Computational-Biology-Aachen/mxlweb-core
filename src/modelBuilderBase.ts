@@ -255,15 +255,35 @@ export abstract class ModelBuilderBase {
     const config = this.nnBlocks.get(key);
     if (!config) return this;
     this.unwireNNBlockOutputs(key, config.targets);
-    const weightPrefix = `${key}_w`;
-    const biasPrefix = `${key}_b`;
-    for (const name of [...this.parameters.keys()]) {
-      if (name.startsWith(weightPrefix) || name.startsWith(biasPrefix)) {
+    for (const name of this.parameters.keys()) {
+      if (name.startsWith(`${key}_w`) || name.startsWith(`${key}_b`)) {
         this.removeParameter(name);
       }
     }
     this.nnBlocks.delete(key);
     return this;
+  }
+
+  /**
+   * Every parameter name owned by some NN block's generated weights/biases
+   * (ADR 0005 §2.1.3) — a block is authored/resized as one unit in its own
+   * UI, never expanded into individual parameter-table rows, fit checkboxes,
+   * scan-target options, or sliders. Every mxl-web surface that lists
+   * `parameters` for one of those purposes must exclude this set rather than
+   * reimplementing the `${key}_w`/`${key}_b` prefix match itself.
+   */
+  nnBlockOwnedParameterNames(): Set<string> {
+    const owned = new Set<string>();
+    for (const key of this.nnBlocks.keys()) {
+      const weightPrefix = `${key}_w`;
+      const biasPrefix = `${key}_b`;
+      for (const name of this.parameters.keys()) {
+        if (name.startsWith(weightPrefix) || name.startsWith(biasPrefix)) {
+          owned.add(name);
+        }
+      }
+    }
+    return owned;
   }
 
   /**
