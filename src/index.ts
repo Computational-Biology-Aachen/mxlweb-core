@@ -152,6 +152,17 @@ export interface FitInitRequest {
   derivedWat?: string;
   /** Size of derivedWat's output buffer (0 if derivedWat is omitted). */
   nDerived: number;
+  /**
+   * The backward/VJP WAT module (ADR 0005 §2.3.4, `ModelBuilderBase.
+   * buildAdjointWat`) — required iff `backend === "adjoint"`, generated
+   * lazily by the caller only when actually requesting that backend
+   * (mirrors `derivedWat`'s own optional/on-demand pattern). Ignored under
+   * `"lm"`, which has no use for analytic derivatives at all. The
+   * `"adjoint"` backend is v1-restricted to state-variable targets only
+   * (no `kind: "derived"` in `targets`) — see `adjoint_wrapper.c`'s own
+   * doc comment for why.
+   */
+  adjointWat?: string;
   y0: number[];
   /** Full parameter vector — fixed values stay put; fitted values (selected
    * by `fitIdx`) are the initial guess. */
@@ -183,9 +194,12 @@ export interface FitInitRequest {
    * `minDelta` for `patience` consecutive iterations. */
   plateau?: { patience: number; minDelta: number };
   /** Escape hatch for tests/debugging only — never wired into `FitEditor`.
-   * Omitted, backend selection is automatic (ADR 0005 §2.4): measured against
-   * `fitIdx.length` and the wall-clock cost of the one forward solve `fit_init`
-   * already performs for `initialResidualNorm`. */
+   * Omitted, backend selection is automatic and made entirely client-side
+   * (ADR 0005 §2.4): any active NN block forces `"adjoint"` unconditionally;
+   * a purely mechanistic model with many fitted parameters falls back to a
+   * measured-cost check against `fitIdx.length` and the wall-clock cost of
+   * one forward solve. Either way the decision (and, when `"adjoint"`,
+   * generating `adjointWat`) happens before this request is even built. */
   backend?: FitBackend;
 }
 

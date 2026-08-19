@@ -80,6 +80,42 @@ export interface EmscriptenModule {
   _fit_get_residual_norm(): number;
   _fit_get_params(outPtr: number): void;
   _fit_free(): void;
+  /** Adjoint-only exports (adjoint_wrapper.c, ADR 0005 §2.3.3) — unused by "lm" fits and the plain simulation worker. */
+  _set_forward_model_fn(tableIdx: number): void;
+  _set_adjoint_fn(tableIdx: number): void;
+  _adjoint_init(
+    nY: number,
+    y0Ptr: number,
+    nPars: number,
+    parsPtr: number,
+    nTheta: number,
+    thetaIdxPtr: number,
+    nTargets: number,
+    targetIndexPtr: number,
+    targetScalePtr: number,
+    nPoints: number,
+    dataTPtr: number,
+    dataYPtr: number,
+    tEnd: number,
+    solverId: number,
+    rtol: number,
+    atol: number,
+    lr: number,
+    beta1: number,
+    beta2: number,
+    eps: number,
+    targetResidualNorm: number,
+    gradNormTol: number,
+    plateauPatience: number,
+    plateauMinDelta: number,
+  ): number;
+  _adjoint_chunk(maxIterations: number): number;
+  _adjoint_get_steps(): number;
+  _adjoint_get_residual_norm(): number;
+  _adjoint_get_grad_norm(): number;
+  _adjoint_get_grad(outPtr: number): void;
+  _adjoint_get_params(outPtr: number): void;
+  _adjoint_free(): void;
   HEAPF64: Float64Array;
   HEAP32: Int32Array;
   wasmMemory: WebAssembly.Memory;
