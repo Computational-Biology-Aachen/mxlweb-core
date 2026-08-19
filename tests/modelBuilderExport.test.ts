@@ -255,6 +255,7 @@ describe("buildMxlJson", () => {
       "reactions",
       "derived",
       "readouts",
+      "nn_blocks",
     ]);
 
     expect(doc.model.variables.A).toEqual({

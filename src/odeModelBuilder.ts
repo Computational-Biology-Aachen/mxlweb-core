@@ -92,6 +92,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
       parameters: this.mxlParameters(),
       derived: this.mxlDerived(),
       readouts: {},
+      nn_blocks: this.mxlNNBlocks(),
     };
   }
 
