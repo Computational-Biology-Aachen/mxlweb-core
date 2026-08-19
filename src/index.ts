@@ -2,8 +2,9 @@
  * Public entry point for `@computational-biology-aachen/mxlweb-core`.
  *
  * Re-exports the model builders ({@link ModelBuilderBase}, the kinetic, ODE, and
- * steady-state builders), the intermediate representation, and the JS integrator
- * types, and
+ * steady-state builders), the intermediate representation, the JS integrator
+ * types, and the UDE/NODE correction-term generator ({@link buildNNBlock},
+ * ADR 0005 in the mxlweb repo), and
  * defines the message protocol exchanged with the compute web workers
  * ({@link SimulationRequest} / {@link SimulationResult} / {@link SimulationError}).
  *
@@ -13,6 +14,7 @@
 export * from "./modelBuilderBase.js";
 export * from "./modelIr.js";
 export * from "./kineticModelBuilder.js";
+export * from "./nnBlock.js";
 export * from "./odeModelBuilder.js";
 export * from "./steadyStateModelBuilder.js";
 export * from "./backends/js/integrators/index.js";
