@@ -400,6 +400,12 @@ export class Name extends Nullary {
     if (ctx.localNames?.has(this.name)) {
       return `(local.get $${this.name})`;
     }
+    const li = ctx.lambdaIndex?.get(this.name);
+    if (li !== undefined) {
+      // Adjoint function only (buildAdjointWat) — param local 3 is the
+      // lambda pointer there, in place of the forward function's out_ptr.
+      return `(f64.load (i32.add (local.get 3) (i32.const ${li * 8})))`;
+    }
     const vi = ctx.varIndex.get(this.name);
     if (vi !== undefined) {
       return `(f64.load (i32.add (local.get 2) (i32.const ${vi * 8})))`;

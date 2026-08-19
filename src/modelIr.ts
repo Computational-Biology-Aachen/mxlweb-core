@@ -1,5 +1,9 @@
-import { buildDerivedWat, buildModelWat } from "./backends/wasm/wat-codegen.js";
-import { Base, Num } from "./mathml/index.js";
+import {
+  buildAdjointWat,
+  buildDerivedWat,
+  buildModelWat,
+} from "./backends/wasm/wat-codegen.js";
+import { Add, Base, type GradMap, Mul, Name, Num } from "./mathml/index.js";
 
 /**
  * Intermediate representation shared by every model builder.
@@ -145,6 +149,110 @@ export function irToWatDerived(ir: ModelIR, selectedDerived: string[]): string {
     ir.parNames,
     "time",
     intermediates,
+  );
+}
+
+/**
+ * Symbolic name for the adjoint variable λ_i (ADR 0005 §2.3) as a *runtime
+ * input* — resolved via `WatContext.lambdaIndex`, not a leaf the forward
+ * model owns. Double-underscore prefixed so it can't collide with a real
+ * model symbol a user might author (mirrored by `WatContext`'s own doc
+ * comment).
+ */
+export function adjointLambdaName(i: number): string {
+  return `__adjoint_lambda_${i}`;
+}
+
+function adjointAccumName(intermediateName: string): string {
+  return `__adjoint_accum_${intermediateName}`;
+}
+
+function sumContributions(contributions: Base[] | undefined): Base {
+  if (!contributions || contributions.length === 0) return new Num(0);
+  return contributions.length === 1 ? contributions[0] : new Add(contributions);
+}
+
+/** Output of {@link buildAdjointGraph} — see `buildAdjointWat`'s doc comment for how the two halves of `intermediates` are told apart. */
+export interface AdjointGraph {
+  intermediates: ModelIntermediate[];
+  dlambda: { varName: string; expr: Base }[];
+  dtheta: { thetaName: string; expr: Base }[];
+}
+
+/**
+ * The graph-level backward-WAT orchestration ADR 0005 §4 flagged as
+ * "deliberately deferred past this ADR" — ties the per-node
+ * `Base.pushGradient` rules (§2.2) into a full model.
+ *
+ * The trick: `L = Σ_i λ_i · f_i` (f_i = dx_i/dt) is one scalar expression;
+ * seeding its reverse-mode walk with `-1` produces `dλ/dt = -∂L/∂y` and
+ * `dθ/dt = -∂L/∂θ` in a *single* backward pass — exactly the vector-Jacobian
+ * product the adjoint method needs, with λ playing the role of the seed
+ * cotangent. Walking `ir.intermediates` in reverse (mirroring their forward
+ * topological order) rather than treating `L` as one flat tree is what
+ * makes this cheap rather than naive-symbolic-diff-shaped: each
+ * intermediate's accumulated adjoint is computed once, stored as its own
+ * named local (`adjointAccumName`), and referenced by `Name` everywhere
+ * downstream needs it — the same sharing `wat-codegen.ts` already relies on
+ * for the forward pass, not a new mechanism.
+ */
+export function buildAdjointGraph(
+  ir: ModelIR,
+  thetaNames: string[],
+): AdjointGraph {
+  const lambdaNames = ir.varNames.map((_, i) => adjointLambdaName(i));
+  const lTerms = ir.varNames.map(
+    (name, i) => new Mul([new Name(lambdaNames[i]), rhsOf(ir, name)]),
+  );
+
+  const grads: GradMap = new Map();
+  for (const term of lTerms) {
+    term.pushGradient(new Num(-1), grads);
+  }
+
+  const adjointAccum: ModelIntermediate[] = [];
+  for (let i = ir.intermediates.length - 1; i >= 0; i--) {
+    const { name, expr } = ir.intermediates[i];
+    const contributions = grads.get(name);
+    if (!contributions || contributions.length === 0) continue;
+    const accumName = adjointAccumName(name);
+    adjointAccum.push({ name: accumName, expr: sumContributions(contributions) });
+    // Push the *local reference*, not `contributions` again, so anything
+    // further upstream shares this one computed value instead of
+    // re-expanding it at every use.
+    expr.pushGradient(new Name(accumName), grads);
+  }
+
+  return {
+    intermediates: [...ir.intermediates, ...adjointAccum],
+    dlambda: ir.varNames.map((name) => ({
+      varName: name,
+      expr: sumContributions(grads.get(name)),
+    })),
+    dtheta: thetaNames.map((name) => ({
+      thetaName: name,
+      expr: sumContributions(grads.get(name)),
+    })),
+  };
+}
+
+/**
+ * irToAdjointWat — the adjoint RHS WAT module (ADR 0005 §2.3.4's
+ * `adjointWat`), generated lazily by callers only when a fit session
+ * actually needs the "adjoint" backend — see `buildAdjointGraph`'s doc
+ * comment for the algorithm.
+ */
+export function irToAdjointWat(ir: ModelIR, thetaNames: string[]): string {
+  const graph = buildAdjointGraph(ir, thetaNames);
+  const lambdaNames = ir.varNames.map((_, i) => adjointLambdaName(i));
+  return buildAdjointWat(
+    graph.dlambda,
+    graph.dtheta,
+    ir.varNames,
+    ir.parNames,
+    lambdaNames,
+    "time",
+    graph.intermediates,
   );
 }
 

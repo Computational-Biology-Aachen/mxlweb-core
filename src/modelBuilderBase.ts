@@ -2,6 +2,7 @@ import { SvelteMap } from "svelte/reactivity";
 import { Base, type JsonNode } from "./mathml/index.js";
 import {
   evalInitialAssignment,
+  irToAdjointWat,
   irToJs,
   irToJsDerived,
   irToPython,
@@ -430,6 +431,15 @@ export abstract class ModelBuilderBase {
 
   buildWat(): string {
     return irToWat(this.lower());
+  }
+
+  /**
+   * The adjoint RHS WAT module for the given fitted parameter names (ADR
+   * 0005 §2.3.4) — call only when actually starting an `"adjoint"` fit
+   * session; `wasmWorker.ts` and an `"lm"` fit never call this at all.
+   */
+  buildAdjointWat(thetaNames: string[]): string {
+    return irToAdjointWat(this.lower(), thetaNames);
   }
 
   /** WAT module computing `selectedDerived` (see ADR 0004 in the mxlweb repo). */
