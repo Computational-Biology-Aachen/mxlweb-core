@@ -35,9 +35,22 @@ extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y,
 typedef void (*ModelFn)(int, double, double *, double *, double *);
 static ModelFn g_model_fn = NULL;
 
-/* Called from JS before run_radau5 to register the model function */
+/* Called from JS before run_radau5 to register the model function. The
+ * table_idx comes from Emscripten's addFunction, which is only meaningful
+ * for a JS-side callback — a WAT-compiled model function, in every existing
+ * caller. */
 void set_model_fn(int table_idx) {
     g_model_fn = (ModelFn)(intptr_t)table_idx;
+}
+
+/* C-internal counterpart of set_model_fn: registers a real, already-linked
+ * C function pointer directly, bypassing the table-index indirection.
+ * adjoint_wrapper.c (ADR 0005 §2.3.3) uses this to swap g_model_fn between
+ * the forward model and its own native adjoint_rhs_dispatch across the
+ * forward/backward halves of one Adam step, without needing a fake
+ * Emscripten table entry for a function that was never a JS callback. */
+void set_model_fn_ptr(ModelFn fn) {
+    g_model_fn = fn;
 }
 
 /* ------------------------------------------------------------------ */
