@@ -1,5 +1,7 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
-import { Base, type JsonNode, Name, Num, reviveNode } from "./base.js";
+import { Base, E, type GradMap, type JsonNode, Name, Num, reviveNode } from "./base.js";
+import { mulAdjoint, negAdjoint } from "./grad.js";
+import { Divide, Mul } from "./nary.js";
 
 /**
  * Unary functions that also carry a second, base/degree operand and therefore
@@ -89,6 +91,24 @@ export class Log extends Base {
     this.base.getSymbols(symbols);
     return symbols;
   }
+
+  /**
+   * `log_base(child) = ln(child) / ln(base)`: d/dchild = `1 / (child · ln(base))`,
+   * d/dbase = `-ln(child) / (base · ln(base)²)`. "ln(x)" is represented as
+   * `Log(x, E())` (self-reference, `E` is a plain constant node) rather than
+   * `Ln` from `unary.ts` — that module needs `Sqrt` from *this* one for its
+   * own inverse-trig rules, so this stays a one-way dependency.
+   */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    const lnBase = new Log(this.base, new E());
+    const lnChild = new Log(this.child, new E());
+    const childFactor = new Divide([new Num(1), new Mul([this.child, lnBase])]);
+    this.child.pushGradient(mulAdjoint(adjoint, childFactor), grads);
+    const baseFactor = negAdjoint(
+      new Divide([lnChild, new Mul([this.base, new Mul([lnBase, lnBase])])]),
+    );
+    this.base.pushGradient(mulAdjoint(adjoint, baseFactor), grads);
+  }
 }
 
 /** The `base`-th root of `child`, i.e. `child ** (1 / base)` (defaults to square root). */
@@ -166,5 +186,30 @@ export class Sqrt extends Base {
     this.child.getSymbols(symbols);
     this.base.getSymbols(symbols);
     return symbols;
+  }
+
+  /**
+   * `child^(1/base)`: d/dchild = `(1/base) · child^(1/base - 1)`, rewritten
+   * as `(1/base) · (thisValue/child)` to avoid a fractional-exponent `Pow`
+   * node. d/dbase = `thisValue · ln(child) · (-1/base²)` (product/chain rule
+   * through the `1/base` exponent). `thisValue` is a fresh clone of this
+   * whole expression — a bounded, local recomputation (see `Divide`'s
+   * `pushGradient` in `nary.ts` for the same pattern and why it's fine).
+   */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    const wholeForChild = new Sqrt(this.child, this.base);
+    const childFactor = new Mul([
+      new Divide([new Num(1), this.base]),
+      new Divide([wholeForChild, this.child]),
+    ]);
+    this.child.pushGradient(mulAdjoint(adjoint, childFactor), grads);
+
+    const wholeForBase = new Sqrt(this.child, this.base);
+    const lnChild = new Log(this.child, new E());
+    const baseFactor = new Mul([
+      new Mul([wholeForBase, lnChild]),
+      negAdjoint(new Divide([new Num(1), new Mul([this.base, this.base])])),
+    ]);
+    this.base.pushGradient(mulAdjoint(adjoint, baseFactor), grads);
   }
 }

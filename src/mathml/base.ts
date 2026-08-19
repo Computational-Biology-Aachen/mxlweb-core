@@ -59,6 +59,25 @@ export type JsonNode = {
 };
 
 /**
+ * Accumulates reverse-mode adjoint contributions per symbol name during
+ * {@link Base.pushGradient} (ADR 0005, mxlweb repo, §2.2 — see `grad.ts` for
+ * the full contract and the combinators most `pushGradient` implementations
+ * use). A `Map`, not an object, since symbol names are arbitrary model
+ * variable/parameter identifiers, not a fixed set of keys.
+ */
+export type GradMap = Map<string, Base[]>;
+
+/** Records that `adjoint` flows into the symbol `name`; used by {@link Name.pushGradient}. */
+export function pushGradientTo(grads: GradMap, name: string, adjoint: Base): void {
+  const existing = grads.get(name);
+  if (existing) {
+    existing.push(adjoint);
+  } else {
+    grads.set(name, [adjoint]);
+  }
+}
+
+/**
  * Common ancestor for every expression-tree node.
  *
  * Subclasses implement the serialisers and tree operations below. Each instance
@@ -95,6 +114,18 @@ export abstract class Base {
   abstract toJson(): JsonNode;
   /** Collect the mathml constructor class names used in this subtree into `ctors` (for import generation). */
   abstract getCtors(ctors: Set<string>): Set<string>;
+  /**
+   * Reverse-mode sensitivity (ADR 0005 §2.2): given the symbolic adjoint
+   * expression flowing *into* this node's value, push the chain-rule-derived
+   * adjoint for each child this node structurally depends on into `grads` —
+   * for {@link Name}, this is where it actually lands (via
+   * {@link pushGradientTo}); every other node type recurses into its
+   * children with a transformed adjoint. See `grad.ts` for the shared
+   * combinators (`mulAdjoint`/`negAdjoint`/`sqrtOf`) most implementations
+   * use, and ADR 0005 §2.2.1 for the documented-zero convention non-smooth
+   * node types (`Floor`, comparisons, ...) follow.
+   */
+  abstract pushGradient(adjoint: Base, grads: GradMap): void;
   // abstract default(): Base;
   /**
    * Return a copy of this subtree with the node whose id is `id` replaced by
@@ -383,6 +414,9 @@ export class Name extends Nullary {
     symbols.add(this.name);
     return symbols;
   }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    pushGradientTo(grads, this.name, adjoint);
+  }
 }
 
 /** A numeric literal constant. */
@@ -424,6 +458,8 @@ export class Num extends Nullary {
   getSymbols(symbols: Set<string>): Set<string> {
     return symbols;
   }
+  /** A literal constant has no children to push a gradient into. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** The mathematical constant π (MathML `<pi/>`). */
@@ -453,6 +489,8 @@ export class Pi extends Nullary {
   getSymbols(symbols: Set<string>): Set<string> {
     return symbols;
   }
+  /** A constant has no children to push a gradient into. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Euler's number e (MathML `<exponentiale/>`). */
@@ -482,6 +520,8 @@ export class E extends Nullary {
   getSymbols(symbols: Set<string>): Set<string> {
     return symbols;
   }
+  /** A constant has no children to push a gradient into. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** A boolean literal, `true` or `false` (MathML `<true/>` / `<false/>`). In WAT it is the i32 `1`/`0` the logical/relational nodes operate on. */
@@ -523,4 +563,6 @@ export class Bool extends Nullary {
   getSymbols(symbols: Set<string>): Set<string> {
     return symbols;
   }
+  /** A boolean literal is not a differentiable quantity; no children either way. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }

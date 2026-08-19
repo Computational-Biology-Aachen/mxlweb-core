@@ -1,5 +1,6 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
-import { Base, Nary } from "./base.js";
+import { Base, type GradMap, Nary, Num } from "./base.js";
+import { mulAdjoint, negAdjoint } from "./grad.js";
 
 /**
  * Variadic operator nodes: arithmetic (`+`, `-`, `*`, `/`, integer division,
@@ -40,6 +41,22 @@ export class Max extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(call $math_max ${a} ${b})`);
   }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    // Route the adjoint only to whichever child(ren) actually achieved the
+    // max — the standard lax.cond/jnp.where-style subgradient rule. Built as
+    // a runtime-evaluated indicator (Piecewise), since which child wins
+    // depends on values only known when the model is actually solved, not
+    // at codegen time. Ties get credit on every side that's tied, not just
+    // the first — a defensible, simpler convention than picking one.
+    for (let i = 0; i < this.children.length; i++) {
+      const others = this.children.filter((_, j) => j !== i);
+      const isMax = new And(
+        others.map((o) => new GreaterEqual([this.children[i], o])),
+      );
+      const indicator = new Piecewise([new Num(1), isMax, new Num(0)]);
+      this.children[i].pushGradient(mulAdjoint(adjoint, indicator), grads);
+    }
+  }
 }
 
 /** Minimum of all children (empty ⇒ +∞). */
@@ -65,6 +82,17 @@ export class Min extends Nary {
     return this.children
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(call $math_min ${a} ${b})`);
+  }
+  /** Mirror of {@link Max.pushGradient} with the comparison direction flipped. */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    for (let i = 0; i < this.children.length; i++) {
+      const others = this.children.filter((_, j) => j !== i);
+      const isMin = new And(
+        others.map((o) => new LessEqual([this.children[i], o])),
+      );
+      const indicator = new Piecewise([new Num(1), isMin, new Num(0)]);
+      this.children[i].pushGradient(mulAdjoint(adjoint, indicator), grads);
+    }
   }
 }
 
@@ -156,6 +184,38 @@ export class Piecewise extends Nary {
     }
     return result;
   }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    // Gate the adjoint by "was this branch actually the one taken" (its own
+    // condition true AND every earlier condition false, matching toWat's
+    // first-true-wins evaluation order). Condition children get no gradient
+    // at all — booleans aren't a differentiable quantity, ADR 0005 §2.2.1 —
+    // so only value children are visited.
+    const pairCount = Math.floor(this.children.length / 2);
+    const notEarlier: Base[] = [];
+    for (let i = 0; i < pairCount; i++) {
+      const value = this.children[2 * i];
+      const cond = this.children[2 * i + 1];
+      const taken =
+        notEarlier.length === 0 ? cond : new And([cond, ...notEarlier]);
+      const gated = mulAdjoint(
+        adjoint,
+        new Piecewise([new Num(1), taken, new Num(0)]),
+      );
+      value.pushGradient(gated, grads);
+      notEarlier.push(new Not([cond]));
+    }
+    if (this.children.length % 2 === 1) {
+      const otherwise = this.children[this.children.length - 1];
+      const gated =
+        notEarlier.length === 0
+          ? adjoint
+          : mulAdjoint(
+              adjoint,
+              new Piecewise([new Num(1), new And(notEarlier), new Num(0)]),
+            );
+      otherwise.pushGradient(gated, grads);
+    }
+  }
 }
 
 /** Remainder (modulo), folded left-to-right across children. */
@@ -191,6 +251,32 @@ export class Rem extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(call $math_rem ${a} ${b})`);
   }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    // rem(a,b) = a - floor(a/b)*b is piecewise-linear with jumps at
+    // multiples of b; away from those (measure-zero) jumps, d/da = 1 and
+    // d/db = -floor(a/b) — the standard "almost everywhere" AD convention,
+    // same spirit as Floor/Ceiling's documented zero (ADR 0005 §2.2.1).
+    // -floor(a/b) = (rem(a,b) - a) / b, which avoids depending on Floor
+    // itself: reuse a clone of the fold-so-far instead. The "a" branch of
+    // every fold step carries a ×1 factor, so it passes through unchanged
+    // all the way back to children[0] regardless of how many steps there
+    // are — only each divisor needs an actual per-step contribution.
+    const n = this.children.length;
+    if (n === 0) return;
+    if (n === 1) {
+      this.children[0].pushGradient(adjoint, grads);
+      return;
+    }
+    for (let k = n - 1; k >= 1; k--) {
+      const prefix =
+        k === 1 ? this.children[0] : new Rem(this.children.slice(0, k));
+      const divisor = this.children[k];
+      const thisStep = new Rem([prefix, divisor]);
+      const negFloor = new Divide([new Minus([thisStep, prefix]), divisor]);
+      divisor.pushGradient(mulAdjoint(adjoint, negFloor), grads);
+    }
+    this.children[0].pushGradient(adjoint, grads);
+  }
 }
 
 /** Logical conjunction of all children (empty ⇒ true). */
@@ -217,6 +303,8 @@ export class And extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; a truth value doesn't vary smoothly with its operands (ADR 0005 §2.2.1). No gradient flows through. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Logical negation (of the single child, or of the conjunction of several). */
@@ -255,6 +343,8 @@ export class Not extends Nary {
             .reduce((a, b) => `(i32.and ${a} ${b})`);
     return `(i32.eqz ${inner})`;
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Logical disjunction of all children (empty ⇒ false). */
@@ -281,6 +371,8 @@ export class Or extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(i32.or ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Exclusive-or of all children (empty ⇒ 0). */
@@ -310,6 +402,8 @@ export class Xor extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(i32.xor ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Equality across all children (pairwise `===`, all must match). */
@@ -350,6 +444,8 @@ export class Eq extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Chained `≥` comparison across consecutive children. */
@@ -390,6 +486,8 @@ export class GreaterEqual extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Chained `>` comparison across consecutive children. */
@@ -430,6 +528,8 @@ export class GreaterThan extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Chained `≤` comparison across consecutive children. */
@@ -470,6 +570,8 @@ export class LessEqual extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Chained `<` comparison across consecutive children. */
@@ -510,6 +612,8 @@ export class LessThan extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.and ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Inequality — true if any consecutive pair differs. */
@@ -550,6 +654,8 @@ export class NotEqual extends Nary {
     }
     return pairs.reduce((a, b) => `(i32.or ${a} ${b})`);
   }
+  /** Boolean-valued; see {@link And.pushGradient}. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
 
 /** Sum of all children (empty ⇒ 0). In TeX, a unary {@link Minus} child renders as subtraction. */
@@ -582,6 +688,10 @@ export class Add extends Nary {
     return this.children
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(f64.add ${a} ${b})`);
+  }
+  /** d(sum)/d(child_i) = 1 for every child — the adjoint passes through unchanged to all of them. */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    for (const child of this.children) child.pushGradient(adjoint, grads);
   }
 }
 
@@ -624,6 +734,25 @@ export class Minus extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(f64.sub ${a} ${b})`);
   }
+  /**
+   * `length === 1` is unary negation (d/dchild = -1); `length ≥ 2` is
+   * left-folded subtraction `c0 - c1 - c2 - ...`, which — regardless of fold
+   * grouping — has a closed-form gradient: +1 to the first child, -1 to
+   * every other one (subtraction distributes: `c0-c1-c2 ≡ c0-(c1+c2)` for
+   * this purpose even though the generated WAT folds pairwise).
+   */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    if (this.children.length === 0) return;
+    if (this.children.length === 1) {
+      this.children[0].pushGradient(negAdjoint(adjoint), grads);
+      return;
+    }
+    this.children[0].pushGradient(adjoint, grads);
+    const negated = negAdjoint(adjoint);
+    for (let i = 1; i < this.children.length; i++) {
+      this.children[i].pushGradient(negated, grads);
+    }
+  }
 }
 
 /** Product of all children (empty ⇒ 1). Sum/difference children are parenthesised. */
@@ -665,6 +794,19 @@ export class Mul extends Nary {
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(f64.mul ${a} ${b})`);
   }
+  /** Standard product rule: d(product)/d(child_i) = product of every *other* child (`1` if there are none, matching an empty product). */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    for (let i = 0; i < this.children.length; i++) {
+      const others = this.children.filter((_, j) => j !== i);
+      const factor =
+        others.length === 0
+          ? new Num(1)
+          : others.length === 1
+            ? others[0]
+            : new Mul(others);
+      this.children[i].pushGradient(mulAdjoint(adjoint, factor), grads);
+    }
+  }
 }
 
 /** Division, folded left-to-right across children (empty ⇒ 0). */
@@ -702,6 +844,33 @@ export class Divide extends Nary {
     return this.children
       .map((c) => c.toWat(ctx))
       .reduce((a, b) => `(f64.div ${a} ${b})`);
+  }
+  /**
+   * Left-folded division `c0/c1/c2/.../cn` equals `c0/(c1·c2·...·cn)`
+   * regardless of fold grouping (a true algebraic identity), so: d/dc0 =
+   * `1/(c1·...·cn)`, and d/dc_i (i≥1) = `-whole/c_i` (quotient rule). `whole`
+   * is a fresh clone of this entire expression — a bounded, local
+   * recomputation (this one node's own forward value, not a repeated deep
+   * subtree), not the unbounded blowup naive symbolic diff risks.
+   */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    const n = this.children.length;
+    if (n === 0) return;
+    if (n === 1) {
+      this.children[0].pushGradient(adjoint, grads);
+      return;
+    }
+    const rest = this.children.slice(1);
+    const denom = rest.length === 1 ? rest[0] : new Mul(rest);
+    this.children[0].pushGradient(
+      mulAdjoint(adjoint, new Divide([new Num(1), denom])),
+      grads,
+    );
+    const whole = new Divide(this.children);
+    for (let i = 1; i < n; i++) {
+      const factor = negAdjoint(new Divide([whole, this.children[i]]));
+      this.children[i].pushGradient(mulAdjoint(adjoint, factor), grads);
+    }
   }
 }
 
@@ -746,4 +915,6 @@ export class IntDivide extends Nary {
       .reduce((a, b) => `(f64.div ${a} ${b})`);
     return `(f64.trunc ${divided})`;
   }
+  /** Piecewise-constant (truncated), same convention as Floor/Ceiling (ADR 0005 §2.2.1): zero almost everywhere, undefined only at the measure-zero jump points. */
+  pushGradient(_adjoint: Base, _grads: GradMap): void {}
 }
