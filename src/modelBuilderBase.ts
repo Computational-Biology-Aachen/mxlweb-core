@@ -56,26 +56,43 @@ export type NNBlockConfig = {
   seed: number;
   /** Which existing variable(s) this block corrects — one per output, so its length *is* the block's output count. */
   targets: string[];
-  /** Whether this block's weights are included when fitting (ADR 0005 §2.1.3's per-block toggle) — a UI/fit-config concern downstream (`mxl-web`), not interpreted here. */
+  /** Whether this block's weights (and its `scale`) are included when fitting (ADR 0005 §2.1.3's per-block toggle) — a UI/fit-config concern downstream (`mxl-web`), not interpreted here. */
   trained: boolean;
+  /**
+   * Initial value for the block's single trainable output-scaling factor —
+   * `dx/dt = f(x,p,t) + scale · NN(x,θ)` — shared across all of the block's
+   * outputs. Needed in practice, not just cosmetically: a freshly
+   * Glorot-initialized network's raw output can be large enough to blow up
+   * the very first fit iteration on a bigger block; starting small (default
+   * `0.1`, chosen — not derived — as a conservative starting point) and
+   * letting the scale itself train fixes that without capping the
+   * network's own expressiveness. Like `seed`, this is only the value
+   * `addNNBlock` seeds the generated `${key}_scale` Parameter with — from
+   * then on the live value in `this.parameters` is authoritative (fitting
+   * or a direct edit updates it there, same as any weight/bias).
+   */
+  scale: number;
 };
 
 /**
- * Whether `name` is a weight/bias generated for NN block `blockKey` — the
- * generator's naming convention is `${blockKey}_w${layerIdx}_${i}_${j}` /
- * `${blockKey}_b${layerIdx}_${i}` (`nnBlock.ts`), so a bare `startsWith`
- * prefix check is unsafe: a hand-authored parameter like `corr_water_temp`
- * would false-positive match block `"corr"`'s `_w` prefix. Requiring a
- * digit (the layer index) immediately after the prefix rules that out,
- * since every real generated name has one there and essentially no
- * hand-typed name does. Exported so a caller that already has a specific
- * block key in hand (e.g. `Fit.svelte` collecting one *trained* block's
- * weights) doesn't need its own copy of this check.
+ * Whether `name` is the scale, a weight, or a bias generated for NN block
+ * `blockKey` — the generator's naming convention is `${blockKey}_scale`,
+ * `${blockKey}_w${layerIdx}_${i}_${j}`, `${blockKey}_b${layerIdx}_${i}`
+ * (`nnBlock.ts`), so a bare `startsWith` prefix check is unsafe: a
+ * hand-authored parameter like `corr_water_temp` would false-positive match
+ * block `"corr"`'s `_w` prefix. Requiring a digit (the layer index)
+ * immediately after the weight/bias prefix rules that out, since every real
+ * generated name has one there and essentially no hand-typed name does;
+ * `_scale` has no such suffix so it's matched exactly instead. Exported so
+ * a caller that already has a specific block key in hand (e.g. `Fit.svelte`
+ * collecting one *trained* block's fittable parameters) doesn't need its
+ * own copy of this check.
  */
 export function isNNBlockOwnedParamName(
   name: string,
   blockKey: string,
 ): boolean {
+  if (name === `${blockKey}_scale`) return true;
   for (const infix of ["_w", "_b"]) {
     const prefix = `${blockKey}${infix}`;
     if (name.startsWith(prefix) && /^\d/.test(name.slice(prefix.length))) {
@@ -137,6 +154,7 @@ export type MxlEntity = {
   seed?: number;
   targets?: string[];
   trained?: boolean;
+  scale?: number;
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
@@ -273,6 +291,7 @@ export abstract class ModelBuilderBase {
       width: config.width,
       outputs: config.targets.length,
       seed: config.seed,
+      scale: config.scale,
     });
     // Wire first, mutate second: SteadyStateModelBuilder's override throws
     // (no dx/dt for a correction term to feed into) — calling it before
@@ -338,10 +357,15 @@ export abstract class ModelBuilderBase {
    * `f(x,p,t) + NN(x,θ)` — one labeled function of the state, not its
    * internals. A block's inputs are always every state variable (no
    * per-block input picker), so `\vec{x}` is exactly accurate, not a
-   * simplification.
+   * simplification. The leading `s_{block} \cdot` mirrors the block's own
+   * generated expression (`buildNNBlock` multiplies every output by
+   * `${key}_scale`) — showing it here is the whole point of exposing the
+   * scale as a trainable, user-facing knob rather than baking it silently
+   * into the network.
    */
   protected nnBlockTexTerm(blockKey: string): string {
-    return `NN_{${texEscape(blockKey)}}(\\vec{x})`;
+    const escaped = texEscape(blockKey);
+    return `s_{${escaped}} \\cdot NN_{${escaped}}(\\vec{x})`;
   }
 
   /**
@@ -366,6 +390,7 @@ export abstract class ModelBuilderBase {
         width: config.width,
         outputs: config.targets.length,
         seed: config.seed,
+        scale: config.scale,
       });
       outputs.forEach((output, i) => {
         const target = config.targets[i];
@@ -707,6 +732,7 @@ ${chains.join("\n")};
         seed: b.seed,
         targets: b.targets,
         trained: b.trained,
+        scale: b.scale,
       };
     }
     return out;
@@ -767,6 +793,7 @@ ${chains.join("\n")};
       ["seed", `${b.seed}`],
       ["targets", JSON.stringify(b.targets)],
       ["trained", `${b.trained}`],
+      ["scale", `${b.scale}`],
     ]);
   }
 }

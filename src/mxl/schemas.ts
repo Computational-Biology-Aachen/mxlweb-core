@@ -101,7 +101,7 @@ export const kineticSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained"],
+      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale"],
       additionalProperties: false,
       properties: {
         inputs: {
@@ -135,6 +135,11 @@ export const kineticSchema: JsonSchema = {
           type: "boolean",
           description:
             "Whether this block's weights are included when fitting the model.",
+        },
+        scale: {
+          type: "number",
+          description:
+            "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
         },
       },
     },
@@ -453,7 +458,7 @@ export const odeSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained"],
+      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale"],
       additionalProperties: false,
       properties: {
         inputs: {
@@ -487,6 +492,11 @@ export const odeSchema: JsonSchema = {
           type: "boolean",
           description:
             "Whether this block's weights are included when fitting the model.",
+        },
+        scale: {
+          type: "number",
+          description:
+            "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
         },
       },
     },

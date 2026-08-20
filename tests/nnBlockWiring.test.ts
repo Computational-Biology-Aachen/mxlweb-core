@@ -25,6 +25,7 @@ const smallBlock: NNBlockConfig = {
   seed: 1,
   targets: ["x"],
   trained: true,
+  scale: 0.1,
 };
 
 describe("KineticModelBuilder.addNNBlock", () => {
@@ -32,11 +33,11 @@ describe("KineticModelBuilder.addNNBlock", () => {
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
-    // layer0 (1 in -> 2 out): 2*1+2=4; output layer (2 -> 1): 1*2+1=3
+    // layer0 (1 in -> 2 out): 2*1+2=4; output layer (2 -> 1): 1*2+1=3; +1 scale
     const generated = [...builder.parameters.keys()].filter((k) =>
       k.startsWith("corr_"),
     );
-    expect(generated).toHaveLength(4 + 3);
+    expect(generated).toHaveLength(4 + 3 + 1);
   });
 
   it("adds one reaction per output, with stoichiometry {target: 1}", () => {
@@ -84,11 +85,11 @@ describe("KineticModelBuilder.addNNBlock", () => {
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
     builder.updateNNBlock("corr", { ...smallBlock, width: 5 });
-    // layer0 (1->5): 5+5=10; output (5->1): 5+1=6
+    // layer0 (1->5): 5+5=10; output (5->1): 5+1=6; +1 scale
     const generated = [...builder.parameters.keys()].filter((k) =>
       k.startsWith("corr_"),
     );
-    expect(generated).toHaveLength(10 + 6);
+    expect(generated).toHaveLength(10 + 6 + 1);
   });
 
   it("clone() copies nnBlocks", () => {
@@ -204,14 +205,15 @@ describe("OdeModelBuilder.addNNBlock", () => {
     const builder = new OdeModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
-    expect(builder.buildTex()).toContain("&= NN_{corr}(\\vec{x})");
+    expect(builder.buildTex()).toContain("&= s_{corr} \\cdot NN_{corr}(\\vec{x})");
   });
 
   it("escapes a block name containing '_' so it stays valid inside \\text{} (KaTeX, unlike plain LaTeX, rejects a bare '_' there)", () => {
     const builder = new OdeModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("my_block", smallBlock);
-    expect(builder.buildTex()).toContain("NN_{my\\_block}(\\vec{x})");
+    const tex = builder.buildTex();
+    expect(tex).toContain("s_{my\\_block} \\cdot NN_{my\\_block}(\\vec{x})");
   });
 });
 

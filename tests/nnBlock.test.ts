@@ -33,14 +33,21 @@ describe("buildNNBlock: architecture", () => {
     width: 3,
     outputs: 1,
     seed: 42,
+    scale: 0.1,
   };
 
   it("produces the expected parameter count", () => {
     // layer0 (2 in -> 3 out): 3*2 + 3 = 9
     // layer1 hidden->hidden (3 -> 3): 3*3 + 3 = 12
     // output layer (3 -> 1): 1*3 + 1 = 4
+    // plus one shared scale parameter
     const { parameters } = buildNNBlock(spec);
-    expect(parameters.size).toBe(9 + 12 + 4);
+    expect(parameters.size).toBe(9 + 12 + 4 + 1);
+  });
+
+  it("initializes the scale parameter to spec.scale", () => {
+    const { parameters } = buildNNBlock(spec);
+    expect(parameters.get("corr_scale")?.value).toBe(0.1);
   });
 
   it("produces one output expression", () => {
@@ -86,9 +93,10 @@ describe("buildNNBlock: architecture", () => {
       width: 64,
       outputs: 1,
       seed: 1,
+      scale: 0.1,
     });
-    // layer0: 64*1+64=128; 5x hidden->hidden: 5*(64*64+64)=20800; output: 1*64+1=65
-    expect(big.parameters.size).toBe(128 + 20800 + 65);
+    // layer0: 64*1+64=128; 5x hidden->hidden: 5*(64*64+64)=20800; output: 1*64+1=65; +1 scale
+    expect(big.parameters.size).toBe(128 + 20800 + 65 + 1);
   });
 });
 
@@ -100,6 +108,7 @@ describe("buildNNBlock: reproducibility", () => {
     width: 4,
     outputs: 1,
     seed: 7,
+    scale: 0.1,
   };
 
   it("the same seed produces identical weights", () => {
@@ -133,13 +142,15 @@ describe("buildNNBlock: softplus numerical stability (ADR 0005 §2.1.1)", () => 
       width: 1,
       outputs: 1,
       seed: 3,
+      scale: 1,
     });
     // Force the hidden unit's weight/bias to the identity (weight=1, bias=0)
     // so the hidden pre-activation is exactly `x`, isolating softplus itself.
     // Force the output layer to the identity too (weight=1, bias=0), so the
     // final value is exactly softplus(x) — otherwise the finite output
     // weight would already keep the result bounded/finite on its own,
-    // regardless of whether softplus itself overflowed internally.
+    // regardless of whether softplus itself overflowed internally. scale=1
+    // above keeps the block's own output-scaling factor a no-op here too.
     parameters.set("s_w0_0_0", { value: 1 });
     parameters.set("s_b0_0", { value: 0 });
     parameters.set("s_w1_0_0", { value: 1 });
@@ -166,6 +177,7 @@ describe("buildNNBlock: generated output is a valid, differentiable expression",
       width: 3,
       outputs: 1,
       seed: 11,
+      scale: 0.5,
     });
     const expr = outputs[0];
 
@@ -173,9 +185,11 @@ describe("buildNNBlock: generated output is a valid, differentiable expression",
     for (const [name, p] of parameters) env[name] = p.value;
 
     // Checking every parameter's gradient would be slow and redundant (the
-    // per-node rules are already exhaustively tested); spot-check the input
-    // plus a couple of representative weights from different layers.
-    const wrt = ["x", "n_w0_0_0", "n_w1_1_2", "n_w2_0_1"];
+    // per-node rules are already exhaustively tested); spot-check the input,
+    // the shared scale factor (a non-1 value here so this actually exercises
+    // the scale multiplication, not just a no-op), and a couple of
+    // representative weights from different layers.
+    const wrt = ["x", "n_scale", "n_w0_0_0", "n_w1_1_2", "n_w2_0_1"];
     const grads = gradient(expr, wrt);
     for (const name of wrt) {
       const symbolic = evalExpr(grads.get(name)!, env);
@@ -194,6 +208,7 @@ describe("buildNNBlock: input wiring", () => {
       width: 2,
       outputs: 1,
       seed: 5,
+      scale: 0.1,
     });
     const symbols = outputs[0].getSymbols(new Set<string>());
     expect(symbols.has("conc")).toBe(true);

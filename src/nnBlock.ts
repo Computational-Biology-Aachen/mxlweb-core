@@ -42,6 +42,16 @@ export type NNBlockSpec = {
   outputs: number;
   /** Seed for reproducible Glorot-uniform weight initialization. */
   seed: number;
+  /**
+   * Initial value for `${name}_scale` — every output gets multiplied by
+   * this single, shared, trainable factor: `dx/dt = f(x,p,t) + scale ·
+   * NN(x,θ)`. Needed in practice: a freshly Glorot-initialized network's
+   * raw output can be large enough to blow up the very first fit iteration
+   * on a bigger block; starting small (mxl-web defaults this to `0.1`) and
+   * letting the scale itself train fixes that without capping the
+   * network's own expressiveness.
+   */
+  scale: number;
 };
 
 export type NNBlockResult = {
@@ -163,7 +173,7 @@ export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
     layerInputNames = layerInputs.map((_, i) => `${spec.name}_h${layer}_${i}`);
   }
 
-  const outputs = buildLayer(
+  const rawOutputs = buildLayer(
     spec.name,
     spec.depth,
     layerInputs,
@@ -171,6 +181,22 @@ export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
     spec.outputs,
     rng,
     parameters,
+  );
+
+  // Single trainable factor shared across every output (NNBlockSpec.scale's
+  // doc comment). Named/tex'd like a weight/bias, not just given a bare
+  // value, for the same reason those need it: it's an ordinary Parameter
+  // like any other, and the live "Generated LaTeX" preview renders straight
+  // from this generator before any UI-side texName-defaulting ever runs.
+  const scaleName = `${spec.name}_scale`;
+  const scaleDisplayName = `${spec.name}: output scale`;
+  parameters.set(scaleName, {
+    value: spec.scale,
+    displayName: scaleDisplayName,
+    texName: defaultTexName(scaleDisplayName),
+  });
+  const outputs = rawOutputs.map(
+    (output) => new Mul([new Name(scaleName), output]),
   );
 
   return { parameters, outputs };
