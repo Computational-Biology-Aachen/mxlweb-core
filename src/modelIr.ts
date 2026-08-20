@@ -216,7 +216,10 @@ export function buildAdjointGraph(
     const contributions = grads.get(name);
     if (!contributions || contributions.length === 0) continue;
     const accumName = adjointAccumName(name);
-    adjointAccum.push({ name: accumName, expr: sumContributions(contributions) });
+    adjointAccum.push({
+      name: accumName,
+      expr: sumContributions(contributions),
+    });
     // Push the *local reference*, not `contributions` again, so anything
     // further upstream shares this one computed value instead of
     // re-expanding it at every use.

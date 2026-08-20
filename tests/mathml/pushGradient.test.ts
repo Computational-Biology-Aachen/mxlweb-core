@@ -118,36 +118,39 @@ function checkZeroGradient(expr: Base, name: string): void {
 }
 
 describe("unary smooth node types (finite-difference verified)", () => {
-  const cases: [name: string, Ctor: new (child: Base) => Base, points: number[]][] =
-    [
-      ["Abs", Abs, [1.5, -2.3, 4.1]],
-      ["Exp", Exp, [-1, 0.5, 2]],
-      ["Ln", Ln, [0.5, 1.7, 3.2]],
-      ["Sin", Sin, [-1.3, 0.7, 2.1]],
-      ["Cos", Cos, [-1.3, 0.7, 2.1]],
-      ["Tan", Tan, [0.4, 0.9, -0.6]],
-      ["Sec", Sec, [0.4, 0.9, -0.6]],
-      ["Csc", Csc, [0.4, 0.9, -0.6]],
-      ["Cot", Cot, [0.4, 0.9, -0.6]],
-      ["Asin", Asin, [-0.6, 0.2, 0.75]],
-      ["Acos", Acos, [-0.6, 0.2, 0.75]],
-      ["Atan", Atan, [-1.4, 0.5, 2.3]],
-      ["Acot", Acot, [-1.4, 0.5, 2.3]],
-      ["ArcSec", ArcSec, [1.5, -2.2, 3.1]],
-      ["ArcCsc", ArcCsc, [1.5, -2.2, 3.1]],
-      ["Sinh", Sinh, [-1.3, 0.7, 2.1]],
-      ["Cosh", Cosh, [-1.3, 0.7, 2.1]],
-      ["Tanh", Tanh, [-1.3, 0.7, 2.1]],
-      ["Sech", Sech, [-1.3, 0.7, 2.1]],
-      ["Csch", Csch, [-1.3, 0.7, 2.1]],
-      ["Coth", Coth, [-1.3, 0.7, 2.1]],
-      ["ArcSinh", ArcSinh, [-1.3, 0.7, 2.1]],
-      ["ArcCosh", ArcCosh, [1.5, 2.8, 4.0]],
-      ["ArcTanh", ArcTanh, [-0.6, 0.2, 0.75]],
-      ["ArcCsch", ArcCsch, [-1.5, 0.8, 2.2]],
-      ["ArcSech", ArcSech, [0.3, 0.6, 0.85]],
-      ["ArcCoth", ArcCoth, [1.5, -2.3, 3.0]],
-    ];
+  const cases: [
+    name: string,
+    Ctor: new (child: Base) => Base,
+    points: number[],
+  ][] = [
+    ["Abs", Abs, [1.5, -2.3, 4.1]],
+    ["Exp", Exp, [-1, 0.5, 2]],
+    ["Ln", Ln, [0.5, 1.7, 3.2]],
+    ["Sin", Sin, [-1.3, 0.7, 2.1]],
+    ["Cos", Cos, [-1.3, 0.7, 2.1]],
+    ["Tan", Tan, [0.4, 0.9, -0.6]],
+    ["Sec", Sec, [0.4, 0.9, -0.6]],
+    ["Csc", Csc, [0.4, 0.9, -0.6]],
+    ["Cot", Cot, [0.4, 0.9, -0.6]],
+    ["Asin", Asin, [-0.6, 0.2, 0.75]],
+    ["Acos", Acos, [-0.6, 0.2, 0.75]],
+    ["Atan", Atan, [-1.4, 0.5, 2.3]],
+    ["Acot", Acot, [-1.4, 0.5, 2.3]],
+    ["ArcSec", ArcSec, [1.5, -2.2, 3.1]],
+    ["ArcCsc", ArcCsc, [1.5, -2.2, 3.1]],
+    ["Sinh", Sinh, [-1.3, 0.7, 2.1]],
+    ["Cosh", Cosh, [-1.3, 0.7, 2.1]],
+    ["Tanh", Tanh, [-1.3, 0.7, 2.1]],
+    ["Sech", Sech, [-1.3, 0.7, 2.1]],
+    ["Csch", Csch, [-1.3, 0.7, 2.1]],
+    ["Coth", Coth, [-1.3, 0.7, 2.1]],
+    ["ArcSinh", ArcSinh, [-1.3, 0.7, 2.1]],
+    ["ArcCosh", ArcCosh, [1.5, 2.8, 4.0]],
+    ["ArcTanh", ArcTanh, [-0.6, 0.2, 0.75]],
+    ["ArcCsch", ArcCsch, [-1.5, 0.8, 2.2]],
+    ["ArcSech", ArcSech, [0.3, 0.6, 0.85]],
+    ["ArcCoth", ArcCoth, [1.5, -2.3, 3.0]],
+  ];
 
   it.each(cases)("%s", (_name, Ctor, points) => {
     for (const x of points) {
@@ -176,7 +179,10 @@ describe("Log/Sqrt (base.ts-independent two-operand unary-special nodes)", () =>
       [5, 3],
       [1.5, 7],
     ]) {
-      checkGradient(new Log(new Name("c"), new Name("b")), { c: child, b: base });
+      checkGradient(new Log(new Name("c"), new Name("b")), {
+        c: child,
+        b: base,
+      });
     }
   });
 
@@ -186,7 +192,10 @@ describe("Log/Sqrt (base.ts-independent two-operand unary-special nodes)", () =>
       [9, 3],
       [2.5, 2.7],
     ]) {
-      checkGradient(new Sqrt(new Name("c"), new Name("b")), { c: child, b: base });
+      checkGradient(new Sqrt(new Name("c"), new Name("b")), {
+        c: child,
+        b: base,
+      });
     }
   });
 });
@@ -198,7 +207,10 @@ describe("binary node types", () => {
       [1.5, 2.2],
       [3, 0.5],
     ]) {
-      checkGradient(new Pow(new Name("a"), new Name("b")), { a: left, b: right });
+      checkGradient(new Pow(new Name("a"), new Name("b")), {
+        a: left,
+        b: right,
+      });
     }
   });
 
@@ -221,7 +233,10 @@ describe("n-ary arithmetic node types", () => {
   });
 
   it("Minus — subtraction (multiple children)", () => {
-    checkGradient(new Minus([new Name("a"), new Name("b"), new Name("c")]), env);
+    checkGradient(
+      new Minus([new Name("a"), new Name("b"), new Name("c")]),
+      env,
+    );
   });
 
   it("Mul", () => {

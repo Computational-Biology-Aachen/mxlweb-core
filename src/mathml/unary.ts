@@ -324,7 +324,9 @@ export class Csc extends Unary {
   }
   /** d/dchild[csc(child)] = -csc(child)·cot(child). */
   pushGradient(adjoint: Base, grads: GradMap): void {
-    const factor = negAdjoint(new Mul([new Csc(this.child), new Cot(this.child)]));
+    const factor = negAdjoint(
+      new Mul([new Csc(this.child), new Cot(this.child)]),
+    );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }
 }
@@ -411,7 +413,9 @@ export class Acos extends Unary {
   /** d/dchild[acos(child)] = -1/sqrt(1-child²) — negative of {@link Asin.pushGradient}'s factor. */
   pushGradient(adjoint: Base, grads: GradMap): void {
     const radicand = new Minus([new Num(1), new Mul([this.child, this.child])]);
-    const factor = negAdjoint(new Divide([new Num(1), new Sqrt(radicand, new Num(2))]));
+    const factor = negAdjoint(
+      new Divide([new Num(1), new Sqrt(radicand, new Num(2))]),
+    );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }
 }
@@ -471,7 +475,10 @@ export class Acot extends Unary {
   /** d/dchild[acot(child)] = -1/(1+child²) — negative of {@link Atan.pushGradient}'s factor. */
   pushGradient(adjoint: Base, grads: GradMap): void {
     const factor = negAdjoint(
-      new Divide([new Num(1), new Add([new Num(1), new Mul([this.child, this.child])])]),
+      new Divide([
+        new Num(1),
+        new Add([new Num(1), new Mul([this.child, this.child])]),
+      ]),
     );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }
@@ -648,7 +655,9 @@ export class Sech extends Unary {
   }
   /** d/dchild[sech(child)] = -sech(child)·tanh(child). */
   pushGradient(adjoint: Base, grads: GradMap): void {
-    const factor = negAdjoint(new Mul([new Sech(this.child), new Tanh(this.child)]));
+    const factor = negAdjoint(
+      new Mul([new Sech(this.child), new Tanh(this.child)]),
+    );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }
 }
@@ -676,7 +685,9 @@ export class Csch extends Unary {
   }
   /** d/dchild[csch(child)] = -csch(child)·coth(child). */
   pushGradient(adjoint: Base, grads: GradMap): void {
-    const factor = negAdjoint(new Mul([new Csch(this.child), new Coth(this.child)]));
+    const factor = negAdjoint(
+      new Mul([new Csch(this.child), new Coth(this.child)]),
+    );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }
 }
@@ -858,7 +869,10 @@ export class ArcSech extends Unary {
   pushGradient(adjoint: Base, grads: GradMap): void {
     const radicand = new Minus([new Num(1), new Mul([this.child, this.child])]);
     const factor = negAdjoint(
-      new Divide([new Num(1), new Mul([this.child, new Sqrt(radicand, new Num(2))])]),
+      new Divide([
+        new Num(1),
+        new Mul([this.child, new Sqrt(radicand, new Num(2))]),
+      ]),
     );
     this.child.pushGradient(mulAdjoint(adjoint, factor), grads);
   }

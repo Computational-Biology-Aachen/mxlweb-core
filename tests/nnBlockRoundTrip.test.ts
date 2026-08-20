@@ -14,7 +14,11 @@ import {
   OdeModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
 import { mxlJsonToModel } from "@computational-biology-aachen/mxlweb-core/mxl";
-import { Mul, Name, Num } from "@computational-biology-aachen/mxlweb-core/mathml";
+import {
+  Mul,
+  Name,
+  Num,
+} from "@computational-biology-aachen/mxlweb-core/mathml";
 import { describe, expect, it } from "vitest";
 
 const block: NNBlockConfig = {
@@ -47,7 +51,9 @@ describe("NN blocks round-trip through .mxl.json", () => {
       .addVariable("x", { value: 1 })
       .setDifferential("x", new Num(0))
       .addNNBlock("corr", block);
-    const reimported = mxlJsonToModel(builder.buildMxlJson("m")) as OdeModelBuilder;
+    const reimported = mxlJsonToModel(
+      builder.buildMxlJson("m"),
+    ) as OdeModelBuilder;
     expect(reimported.nnBlocks.get("corr")).toEqual(block);
   });
 
@@ -93,7 +99,10 @@ describe("NN blocks round-trip through buildMxlweb", () => {
       "Num",
       source
         .replace(/^import .*$/gm, "")
-        .replace(/export function initModel\(\)[^{]*\{/, "return function () {"),
+        .replace(
+          /export function initModel\(\)[^{]*\{/,
+          "return function () {",
+        ),
     );
     const initModel = withBindings(KineticModelBuilder, Mul, Name, Num);
     const rebuilt = initModel() as KineticModelBuilder;

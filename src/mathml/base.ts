@@ -68,7 +68,11 @@ export type JsonNode = {
 export type GradMap = Map<string, Base[]>;
 
 /** Records that `adjoint` flows into the symbol `name`; used by {@link Name.pushGradient}. */
-export function pushGradientTo(grads: GradMap, name: string, adjoint: Base): void {
+export function pushGradientTo(
+  grads: GradMap,
+  name: string,
+  adjoint: Base,
+): void {
   const existing = grads.get(name);
   if (existing) {
     existing.push(adjoint);

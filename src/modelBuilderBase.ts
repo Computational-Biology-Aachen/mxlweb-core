@@ -483,9 +483,7 @@ export abstract class ModelBuilderBase {
    * dependency) — fine for the handful of blocks a model realistically
    * has, not optimized further for now.
    */
-  protected composeNNBlocks(
-    mechanistic: Map<string, Base>,
-  ): Map<string, Base> {
+  protected composeNNBlocks(mechanistic: Map<string, Base>): Map<string, Base> {
     if (this.nnBlocks.size === 0) return mechanistic;
 
     const outputsByTarget = new Map<
