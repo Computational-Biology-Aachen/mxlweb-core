@@ -101,7 +101,16 @@ export const kineticSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale", "mechanism"],
+      required: [
+        "inputs",
+        "depth",
+        "width",
+        "seed",
+        "targets",
+        "trained",
+        "scale",
+        "mechanism",
+      ],
       additionalProperties: false,
       properties: {
         inputs: {
@@ -464,7 +473,16 @@ export const odeSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale", "mechanism"],
+      required: [
+        "inputs",
+        "depth",
+        "width",
+        "seed",
+        "targets",
+        "trained",
+        "scale",
+        "mechanism",
+      ],
       additionalProperties: false,
       properties: {
         inputs: {

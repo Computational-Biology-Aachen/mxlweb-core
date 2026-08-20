@@ -14,13 +14,22 @@
  * this simultaneously confirms the orchestration is wired correctly *and*
  * that the sign convention matches what a real backward integrator needs.
  */
-import { KineticModelBuilder, OdeModelBuilder } from "@computational-biology-aachen/mxlweb-core";
+import {
+  KineticModelBuilder,
+  OdeModelBuilder,
+} from "@computational-biology-aachen/mxlweb-core";
 import { mathImports } from "@computational-biology-aachen/mxlweb-core/backends/wasm";
-import { Mul, Name, Num } from "@computational-biology-aachen/mxlweb-core/mathml";
+import {
+  Mul,
+  Name,
+  Num,
+} from "@computational-biology-aachen/mxlweb-core/mathml";
 import wat2wasm from "wat-compiler";
 import { describe, expect, it } from "vitest";
 
-function compileJsRhs(src: string): (t: number, vars: number[], pars: number[]) => number[] {
+function compileJsRhs(
+  src: string,
+): (t: number, vars: number[], pars: number[]) => number[] {
   return new Function(`return (${src});`)() as (
     t: number,
     vars: number[],
@@ -39,7 +48,12 @@ function makeL(
   };
 }
 
-function centralDiff(g: (x: number[]) => number, x: number[], i: number, h = 1e-5): number {
+function centralDiff(
+  g: (x: number[]) => number,
+  x: number[],
+  i: number,
+  h = 1e-5,
+): number {
   const plus = [...x];
   plus[i] += h;
   const minus = [...x];
@@ -85,8 +99,14 @@ function compileAdjointWat(
     for (let i = 0; i < nPars; i++) heap[parByte / 8 + i] = pars[i];
     fcn(nVars, 0, yByte, lambdaByte, parByte, dlambdaByte, dthetaByte);
     return {
-      dlambda: Array.from({ length: nVars }, (_, i) => heap[dlambdaByte / 8 + i]),
-      dtheta: Array.from({ length: nTheta }, (_, i) => heap[dthetaByte / 8 + i]),
+      dlambda: Array.from(
+        { length: nVars },
+        (_, i) => heap[dlambdaByte / 8 + i],
+      ),
+      dtheta: Array.from(
+        { length: nTheta },
+        (_, i) => heap[dthetaByte / 8 + i],
+      ),
     };
   };
 }

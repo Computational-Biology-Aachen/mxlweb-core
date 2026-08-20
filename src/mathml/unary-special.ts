@@ -1,5 +1,13 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
-import { Base, E, type GradMap, type JsonNode, Name, Num, reviveNode } from "./base.js";
+import {
+  Base,
+  E,
+  type GradMap,
+  type JsonNode,
+  Name,
+  Num,
+  reviveNode,
+} from "./base.js";
 import { mulAdjoint, negAdjoint } from "./grad.js";
 import { Divide, Mul } from "./nary.js";
 

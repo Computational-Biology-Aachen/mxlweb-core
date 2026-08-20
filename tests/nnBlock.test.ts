@@ -2,8 +2,14 @@
  * Tests for the UDE/NODE correction-term generator (ADR 0005 §2.1, `nnBlock.ts`).
  */
 import type { Base } from "@computational-biology-aachen/mxlweb-core/mathml";
-import { gradient, Name } from "@computational-biology-aachen/mxlweb-core/mathml";
-import { buildNNBlock, type NNBlockSpec } from "@computational-biology-aachen/mxlweb-core";
+import {
+  gradient,
+  Name,
+} from "@computational-biology-aachen/mxlweb-core/mathml";
+import {
+  buildNNBlock,
+  type NNBlockSpec,
+} from "@computational-biology-aachen/mxlweb-core";
 import { describe, expect, it } from "vitest";
 
 function evalExpr(expr: Base, env: Record<string, number>): number {

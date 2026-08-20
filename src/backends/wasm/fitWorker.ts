@@ -303,16 +303,12 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
   }
 
   const forwardInstance = await compileModel(req.rhsWat, mod, basePath);
-  const forwardFn = forwardInstance.exports.fcn as (
-    ...args: unknown[]
-  ) => void;
+  const forwardFn = forwardInstance.exports.fcn as (...args: unknown[]) => void;
   const forwardFnIdx = mod.addFunction(forwardFn, "vidiii");
   mod._set_forward_model_fn(forwardFnIdx);
 
   const adjointInstance = await compileModel(req.adjointWat, mod, basePath);
-  const adjointFn = adjointInstance.exports.fcn as (
-    ...args: unknown[]
-  ) => void;
+  const adjointFn = adjointInstance.exports.fcn as (...args: unknown[]) => void;
   const adjointFnIdx = mod.addFunction(adjointFn, "vidiiiii");
   mod._set_adjoint_fn(adjointFnIdx);
 
@@ -489,7 +485,8 @@ function handleFitFree(req: FitFreeRequest, mod: EmscriptenModule) {
   }
   if (session) {
     mod.removeFunction(session.primaryFnIdx);
-    if (session.secondaryFnIdx !== null) mod.removeFunction(session.secondaryFnIdx);
+    if (session.secondaryFnIdx !== null)
+      mod.removeFunction(session.secondaryFnIdx);
     session = null;
   }
   postMessage({ type: "FIT_FREE_RESULT", requestId: req.requestId });

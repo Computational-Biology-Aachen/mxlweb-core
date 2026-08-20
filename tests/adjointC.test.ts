@@ -17,7 +17,11 @@
  */
 import { OdeModelBuilder } from "@computational-biology-aachen/mxlweb-core";
 import { mathImports } from "@computational-biology-aachen/mxlweb-core/backends/wasm";
-import { Minus, Mul, Name } from "@computational-biology-aachen/mxlweb-core/mathml";
+import {
+  Minus,
+  Mul,
+  Name,
+} from "@computational-biology-aachen/mxlweb-core/mathml";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -91,7 +95,10 @@ describe("adjoint_wrapper.c: gradient matches the analytic loss gradient", () =>
     const builder = new OdeModelBuilder()
       .addVariable("Y", { value: 10 })
       .addParameter("k", { value: 0.3 }) // k0 — deliberately not the true k
-      .setDifferential("Y", new Minus([new Mul([new Name("k"), new Name("Y")])]));
+      .setDifferential(
+        "Y",
+        new Minus([new Mul([new Name("k"), new Name("Y")])]),
+      );
 
     const rhsWat = builder.buildWat();
     const adjointWat = builder.buildAdjointWat(["k"]);
@@ -130,16 +137,30 @@ describe("adjoint_wrapper.c: gradient matches the analytic loss gradient", () =>
     };
 
     const rc = mod._adjoint_init(
-      1, ptrs.y0,
-      1, ptrs.pars,
-      1, ptrs.thetaIdx,
-      1, ptrs.targetIndex, ptrs.targetScale,
-      dataT.length, ptrs.dataT, ptrs.dataY,
+      1,
+      ptrs.y0,
+      1,
+      ptrs.pars,
+      1,
+      ptrs.thetaIdx,
+      1,
+      ptrs.targetIndex,
+      ptrs.targetScale,
+      dataT.length,
+      ptrs.dataT,
+      ptrs.dataY,
       dataT[dataT.length - 1],
       0, // solver = radau5
-      1e-9, 1e-11, // rtol, atol — tight, matching fit.test.ts's own precedent
-      1e-4, 0.9, 0.999, 1e-8, // lr, beta1, beta2, eps
-      -1, -1, 0, 0, // target_residual_norm, grad_norm_tol, plateau_patience, plateau_min_delta (all disabled)
+      1e-9,
+      1e-11, // rtol, atol — tight, matching fit.test.ts's own precedent
+      1e-4,
+      0.9,
+      0.999,
+      1e-8, // lr, beta1, beta2, eps
+      -1,
+      -1,
+      0,
+      0, // target_residual_norm, grad_norm_tol, plateau_patience, plateau_min_delta (all disabled)
     );
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
     expect(rc).toBe(0);
@@ -150,7 +171,10 @@ describe("adjoint_wrapper.c: gradient matches the analytic loss gradient", () =>
     mod._free(gradPtr);
 
     expect(mod._adjoint_get_steps()).toBe(1);
-    expect(mod._adjoint_get_residual_norm()).toBeCloseTo(Math.sqrt(loss(0.3)), 4);
+    expect(mod._adjoint_get_residual_norm()).toBeCloseTo(
+      Math.sqrt(loss(0.3)),
+      4,
+    );
     expect(cGrad).toBeCloseTo(analyticGrad, 3);
 
     // Adam already took one step inside adjoint_init — k should have moved
@@ -173,7 +197,10 @@ describe("adjoint_wrapper.c: gradient matches the analytic loss gradient", () =>
     const builder = new OdeModelBuilder()
       .addVariable("Y", { value: 10 })
       .addParameter("k", { value: 0.3 })
-      .setDifferential("Y", new Minus([new Mul([new Name("k"), new Name("Y")])]));
+      .setDifferential(
+        "Y",
+        new Minus([new Mul([new Name("k"), new Name("Y")])]),
+      );
 
     const rhsWat = builder.buildWat();
     const adjointWat = builder.buildAdjointWat(["k"]);
@@ -198,10 +225,30 @@ describe("adjoint_wrapper.c: gradient matches the analytic loss gradient", () =>
       dataY: allocF64(dataY),
     };
     const rc = mod._adjoint_init(
-      1, ptrs.y0, 1, ptrs.pars, 1, ptrs.thetaIdx, 1, ptrs.targetIndex, ptrs.targetScale,
-      dataT.length, ptrs.dataT, ptrs.dataY, dataT[dataT.length - 1],
-      0, 1e-9, 1e-11, 1e-2 /* larger lr for a faster-converging test */, 0.9, 0.999, 1e-8,
-      -1, -1, 0, 0,
+      1,
+      ptrs.y0,
+      1,
+      ptrs.pars,
+      1,
+      ptrs.thetaIdx,
+      1,
+      ptrs.targetIndex,
+      ptrs.targetScale,
+      dataT.length,
+      ptrs.dataT,
+      ptrs.dataY,
+      dataT[dataT.length - 1],
+      0,
+      1e-9,
+      1e-11,
+      1e-2 /* larger lr for a faster-converging test */,
+      0.9,
+      0.999,
+      1e-8,
+      -1,
+      -1,
+      0,
+      0,
     );
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
     expect(rc).toBe(0);

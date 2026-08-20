@@ -95,7 +95,11 @@ function mulberry32(seed: number): () => number {
 }
 
 /** Glorot/Xavier-uniform sample: uniform on `[-limit, limit]`, `limit = sqrt(6 / (fanIn + fanOut))`. */
-function glorotUniform(rng: () => number, fanIn: number, fanOut: number): number {
+function glorotUniform(
+  rng: () => number,
+  fanIn: number,
+  fanOut: number,
+): number {
   const limit = Math.sqrt(6 / (fanIn + fanOut));
   return (rng() * 2 - 1) * limit;
 }

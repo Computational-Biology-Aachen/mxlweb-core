@@ -10,7 +10,11 @@ import {
   OdeModelBuilder,
   SteadyStateModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
-import { Mul, Name, Num } from "@computational-biology-aachen/mxlweb-core/mathml";
+import {
+  Mul,
+  Name,
+  Num,
+} from "@computational-biology-aachen/mxlweb-core/mathml";
 import { modelToSbml } from "@computational-biology-aachen/mxlweb-core/sbml";
 import { describe, expect, it } from "vitest";
 
@@ -76,9 +80,9 @@ describe("KineticModelBuilder.addNNBlock", () => {
       .addNNBlock("corr", smallBlock);
     builder.removeNNBlock("corr");
     expect(builder.nnBlocks.has("corr")).toBe(false);
-    expect([...builder.parameters.keys()].some((k) => k.startsWith("corr_"))).toBe(
-      false,
-    );
+    expect(
+      [...builder.parameters.keys()].some((k) => k.startsWith("corr_")),
+    ).toBe(false);
     // Back to a plain, block-free model: dx/dt is exactly 0.
     const js = builder.buildJs();
     const [dxdt] = evalJs(js, [0, [1], builder.resolveParameters()]);
@@ -159,11 +163,19 @@ describe("OdeModelBuilder.addNNBlock", () => {
       .addVariable("x", { value: 1 })
       .addParameter("k", { value: 0.5 })
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]));
-    const [before] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+    const [before] = evalJs(builder.buildJs(), [
+      0,
+      [1],
+      builder.resolveParameters(),
+    ]);
 
     builder.addNNBlock("corr", smallBlock);
     builder.removeNNBlock("corr");
-    const [after] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+    const [after] = evalJs(builder.buildJs(), [
+      0,
+      [1],
+      builder.resolveParameters(),
+    ]);
 
     expect(after).toBeCloseTo(before, 10);
   });
@@ -209,7 +221,9 @@ describe("OdeModelBuilder.addNNBlock", () => {
     const builder = new OdeModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
-    expect(builder.buildTex()).toContain("&= s_{corr} \\cdot NN_{corr}(\\vec{x})");
+    expect(builder.buildTex()).toContain(
+      "&= s_{corr} \\cdot NN_{corr}(\\vec{x})",
+    );
   });
 
   it("escapes a block name containing '_' so it stays valid inside \\text{} (KaTeX, unlike plain LaTeX, rejects a bare '_' there)", () => {
@@ -237,8 +251,12 @@ describe("KineticModelBuilder.buildTex with an NN block", () => {
 
 describe("SteadyStateModelBuilder.addNNBlock", () => {
   it("throws — no differential equation for a block to feed into — and leaves the builder untouched", () => {
-    const builder = new SteadyStateModelBuilder().addParameter("p", { value: 1 });
-    expect(() => builder.addNNBlock("corr", { ...smallBlock, inputs: ["p"] })).toThrow();
+    const builder = new SteadyStateModelBuilder().addParameter("p", {
+      value: 1,
+    });
+    expect(() =>
+      builder.addNNBlock("corr", { ...smallBlock, inputs: ["p"] }),
+    ).toThrow();
     // The reordering fix in addNNBlock (wire before mutate) means no
     // partial state should have been left behind by the throw.
     expect(builder.nnBlocks.size).toBe(0);
@@ -352,9 +370,17 @@ describe("NN block mechanism: relative_multiply composes as f * (1 + scale*NN)",
       .addVariable("x", { value: 1 })
       .addParameter("k", { value: 0.5 })
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
-      .addNNBlock("m", { ...smallBlock, seed: 1, mechanism: "relative_multiply" })
+      .addNNBlock("m", {
+        ...smallBlock,
+        seed: 1,
+        mechanism: "relative_multiply",
+      })
       .addNNBlock("a", { ...smallBlock, seed: 2, mechanism: "additive" });
-    const [dxdt] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+    const [dxdt] = evalJs(builder.buildJs(), [
+      0,
+      [1],
+      builder.resolveParameters(),
+    ]);
 
     // Isolate each block's own raw scaled-NN contribution via its
     // standalone additive case, same technique as above.
@@ -364,7 +390,11 @@ describe("NN block mechanism: relative_multiply composes as f * (1 + scale*NN)",
         .addParameter("k", { value: 0.5 })
         .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
         .addNNBlock(id, { ...smallBlock, seed, mechanism: "additive" });
-      const [dxdtSolo] = evalJs(solo.buildJs(), [0, [1], solo.resolveParameters()]);
+      const [dxdtSolo] = evalJs(solo.buildJs(), [
+        0,
+        [1],
+        solo.resolveParameters(),
+      ]);
       return dxdtSolo - 0.5;
     };
     const scaledNNm = isolatedScaledNN("m", 1);
@@ -431,10 +461,18 @@ describe("NN block mechanism: multiply composes as f * scale*NN (bare product, n
       .addVariable("x", { value: 1 })
       .addParameter("k", { value: 0.5 })
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
-      .addNNBlock("rm", { ...smallBlock, seed: 1, mechanism: "relative_multiply" })
+      .addNNBlock("rm", {
+        ...smallBlock,
+        seed: 1,
+        mechanism: "relative_multiply",
+      })
       .addNNBlock("mu", { ...smallBlock, seed: 2, mechanism: "multiply" })
       .addNNBlock("ad", { ...smallBlock, seed: 3, mechanism: "additive" });
-    const [dxdt] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+    const [dxdt] = evalJs(builder.buildJs(), [
+      0,
+      [1],
+      builder.resolveParameters(),
+    ]);
 
     const isolatedScaledNN = (id: string, seed: number) => {
       const solo = new OdeModelBuilder()
@@ -442,7 +480,11 @@ describe("NN block mechanism: multiply composes as f * scale*NN (bare product, n
         .addParameter("k", { value: 0.5 })
         .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
         .addNNBlock(id, { ...smallBlock, seed, mechanism: "additive" });
-      const [dxdtSolo] = evalJs(solo.buildJs(), [0, [1], solo.resolveParameters()]);
+      const [dxdtSolo] = evalJs(solo.buildJs(), [
+        0,
+        [1],
+        solo.resolveParameters(),
+      ]);
       return dxdtSolo - 0.5;
     };
     const scaledNNrm = isolatedScaledNN("rm", 1);
@@ -496,4 +538,3 @@ describe("modelToSbml with NN blocks", () => {
     expect(() => modelToSbml(builder, "m")).not.toThrow();
   });
 });
-
