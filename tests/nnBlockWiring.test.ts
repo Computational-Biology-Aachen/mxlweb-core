@@ -162,6 +162,32 @@ describe("OdeModelBuilder.addNNBlock", () => {
 
     expect(after).toBeCloseTo(before, 10);
   });
+
+  it("buildTex renders the block's contribution too, not just the hand-authored differential", () => {
+    // buildTex() used to read `this.differentials.get(name)` directly,
+    // bypassing dxdtExpr() entirely -- unlike buildJs()/buildWat()/every
+    // other codegen path, which all go through dxdtExpr and so already got
+    // this right. A model's "Generated LaTeX" preview silently omitted any
+    // NN block as a result.
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5, texName: "k" })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]));
+
+    const withoutBlock = builder.buildTex();
+    builder.addNNBlock("corr", smallBlock);
+    const withBlock = builder.buildTex();
+
+    expect(withBlock).not.toBe(withoutBlock);
+    expect(withBlock).toContain("k \\cdot x");
+    // Every generated weight/bias must render safely -- see nnBlock.test.ts's
+    // texName coverage for why a raw multi-underscore id would otherwise
+    // reach KaTeX as a "Double subscript" parse error.
+    for (const name of builder.parameters.keys()) {
+      if (name === "k") continue;
+      expect(withBlock).not.toContain(name);
+    }
+  });
 });
 
 describe("SteadyStateModelBuilder.addNNBlock", () => {

@@ -63,6 +63,21 @@ describe("buildNNBlock: architecture", () => {
     }
   });
 
+  it("gives every parameter its own texName, not just a displayName", () => {
+    // Generated names have multiple underscores (${key}_w${layer}_${i}_${j});
+    // Name.toTex falls back to the raw identifier whenever no texName is
+    // registered, and KaTeX parses two bare underscores as a "Double
+    // subscript" error. Every generated weight/bias needs a safe texName
+    // from the moment it's created — not only once some UI layer gets
+    // around to synthesizing one, since the live "Generated LaTeX" preview
+    // renders straight from this generator before any such pass ever runs.
+    const { parameters } = buildNNBlock(spec);
+    for (const [name, p] of parameters) {
+      expect(p.texName, `${name} has no texName`).toBeTruthy();
+      expect(p.texName!.startsWith("\\text{")).toBe(true);
+    }
+  });
+
   it("scales parameter count with depth and width (6x64-style block stays tractable to build)", () => {
     const big = buildNNBlock({
       name: "flux",
