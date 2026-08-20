@@ -26,6 +26,7 @@ const smallBlock: NNBlockConfig = {
   targets: ["x"],
   trained: true,
   scale: 0.1,
+  mechanism: "additive",
 };
 
 describe("KineticModelBuilder.addNNBlock", () => {
@@ -40,14 +41,18 @@ describe("KineticModelBuilder.addNNBlock", () => {
     expect(generated).toHaveLength(4 + 3 + 1);
   });
 
-  it("adds one reaction per output, with stoichiometry {target: 1}", () => {
+  it("does not create a reaction — mechanism composition happens at lower() time instead", () => {
+    // Retired: an NN block used to be wired as an ordinary reaction
+    // (stoichiometry {target: 1}), which is exactly what made a
+    // multiplicative mechanism impossible to add later (multiplying a
+    // variable's whole dx/dt isn't expressible as one more stoichiometric
+    // term). Now composeNNBlocks handles every block, for both mechanisms
+    // and both builders, at the shared lower() stage — see
+    // NNBlockConfig.mechanism's doc comment.
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
-    expect(builder.reactions.has("corr_out0")).toBe(true);
-    const rxn = builder.reactions.get("corr_out0")!;
-    expect(rxn.stoichiometry).toEqual([{ name: "x", value: expect.any(Num) }]);
-    expect((rxn.stoichiometry[0].value as Num).value).toBe(1);
+    expect(builder.reactions.size).toBe(0);
   });
 
   it("the wired reaction actually contributes to dx/dt", () => {
@@ -64,12 +69,11 @@ describe("KineticModelBuilder.addNNBlock", () => {
     expect(dxdt).not.toBe(0);
   });
 
-  it("removeNNBlock cleans up both the reaction and the generated parameters", () => {
+  it("removeNNBlock cleans up the generated parameters", () => {
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", smallBlock);
     builder.removeNNBlock("corr");
-    expect(builder.reactions.has("corr_out0")).toBe(false);
     expect(builder.nnBlocks.has("corr")).toBe(false);
     expect([...builder.parameters.keys()].some((k) => k.startsWith("corr_"))).toBe(
       false,
@@ -98,7 +102,6 @@ describe("KineticModelBuilder.addNNBlock", () => {
       .addNNBlock("corr", smallBlock);
     const cloned = builder.clone();
     expect(cloned.nnBlocks.has("corr")).toBe(true);
-    expect(cloned.reactions.has("corr_out0")).toBe(true);
   });
 
   it("two blocks targeting the same variable both contribute", () => {
@@ -242,13 +245,12 @@ describe("SteadyStateModelBuilder.addNNBlock", () => {
   });
 });
 
-// nnBlockOwnedParameterNames/nnBlockOwnedReactionNames are the single
-// source of truth mxl-web's UI filters through so a block's generated
-// weights/biases/reaction never leak in as individual editable rows (ADR
-// 0005 §2.1.3) — a review after the first UI implementation pass found
-// three independent, slightly different reimplementations of this same
-// prefix match with no shared home, and none applied to ModelEditor's own
-// parameter/reaction tables at all.
+// nnBlockOwnedParameterNames is the single source of truth mxl-web's UI
+// filters through so a block's generated weights/biases never leak in as
+// individual editable rows (ADR 0005 §2.1.3) — a review after the first UI
+// implementation pass found three independent, slightly different
+// reimplementations of this same prefix match with no shared home, and none
+// applied to ModelEditor's own parameter table at all.
 describe("ModelBuilderBase.nnBlockOwnedParameterNames", () => {
   it("covers exactly the generated weights/biases, not hand-authored parameters", () => {
     const builder = new KineticModelBuilder()
@@ -281,24 +283,125 @@ describe("ModelBuilderBase.nnBlockOwnedParameterNames", () => {
   });
 });
 
-describe("KineticModelBuilder.nnBlockOwnedReactionNames", () => {
-  it("covers exactly the block-generated reaction, not hand-authored ones", () => {
+// Grill-me follow-up to ADR 0005 §2.1: a "mechanism" selector
+// (additive/multiplicative) for how a block composes onto its target(s).
+// Multiplication can't be expressed as one more stoichiometric reaction
+// term, which is exactly why NN blocks stopped being wired as reactions at
+// all (see the "does not create a reaction" test above) — composeNNBlocks
+// composes both mechanisms, for both builders, at the shared lower() stage
+// instead. These tests verify the actual formulas numerically, not just
+// that *something* changed.
+describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", () => {
+  it("OdeModelBuilder: verified numerically against the additive case's own raw contribution", () => {
+    const mkBuilder = (mechanism: "additive" | "multiplicative") =>
+      new OdeModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addParameter("k", { value: 0.5 })
+        .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+        .addNNBlock("corr", { ...smallBlock, mechanism });
+
+    const [dxdtMultiplicative] = evalJs(
+      mkBuilder("multiplicative").buildJs(),
+      [0, [1], mkBuilder("multiplicative").resolveParameters()],
+    );
+    const [dxdtAdditive] = evalJs(mkBuilder("additive").buildJs(), [
+      0,
+      [1],
+      mkBuilder("additive").resolveParameters(),
+    ]);
+
+    // f(x) = k*x = 0.5. The additive case is exactly f + scale*NN, so
+    // scale*NN = dxdtAdditive - f — extracting it this way (rather than
+    // replicating Glorot init by hand) lets this test check the actual
+    // composition formula without depending on nnBlock.ts's internals.
+    const f = 0.5;
+    const scaledNN = dxdtAdditive - f;
+    expect(dxdtMultiplicative).toBeCloseTo(f * (1 + scaledNN), 8);
+  });
+
+  it("KineticModelBuilder: same formula, despite having no stoichiometric way to express it directly", () => {
+    const mkBuilder = (mechanism: "additive" | "multiplicative") =>
+      new KineticModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addReaction("v1", {
+          fn: new Mul([new Num(0.5), new Name("x")]),
+          stoichiometry: [{ name: "x", value: new Num(1) }],
+        })
+        .addNNBlock("corr", { ...smallBlock, mechanism });
+
+    const [dxdtMultiplicative] = evalJs(
+      mkBuilder("multiplicative").buildJs(),
+      [0, [1], mkBuilder("multiplicative").resolveParameters()],
+    );
+    const [dxdtAdditive] = evalJs(mkBuilder("additive").buildJs(), [
+      0,
+      [1],
+      mkBuilder("additive").resolveParameters(),
+    ]);
+
+    const f = 0.5;
+    const scaledNN = dxdtAdditive - f;
+    expect(dxdtMultiplicative).toBeCloseTo(f * (1 + scaledNN), 8);
+  });
+
+  it("mixed mechanisms on the same variable: every multiplicative block combines into one factor first, then every additive block is summed on top", () => {
+    // Every block targets every variable (no per-block picker), so this is
+    // the common case for a model with 2+ blocks, not a rare edge case.
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+      .addNNBlock("m", { ...smallBlock, seed: 1, mechanism: "multiplicative" })
+      .addNNBlock("a", { ...smallBlock, seed: 2, mechanism: "additive" });
+    const [dxdt] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+
+    // Isolate each block's own raw scaled-NN contribution via its
+    // standalone additive case, same technique as above.
+    const isolatedScaledNN = (id: string, seed: number) => {
+      const solo = new OdeModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addParameter("k", { value: 0.5 })
+        .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+        .addNNBlock(id, { ...smallBlock, seed, mechanism: "additive" });
+      const [dxdtSolo] = evalJs(solo.buildJs(), [0, [1], solo.resolveParameters()]);
+      return dxdtSolo - 0.5;
+    };
+    const scaledNNm = isolatedScaledNN("m", 1);
+    const scaledNNa = isolatedScaledNN("a", 2);
+
+    const f = 0.5;
+    const expected = f * (1 + scaledNNm) + scaledNNa;
+    expect(dxdt).toBeCloseTo(expected, 8);
+  });
+
+  it("buildTex wraps the mechanistic term in parens and shows (1 + s*NN(x)) as a multiplicative factor", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5, texName: "k" })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+      .addNNBlock("corr", { ...smallBlock, mechanism: "multiplicative" });
+    expect(builder.buildTex()).toContain(
+      "(k \\cdot x) \\cdot (1 + s_{corr} \\cdot NN_{corr}(\\vec{x}))",
+    );
+  });
+});
+
+describe("KineticModelBuilder.buildMxlpy with NN blocks", () => {
+  it("throws rather than silently omitting a block's dynamical contribution", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", smallBlock);
+    expect(() => builder.buildMxlpy()).toThrow(/NN blocks/);
+  });
+
+  it("still works normally for a model with no NN blocks", () => {
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
       .addReaction("v1", {
         fn: new Name("x"),
         stoichiometry: [{ name: "x", value: new Num(-1) }],
-      })
-      .addNNBlock("corr", smallBlock);
-    const owned = builder.nnBlockOwnedReactionNames();
-    expect(owned.has("v1")).toBe(false);
-    expect([...builder.reactions.keys()].filter((k) => k !== "v1")).toEqual([
-      ...owned,
-    ]);
-  });
-
-  it("is empty for a builder with no NN blocks", () => {
-    const builder = new KineticModelBuilder().addVariable("x", { value: 1 });
-    expect(builder.nnBlockOwnedReactionNames().size).toBe(0);
+      });
+    expect(() => builder.buildMxlpy()).not.toThrow();
   });
 });
+

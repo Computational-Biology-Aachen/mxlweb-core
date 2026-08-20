@@ -101,7 +101,7 @@ export const kineticSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale"],
+      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale", "mechanism"],
       additionalProperties: false,
       properties: {
         inputs: {
@@ -140,6 +140,12 @@ export const kineticSchema: JsonSchema = {
           type: "number",
           description:
             "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
+        },
+        mechanism: {
+          type: "string",
+          enum: ["additive", "multiplicative"],
+          description:
+            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). multiplicative: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. When a variable has multiple blocks, all multiplicative ones combine into one factor on f (product), then all additive ones are summed on top.",
         },
       },
     },
@@ -458,7 +464,7 @@ export const odeSchema: JsonSchema = {
       type: "object",
       description:
         "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
-      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale"],
+      required: ["inputs", "depth", "width", "seed", "targets", "trained", "scale", "mechanism"],
       additionalProperties: false,
       properties: {
         inputs: {
@@ -497,6 +503,12 @@ export const odeSchema: JsonSchema = {
           type: "number",
           description:
             "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
+        },
+        mechanism: {
+          type: "string",
+          enum: ["additive", "multiplicative"],
+          description:
+            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). multiplicative: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. When a variable has multiple blocks, all multiplicative ones combine into one factor on f (product), then all additive ones are summed on top.",
         },
       },
     },
