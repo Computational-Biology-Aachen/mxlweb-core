@@ -10,7 +10,7 @@ import {
   Name,
   Num,
 } from "./mathml/index.js";
-import type { Parameter } from "./modelBuilderBase.js";
+import { defaultTexName, type Parameter } from "./modelBuilderBase.js";
 
 /**
  * Generates a UDE/NODE correction term as an ordinary expression tree built
@@ -104,13 +104,29 @@ function buildLayer(
   const outputs: Base[] = [];
   for (let i = 0; i < fanOut; i++) {
     const biasName = `${blockName}_b${layerIdx}_${i}`;
-    parameters.set(biasName, { value: 0 });
+    const biasDisplayName = `${blockName} layer ${layerIdx}: bias -> unit ${i}`;
+    // texName, not just displayName: this generated name has multiple
+    // underscores (`${key}_b${layer}_${i}`), and Name.toTex falls back to
+    // the raw identifier whenever no texName is registered — fed straight
+    // into KaTeX outside \text{}, multiple bare underscores parse as a
+    // "Double subscript" error. Every generated weight/bias needs its own
+    // safe texName from the moment it's created, not only once some UI
+    // layer gets around to synthesizing one (the live "Generated LaTeX"
+    // preview renders straight from this generator, before any such UI
+    // pass ever runs).
+    parameters.set(biasName, {
+      value: 0,
+      displayName: biasDisplayName,
+      texName: defaultTexName(biasDisplayName),
+    });
     const terms: Base[] = [new Name(biasName)];
     for (let j = 0; j < fanIn; j++) {
       const weightName = `${blockName}_w${layerIdx}_${i}_${j}`;
+      const weightDisplayName = `${blockName} layer ${layerIdx}: ${inputNames[j]} -> unit ${i}`;
       parameters.set(weightName, {
         value: glorotUniform(rng, fanIn, fanOut),
-        displayName: `${blockName} layer ${layerIdx}: ${inputNames[j]} -> unit ${i}`,
+        displayName: weightDisplayName,
+        texName: defaultTexName(weightDisplayName),
       });
       terms.push(new Mul([new Name(weightName), inputs[j]]));
     }

@@ -110,7 +110,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
 
     const rhsString = [...this.variables.keys()]
       .map((name) => {
-        const expr = this.differentials.get(name) ?? new Num(0);
+        const expr = this.dxdtExpr(name);
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${expr.toTex(texNames)}`;
       })
       .join(" \\\\ \n  ");
