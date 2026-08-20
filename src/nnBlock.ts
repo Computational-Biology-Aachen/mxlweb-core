@@ -1,14 +1,15 @@
 import {
-  Abs,
   Add,
   Base,
   Exp,
   Ln,
   Max,
   Minus,
+  Abs,
   Mul,
   Name,
   Num,
+  substituteName,
 } from "./mathml/index.js";
 import { defaultTexName, type Parameter } from "./modelBuilderBase.js";
 
@@ -17,16 +18,71 @@ import { defaultTexName, type Parameter } from "./modelBuilderBase.js";
  * from existing `mathml` node types — no new AST surface, per ADR 0005 §2.1.
  * `KineticModelBuilder` already establishes this precedent for `Reaction`
  * (`kineticModelBuilder.ts`'s `reactionTerm()`); this module is the same
- * trick for a fully-connected softplus network.
+ * trick for a fully-connected network.
  *
- * Builder-agnostic by design (ADR 0005 §2.1): this module only produces
- * `Parameter` entries plus one `Base` expression per output. Wiring the
- * result into a model is the caller's job and differs per builder —
- * `KineticModelBuilder` as an ordinary `Reaction` with stoichiometry
- * `{ variable: 1 }`, `OdeModelBuilder` as `setDifferential(key, new
- * Add([existingExpr, output]))` — neither of which this module needs to
- * know about.
+ * v2 (mxl-schemas nn_blocks redesign): weight/bias values are no longer
+ * `Parameter` entries — they carry no biological/kinetic meaning the way a
+ * real parameter does, so `ModelBuilderBase` keeps them in a separate
+ * `nnWeights` map instead, structurally excluded from `parameters`/the
+ * parameter table/the ordinary fit picker. Only `scale` — a meaningful,
+ * user-facing knob — remains an ordinary `Parameter`. Architecture also
+ * generalizes from uniform depth×width to an explicit `layers` stack, and
+ * activation is data (`{name, expression}`) rather than a hardcoded
+ * function, substituted in via `substituteName` — the same portability the
+ * schema's `mechanism` placeholders rely on (`modelBuilderBase.ts`'s
+ * `composeNNBlocks`).
  */
+
+/** One layer of an nn_block's stack (mxl-schemas `nnLayer`). Only `dense` exists today, but every layer is tagged so a future kind is a new variant rather than a restructure. */
+export type NNBlockLayer = { type: "dense"; width: number };
+
+/** A named activation function with a portable definition (mxl-schemas `nnActivation`). `expression` is instantiated per pre-activation value via `substituteName(expression, "x", preActivation)`. */
+export type NNBlockActivation = { name: string; expression: Base };
+
+/**
+ * `max(x, 0) + ln(1 + exp(-|x|))` — softplus in its numerically-stable form
+ * (ADR 0005 §2.1.1), as the canonical `expression` for the schema's
+ * `activation.name === "softplus"`. Deliberately not the naive
+ * `ln(1+exp(x))`, which overflows to `Infinity` for large `x` instead of the
+ * correct asymptotic value of `x` itself. Exported so every caller that
+ * authors a fresh block (there is no other activation yet) shares one
+ * definition rather than re-deriving the tree; `Base` instances carry a
+ * process-unique id, so this is a factory, not a shared singleton.
+ */
+/**
+ * The three common `mechanism` presets (ADR 0005 §2.1's grill-me follow-up,
+ * generalized to an arbitrary expression in the nn_blocks v2 schema
+ * redesign) as ready-made `Base` trees over the `ode`/`nde` placeholders —
+ * `additive`: `dx/dt = ode + nde`. `relativeMultiply`: `dx/dt = ode · (1 +
+ * nde)` — a near-zero/untrained network leaves `ode` unchanged.
+ * `multiply`: `dx/dt = ode · nde` — a bare product with no such safeguard.
+ * These are not the only legal `mechanism` values; a caller (e.g. the
+ * mxlweb-core UI's mechanism editor) can construct any other expression
+ * over the same two placeholders. Factories, not shared instances: `Base`
+ * carries a process-unique id, so reusing one instance across blocks would
+ * collide.
+ */
+export function additiveMechanism(): Base {
+  return new Add([new Name("ode"), new Name("nde")]);
+}
+export function relativeMultiplyMechanism(): Base {
+  return new Mul([new Name("ode"), new Add([new Num(1), new Name("nde")])]);
+}
+export function multiplyMechanism(): Base {
+  return new Mul([new Name("ode"), new Name("nde")]);
+}
+
+export function softplusActivation(): NNBlockActivation {
+  return {
+    name: "softplus",
+    expression: new Add([
+      new Max([new Name("x"), new Num(0)]),
+      new Ln(
+        new Add([new Num(1), new Exp(new Minus([new Abs(new Name("x"))]))]),
+      ),
+    ]),
+  };
+}
 
 /** Architecture and identity of one NN block. */
 export type NNBlockSpec = {
@@ -34,12 +90,8 @@ export type NNBlockSpec = {
   name: string;
   /** Names of existing variables/parameters/derived quantities the block reads. */
   inputs: string[];
-  /** Number of hidden layers — arbitrary/configurable, no cap (ADR 0005 §2.1: real prior work needed up to 6). */
-  depth: number;
-  /** Uniform width for every hidden layer (matches the cited precedent's uniform `flux_width`-style sizing; per-layer widths aren't supported). */
-  width: number;
-  /** Number of outputs. The final layer is a plain linear combination — no activation — so outputs can take any real value, not just softplus's range. */
-  outputs: number;
+  /** Layer stack, input-to-output order. The last layer is a plain linear combination (no activation), so outputs can take any real value; its width is the block's output count. */
+  layers: NNBlockLayer[];
   /** Seed for reproducible Glorot-uniform weight initialization. */
   seed: number;
   /**
@@ -52,28 +104,18 @@ export type NNBlockSpec = {
    * network's own expressiveness.
    */
   scale: number;
+  /** Elementwise activation applied after every layer except the last. */
+  activation: NNBlockActivation;
 };
 
 export type NNBlockResult = {
-  /** New `Parameter` entries for every weight and bias, keyed by generated name — `addParameter` each into the target builder. */
-  parameters: Map<string, Parameter>;
-  /** One expression per output, `spec.outputs` long, in order. */
+  /** Every generated weight/bias value, keyed by its generated name. Internal-only: `ModelBuilderBase.nnWeights` makes these `Name`-addressable for codegen without ever putting them in `parameters`. */
+  weights: Map<string, number>;
+  /** The block's single trainable output-scaling factor — unlike weights, an ordinary `Parameter` (meaningful on its own, `addNNBlock` adds it under `${name}_scale`). */
+  scale: Parameter;
+  /** One expression per output, `layers[layers.length - 1].width` long, in order. */
   outputs: Base[];
 };
-
-/**
- * `max(x, 0) + ln(1 + exp(-|x|))` — softplus in its numerically-stable form
- * (ADR 0005 §2.1.1). Deliberately not the naive `ln(1+exp(x))`, which
- * overflows to `Infinity` for large `x` instead of the correct asymptotic
- * value of `x` itself.
- */
-function stableSoftplus(x: Base): Base {
-  const positivePart = new Max([x, new Num(0)]);
-  const stableTail = new Ln(
-    new Add([new Num(1), new Exp(new Minus([new Abs(x)]))]),
-  );
-  return new Add([positivePart, stableTail]);
-}
 
 /**
  * mulberry32 — a small, fast, seedable PRNG. Not cryptographic, not needed
@@ -109,39 +151,19 @@ function buildLayer(
   blockName: string,
   layerIdx: number,
   inputs: Base[],
-  inputNames: string[],
   fanOut: number,
   rng: () => number,
-  parameters: Map<string, Parameter>,
+  weights: Map<string, number>,
 ): Base[] {
   const fanIn = inputs.length;
   const outputs: Base[] = [];
   for (let i = 0; i < fanOut; i++) {
     const biasName = `${blockName}_b${layerIdx}_${i}`;
-    const biasDisplayName = `${blockName} layer ${layerIdx}: bias -> unit ${i}`;
-    // texName, not just displayName: this generated name has multiple
-    // underscores (`${key}_b${layer}_${i}`), and Name.toTex falls back to
-    // the raw identifier whenever no texName is registered — fed straight
-    // into KaTeX outside \text{}, multiple bare underscores parse as a
-    // "Double subscript" error. Every generated weight/bias needs its own
-    // safe texName from the moment it's created, not only once some UI
-    // layer gets around to synthesizing one (the live "Generated LaTeX"
-    // preview renders straight from this generator, before any such UI
-    // pass ever runs).
-    parameters.set(biasName, {
-      value: 0,
-      displayName: biasDisplayName,
-      texName: defaultTexName(biasDisplayName),
-    });
+    weights.set(biasName, 0);
     const terms: Base[] = [new Name(biasName)];
     for (let j = 0; j < fanIn; j++) {
       const weightName = `${blockName}_w${layerIdx}_${i}_${j}`;
-      const weightDisplayName = `${blockName} layer ${layerIdx}: ${inputNames[j]} -> unit ${i}`;
-      parameters.set(weightName, {
-        value: glorotUniform(rng, fanIn, fanOut),
-        displayName: weightDisplayName,
-        texName: defaultTexName(weightDisplayName),
-      });
+      weights.set(weightName, glorotUniform(rng, fanIn, fanOut));
       terms.push(new Mul([new Name(weightName), inputs[j]]));
     }
     outputs.push(new Add(terms));
@@ -150,58 +172,52 @@ function buildLayer(
 }
 
 /**
- * Builds a fully-connected softplus network per `spec`: `spec.depth` hidden
- * layers of `spec.width` units each (softplus-activated), then one plain
- * linear output layer (no activation — see {@link NNBlockSpec.outputs}).
- * Every weight is Glorot-uniform-initialized from `spec.seed`; every bias
- * starts at zero.
+ * Builds a fully-connected network per `spec.layers`: every layer but the
+ * last is activated (`spec.activation`), the last is a plain linear
+ * combination. Every weight is Glorot-uniform-initialized from `spec.seed`;
+ * every bias starts at zero. Throws if `spec.layers` is empty — a block
+ * needs at least an output layer.
  */
 export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
-  const parameters = new Map<string, Parameter>();
+  if (spec.layers.length === 0) {
+    throw new Error(`buildNNBlock: "${spec.name}" has no layers`);
+  }
+
+  const weights = new Map<string, number>();
   const rng = mulberry32(spec.seed);
 
   let layerInputs: Base[] = spec.inputs.map((name) => new Name(name));
-  let layerInputNames = spec.inputs;
 
-  for (let layer = 0; layer < spec.depth; layer++) {
+  spec.layers.forEach((layer, layerIdx) => {
+    const isOutputLayer = layerIdx === spec.layers.length - 1;
     const preActivations = buildLayer(
       spec.name,
-      layer,
+      layerIdx,
       layerInputs,
-      layerInputNames,
-      spec.width,
+      layer.width,
       rng,
-      parameters,
+      weights,
     );
-    layerInputs = preActivations.map(stableSoftplus);
-    layerInputNames = layerInputs.map((_, i) => `${spec.name}_h${layer}_${i}`);
-  }
-
-  const rawOutputs = buildLayer(
-    spec.name,
-    spec.depth,
-    layerInputs,
-    layerInputNames,
-    spec.outputs,
-    rng,
-    parameters,
-  );
+    layerInputs = isOutputLayer
+      ? preActivations
+      : preActivations.map((pre) =>
+          substituteName(spec.activation.expression, "x", pre),
+        );
+  });
 
   // Single trainable factor shared across every output (NNBlockSpec.scale's
-  // doc comment). Named/tex'd like a weight/bias, not just given a bare
-  // value, for the same reason those need it: it's an ordinary Parameter
-  // like any other, and the live "Generated LaTeX" preview renders straight
-  // from this generator before any UI-side texName-defaulting ever runs.
+  // doc comment) — an ordinary Parameter, unlike weights, since it's a
+  // meaningful, user-facing knob on its own.
   const scaleName = `${spec.name}_scale`;
   const scaleDisplayName = `${spec.name}: output scale`;
-  parameters.set(scaleName, {
+  const scale: Parameter = {
     value: spec.scale,
     displayName: scaleDisplayName,
     texName: defaultTexName(scaleDisplayName),
-  });
-  const outputs = rawOutputs.map(
+  };
+  const outputs = layerInputs.map(
     (output) => new Mul([new Name(scaleName), output]),
   );
 
-  return { parameters, outputs };
+  return { weights, scale, outputs };
 }

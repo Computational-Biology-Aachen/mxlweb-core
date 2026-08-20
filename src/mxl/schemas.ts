@@ -88,7 +88,7 @@ export const kineticSchema: JsonSchema = {
         nn_blocks: {
           type: "object",
           description:
-            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005). Weights/biases are ordinary parameters, named `<block>_w{layer}_{i}_{j}` / `<block>_b{layer}_{i}`; this section only records the architecture needed to regenerate or re-edit a block, and is optional — a document with no NN blocks simply omits it.",
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
           },
@@ -100,16 +100,16 @@ export const kineticSchema: JsonSchema = {
     nnBlock: {
       type: "object",
       description:
-        "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
+        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`.",
       required: [
         "inputs",
-        "depth",
-        "width",
+        "layers",
         "seed",
         "targets",
         "trained",
         "scale",
         "mechanism",
+        "activation",
       ],
       additionalProperties: false,
       properties: {
@@ -117,44 +117,123 @@ export const kineticSchema: JsonSchema = {
           type: "array",
           description:
             "Names of existing variables/parameters/derived quantities the block reads.",
-          items: { type: "string" },
+          items: {
+            type: "string",
+          },
         },
-        depth: {
-          type: "integer",
-          description: "Number of hidden layers.",
-          minimum: 1,
-        },
-        width: {
-          type: "integer",
-          description: "Uniform width of every hidden layer.",
-          minimum: 1,
+        layers: {
+          type: "array",
+          description:
+            "The network's layer stack, input-to-output order. The final layer's width is the number of outputs (must match the length of targets).",
+          minItems: 1,
+          items: {
+            $ref: "#/$defs/nnLayer",
+          },
         },
         seed: {
           type: "integer",
           description:
-            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated.",
+            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated and whenever trained is false (no weights_ref to load instead).",
         },
         targets: {
           type: "array",
           description:
             "Which existing variable(s) this block corrects — one entry per output, in order.",
-          items: { type: "string" },
+          items: {
+            type: "string",
+          },
         },
         trained: {
           type: "boolean",
           description:
-            "Whether this block's weights are included when fitting the model.",
+            "Whether this block has been fit. true requires weights_ref (load trained values); false forbids it (initialize from seed instead).",
+        },
+        weights_ref: {
+          type: "string",
+          description:
+            "Relative path, resolved against this .mxl.json file's own location, to a JSON sidecar file (nn-weights.schema.json) holding this block's trained weight/bias values. Required when trained is true; must be absent when trained is false.",
         },
         scale: {
           type: "number",
           description:
-            "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
+            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs.",
         },
         mechanism: {
-          type: "string",
-          enum: ["additive", "relative_multiply", "multiply"],
+          $ref: "#/$defs/mechanismNode",
           description:
-            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). relative_multiply: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. multiply: dx/dt = f(x,p,t) * scale * NN(x,\u03b8) -- a bare product with no such safeguard; a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, every relative_multiply and multiply block combines into one running product factor on f (in that order), then every additive block is summed on top.",
+            "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
+        },
+        activation: {
+          $ref: "#/$defs/nnActivation",
+          description:
+            "Activation applied elementwise after every layer except the last (which is a plain linear combination, so outputs can take any real value).",
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              trained: {
+                const: true,
+              },
+            },
+          },
+          then: {
+            required: ["weights_ref"],
+          },
+        },
+        {
+          if: {
+            properties: {
+              trained: {
+                const: false,
+              },
+            },
+          },
+          then: {
+            not: {
+              required: ["weights_ref"],
+            },
+          },
+        },
+      ],
+    },
+    nnLayer: {
+      type: "object",
+      description:
+        "One layer of an nn_block's stack. type selects the layer kind; only dense exists today, but every layer is tagged so a downstream library can map future kinds to the right constructor without guessing from shape alone.",
+      required: ["type", "width"],
+      additionalProperties: false,
+      properties: {
+        type: {
+          type: "string",
+          enum: ["dense"],
+          description: "Layer kind discriminator.",
+        },
+        width: {
+          type: "integer",
+          description:
+            "Number of output units of this layer (a dense layer's fan-out).",
+          minimum: 1,
+        },
+      },
+    },
+    nnActivation: {
+      type: "object",
+      description:
+        "A named activation function with a portable math definition, applied elementwise.",
+      required: ["name", "expression"],
+      additionalProperties: false,
+      properties: {
+        name: {
+          type: "string",
+          description:
+            'Recognized name (e.g. "softplus") so a backend with its own native, optimized implementation can use it directly instead of evaluating expression node-by-node.',
+        },
+        expression: {
+          $ref: "#/$defs/activationNode",
+          description:
+            "Portable definition over the single placeholder `x` (the pre-activation value), usable by any consumer regardless of whether it recognizes name.",
         },
       },
     },
@@ -389,6 +468,180 @@ export const kineticSchema: JsonSchema = {
         },
       ],
     },
+    mechanismNode: {
+      type: "object",
+      description:
+        "A node in a `mechanism` expression tree. Identical to `node`, except a Name leaf's value is restricted to the two mechanism placeholders (`ode`, `nde`) and every operand recurses into mechanismNode rather than the unrestricted node, so the restriction holds at every depth.",
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+        },
+        value: {
+          type: ["number", "string", "boolean"],
+          description: "Payload of a leaf node (Num/Name/Bool).",
+        },
+        child: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        base: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        left: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        right: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        children: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/mechanismNode",
+          },
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Num",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "number",
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Name",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "string",
+                enum: ["ode", "nde"],
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Bool",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "boolean",
+              },
+            },
+          },
+        },
+      ],
+    },
+    activationNode: {
+      type: "object",
+      description:
+        "A node in an `activation.expression` tree. Identical to `node`, except a Name leaf's value is restricted to the single activation placeholder (`x`) and every operand recurses into activationNode rather than the unrestricted node, so the restriction holds at every depth.",
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+        },
+        value: {
+          type: ["number", "string", "boolean"],
+          description: "Payload of a leaf node (Num/Name/Bool).",
+        },
+        child: {
+          $ref: "#/$defs/activationNode",
+        },
+        base: {
+          $ref: "#/$defs/activationNode",
+        },
+        left: {
+          $ref: "#/$defs/activationNode",
+        },
+        right: {
+          $ref: "#/$defs/activationNode",
+        },
+        children: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/activationNode",
+          },
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Num",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "number",
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Name",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "string",
+                enum: ["x"],
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Bool",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "boolean",
+              },
+            },
+          },
+        },
+      ],
+    },
   },
 };
 
@@ -460,7 +713,7 @@ export const odeSchema: JsonSchema = {
         nn_blocks: {
           type: "object",
           description:
-            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005). Weights/biases are ordinary parameters, named `<block>_w{layer}_{i}_{j}` / `<block>_b{layer}_{i}`; this section only records the architecture needed to regenerate or re-edit a block, and is optional — a document with no NN blocks simply omits it.",
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
           },
@@ -472,16 +725,16 @@ export const odeSchema: JsonSchema = {
     nnBlock: {
       type: "object",
       description:
-        "A UDE/NODE correction term: a fully-connected softplus network (arbitrary depth, uniform width) with a linear (unactivated) output layer, added onto one or more existing variables' dynamics.",
+        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`.",
       required: [
         "inputs",
-        "depth",
-        "width",
+        "layers",
         "seed",
         "targets",
         "trained",
         "scale",
         "mechanism",
+        "activation",
       ],
       additionalProperties: false,
       properties: {
@@ -489,44 +742,123 @@ export const odeSchema: JsonSchema = {
           type: "array",
           description:
             "Names of existing variables/parameters/derived quantities the block reads.",
-          items: { type: "string" },
+          items: {
+            type: "string",
+          },
         },
-        depth: {
-          type: "integer",
-          description: "Number of hidden layers.",
-          minimum: 1,
-        },
-        width: {
-          type: "integer",
-          description: "Uniform width of every hidden layer.",
-          minimum: 1,
+        layers: {
+          type: "array",
+          description:
+            "The network's layer stack, input-to-output order. The final layer's width is the number of outputs (must match the length of targets).",
+          minItems: 1,
+          items: {
+            $ref: "#/$defs/nnLayer",
+          },
         },
         seed: {
           type: "integer",
           description:
-            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated.",
+            "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated and whenever trained is false (no weights_ref to load instead).",
         },
         targets: {
           type: "array",
           description:
             "Which existing variable(s) this block corrects — one entry per output, in order.",
-          items: { type: "string" },
+          items: {
+            type: "string",
+          },
         },
         trained: {
           type: "boolean",
           description:
-            "Whether this block's weights are included when fitting the model.",
+            "Whether this block has been fit. true requires weights_ref (load trained values); false forbids it (initialize from seed instead).",
+        },
+        weights_ref: {
+          type: "string",
+          description:
+            "Relative path, resolved against this .mxl.json file's own location, to a JSON sidecar file (nn-weights.schema.json) holding this block's trained weight/bias values. Required when trained is true; must be absent when trained is false.",
         },
         scale: {
           type: "number",
           description:
-            "Initial value for the block's single trainable output-scaling factor: dx/dt = f(x,p,t) + scale * NN(x,\u03b8), shared across all of the block's outputs.",
+            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs.",
         },
         mechanism: {
-          type: "string",
-          enum: ["additive", "relative_multiply", "multiply"],
+          $ref: "#/$defs/mechanismNode",
           description:
-            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). relative_multiply: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. multiply: dx/dt = f(x,p,t) * scale * NN(x,\u03b8) -- a bare product with no such safeguard; a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, every relative_multiply and multiply block combines into one running product factor on f (in that order), then every additive block is summed on top.",
+            "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
+        },
+        activation: {
+          $ref: "#/$defs/nnActivation",
+          description:
+            "Activation applied elementwise after every layer except the last (which is a plain linear combination, so outputs can take any real value).",
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              trained: {
+                const: true,
+              },
+            },
+          },
+          then: {
+            required: ["weights_ref"],
+          },
+        },
+        {
+          if: {
+            properties: {
+              trained: {
+                const: false,
+              },
+            },
+          },
+          then: {
+            not: {
+              required: ["weights_ref"],
+            },
+          },
+        },
+      ],
+    },
+    nnLayer: {
+      type: "object",
+      description:
+        "One layer of an nn_block's stack. type selects the layer kind; only dense exists today, but every layer is tagged so a downstream library can map future kinds to the right constructor without guessing from shape alone.",
+      required: ["type", "width"],
+      additionalProperties: false,
+      properties: {
+        type: {
+          type: "string",
+          enum: ["dense"],
+          description: "Layer kind discriminator.",
+        },
+        width: {
+          type: "integer",
+          description:
+            "Number of output units of this layer (a dense layer's fan-out).",
+          minimum: 1,
+        },
+      },
+    },
+    nnActivation: {
+      type: "object",
+      description:
+        "A named activation function with a portable math definition, applied elementwise.",
+      required: ["name", "expression"],
+      additionalProperties: false,
+      properties: {
+        name: {
+          type: "string",
+          description:
+            'Recognized name (e.g. "softplus") so a backend with its own native, optimized implementation can use it directly instead of evaluating expression node-by-node.',
+        },
+        expression: {
+          $ref: "#/$defs/activationNode",
+          description:
+            "Portable definition over the single placeholder `x` (the pre-activation value), usable by any consumer regardless of whether it recognizes name.",
         },
       },
     },
@@ -713,6 +1045,180 @@ export const odeSchema: JsonSchema = {
             properties: {
               value: {
                 type: "string",
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Bool",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "boolean",
+              },
+            },
+          },
+        },
+      ],
+    },
+    mechanismNode: {
+      type: "object",
+      description:
+        "A node in a `mechanism` expression tree. Identical to `node`, except a Name leaf's value is restricted to the two mechanism placeholders (`ode`, `nde`) and every operand recurses into mechanismNode rather than the unrestricted node, so the restriction holds at every depth.",
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+        },
+        value: {
+          type: ["number", "string", "boolean"],
+          description: "Payload of a leaf node (Num/Name/Bool).",
+        },
+        child: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        base: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        left: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        right: {
+          $ref: "#/$defs/mechanismNode",
+        },
+        children: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/mechanismNode",
+          },
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Num",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "number",
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Name",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "string",
+                enum: ["ode", "nde"],
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Bool",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "boolean",
+              },
+            },
+          },
+        },
+      ],
+    },
+    activationNode: {
+      type: "object",
+      description:
+        "A node in an `activation.expression` tree. Identical to `node`, except a Name leaf's value is restricted to the single activation placeholder (`x`) and every operand recurses into activationNode rather than the unrestricted node, so the restriction holds at every depth.",
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+        },
+        value: {
+          type: ["number", "string", "boolean"],
+          description: "Payload of a leaf node (Num/Name/Bool).",
+        },
+        child: {
+          $ref: "#/$defs/activationNode",
+        },
+        base: {
+          $ref: "#/$defs/activationNode",
+        },
+        left: {
+          $ref: "#/$defs/activationNode",
+        },
+        right: {
+          $ref: "#/$defs/activationNode",
+        },
+        children: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/activationNode",
+          },
+        },
+      },
+      allOf: [
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Num",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "number",
+              },
+            },
+          },
+        },
+        {
+          if: {
+            properties: {
+              type: {
+                const: "Name",
+              },
+            },
+          },
+          then: {
+            required: ["value"],
+            properties: {
+              value: {
+                type: "string",
+                enum: ["x"],
               },
             },
           },

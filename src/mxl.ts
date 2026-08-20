@@ -97,38 +97,108 @@ function addDerived(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
 }
 
 /**
- * Revive `nn_blocks` — deliberately *before* `addParameters` in both
- * `buildKinetic`/`buildOde` below: `addNNBlock` always Glorot-reinitializes
- * its weights fresh from `seed`, so importing it after `parameters` would
- * clobber the document's actual (possibly fitting-updated) weight values
- * with freshly-regenerated ones. Running `addParameters` second lets its
- * `parameters` section — which already includes every block's weights,
- * serialised with `mxlNNBlocks`'s sibling `mxlParameters` — overwrite them
- * back to the correct values, the same trick `buildMxlweb`'s export uses.
+ * A `weights_ref` sidecar file's already-parsed content (mxl-schemas
+ * nn-weights.schema.json): `w{n}`/`b{n}`, 1-indexed by layer, matrix shape
+ * `[out_features, in_features]`. `mxlJsonToModel` never reads a file
+ * itself — the caller resolves and parses every `weights_ref` path
+ * (relative to wherever the main document came from) and supplies the
+ * results here, since file access is a browser/fs/network concern this
+ * package stays agnostic of.
  */
-function addNNBlocks(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
+export type NNWeightsFile = Record<string, number[][] | number[]>;
+
+/**
+ * Reshape a `weights_ref` sidecar's nested per-layer matrices back into the
+ * flat `Name`-addressable naming `buildNNBlock`/`ModelBuilderBase.nnWeights`
+ * use (`${blockKey}_w{layerIdx}_{i}_{j}` / `${blockKey}_b{layerIdx}_{i}`,
+ * 0-indexed) — the inverse of `ModelBuilderBase.buildNNWeightsFile`.
+ */
+function flattenNNWeights(
+  blockKey: string,
+  sidecar: NNWeightsFile,
+): Map<string, number> {
+  const flat = new Map<string, number>();
+  let layerIdx = 0;
+  while (`w${layerIdx + 1}` in sidecar) {
+    const w = sidecar[`w${layerIdx + 1}`] as number[][];
+    const b = sidecar[`b${layerIdx + 1}`] as number[];
+    w.forEach((row, i) => {
+      if (b[i] !== undefined) {
+        flat.set(`${blockKey}_b${layerIdx}_${i}`, b[i]);
+      }
+      row.forEach((value, j) => {
+        flat.set(`${blockKey}_w${layerIdx}_${i}_${j}`, value);
+      });
+    });
+    layerIdx++;
+  }
+  return flat;
+}
+
+/**
+ * Revive `nn_blocks` — deliberately *before* `addParameters` in both
+ * `buildKinetic`/`buildOde` below: `addNNBlock` always adds the block's
+ * `scale` at `config.scale`'s *initial* value (like `seed`, not necessarily
+ * its current, possibly fitting-updated one — `NNBlockConfig.scale`'s doc
+ * comment), so importing it after `parameters` would clobber the
+ * document's actual scale value with that initial one. Running
+ * `addParameters` second lets its `parameters` section — which includes
+ * every block's `${id}_scale`, serialised alongside `mxlNNBlocks` by its
+ * sibling `mxlParameters` — overwrite it back to the correct value, the
+ * same trick `buildMxlweb`'s export uses. Weight/bias values need no such
+ * trick: they never touch `parameters` at all (mxl-schemas nn_blocks v2)
+ * and are instead passed straight into `addNNBlock`'s `trainedWeights`
+ * argument, reshaped from `weightsByRef`.
+ */
+function addNNBlocks(
+  builder: ModelBuilderBase,
+  doc: MxlJsonDocument,
+  weightsByRef: Map<string, NNWeightsFile>,
+): void {
   for (const [id, entry] of Object.entries(section(doc, "nn_blocks"))) {
     // Every field is required by the schema, already validated by the time
     // this runs (mxlJsonToModel validates before calling buildKinetic/
     // buildOde) — non-null assertions are safe here, same as elsewhere in
     // this file (e.g. entry.fn!).
-    builder.addNNBlock(id, {
+    const config = {
       inputs: entry.inputs!,
-      depth: entry.depth!,
-      width: entry.width!,
+      layers: entry.layers!,
       seed: entry.seed!,
       targets: entry.targets!,
       trained: entry.trained!,
       scale: entry.scale!,
-      mechanism: entry.mechanism!,
-    });
+      mechanism: nodeFromJson(entry.mechanism!),
+      activation: {
+        name: entry.activation!.name,
+        expression: nodeFromJson(entry.activation!.expression),
+      },
+    };
+    let trainedWeights: Map<string, number> | undefined;
+    if (entry.trained) {
+      if (entry.weights_ref === undefined) {
+        throw new Error(
+          `nn_block "${id}": trained is true but weights_ref is missing`,
+        );
+      }
+      const sidecar = weightsByRef.get(entry.weights_ref);
+      if (sidecar === undefined) {
+        throw new Error(
+          `nn_block "${id}": no weights file supplied for weights_ref "${entry.weights_ref}"`,
+        );
+      }
+      trainedWeights = flattenNNWeights(id, sidecar);
+    }
+    builder.addNNBlock(id, config, trainedWeights);
   }
 }
 
-function buildKinetic(doc: MxlJsonDocument): KineticModelBuilder {
+function buildKinetic(
+  doc: MxlJsonDocument,
+  weightsByRef: Map<string, NNWeightsFile>,
+): KineticModelBuilder {
   const builder = new KineticModelBuilder();
   addVariables(builder, doc);
-  addNNBlocks(builder, doc);
+  addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
   for (const [id, entry] of Object.entries(section(doc, "reactions"))) {
     const reaction: Reaction = {
@@ -144,10 +214,13 @@ function buildKinetic(doc: MxlJsonDocument): KineticModelBuilder {
   return builder;
 }
 
-function buildOde(doc: MxlJsonDocument): OdeModelBuilder {
+function buildOde(
+  doc: MxlJsonDocument,
+  weightsByRef: Map<string, NNWeightsFile>,
+): OdeModelBuilder {
   const builder = new OdeModelBuilder();
   addVariables(builder, doc);
-  addNNBlocks(builder, doc);
+  addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
   for (const [id, entry] of Object.entries(section(doc, "variables"))) {
     if (entry.fn !== undefined) {
@@ -173,6 +246,7 @@ function buildSteadyState(doc: MxlJsonDocument): SteadyStateModelBuilder {
  */
 export function mxlJsonToModel(
   doc: string | MxlJsonDocument,
+  weightsByRef: Map<string, NNWeightsFile> = new Map(),
 ): ModelBuilderBase {
   const parsed: MxlJsonDocument =
     typeof doc === "string" ? JSON.parse(doc) : doc;
@@ -190,9 +264,9 @@ export function mxlJsonToModel(
 
   switch (kind) {
     case "kinetic":
-      return buildKinetic(parsed);
+      return buildKinetic(parsed, weightsByRef);
     case "ode":
-      return buildOde(parsed);
+      return buildOde(parsed, weightsByRef);
     case "steady-state":
       return buildSteadyState(parsed);
   }

@@ -32,6 +32,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.assignments = new SvelteMap(this.assignments);
     cl.differentials = new SvelteMap(this.differentials);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
+    cl.nnWeights = new SvelteMap(this.nnWeights);
     return cl;
   }
 
@@ -106,11 +107,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
         // fully expanded sum, which is what buildJs()/buildWat() need but is
         // unreadable to render.
         const own = this.differentials.get(name) ?? new Num(0);
-        const rhs = this.composeNNBlockTex(
-          name,
-          own.toTex(texNames),
-          own instanceof Num && own.value === 0,
-        );
+        const rhs = this.composeNNBlockTex(name, own.toTex(texNames));
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rhs}`;
       })
       .join(" \\\\ \n  ");

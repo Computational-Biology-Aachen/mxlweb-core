@@ -16,6 +16,8 @@
  */
 import {
   KineticModelBuilder,
+  additiveMechanism,
+  softplusActivation,
   OdeModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
 import { mathImports } from "@computational-biology-aachen/mxlweb-core/backends/wasm";
@@ -172,34 +174,51 @@ describe("adjoint WAT: OdeModelBuilder with an active NN block", () => {
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
       .addNNBlock("corr", {
         inputs: ["x"],
-        depth: 1,
-        width: 2,
+        layers: [
+          { type: "dense", width: 2 },
+          { type: "dense", width: 1 },
+        ],
         seed: 1,
         targets: ["x"],
         trained: true,
         scale: 0.1,
-        mechanism: "additive",
+        mechanism: additiveMechanism(),
+        activation: softplusActivation(),
       });
 
-    const weightNames = [...builder.parameters.keys()].filter((k) =>
-      k.startsWith("corr_"),
-    );
+    // Weights/biases are Name-addressable via nnWeights now, not parameters
+    // (mxl-schemas nn_blocks v2) — but still merged into the same flat
+    // array `lower()`/`buildAdjointWat` compile against
+    // (getAllAddressableNames), which is exactly the property this test
+    // exists to confirm: a weight differentiates through the same
+    // orchestration as any hand-written parameter.
+    //
+    // thetaNames is the *full* addressable list ("k", then "corr_scale",
+    // then every weight/bias, `getAllAddressableNames`'s own order) rather
+    // than a hand-picked subset: the central-diff loop below indexes
+    // `pars[k]` and `dtheta[k]` by the same `k`, which is only valid when
+    // thetaNames[k] and pars[k] name the same symbol at every k — true only
+    // for the full list, since `pars` (resolveAllAddressableValues) always
+    // includes every addressable symbol including "corr_scale". A subset
+    // that skips a symbol in the middle (e.g. omitting "corr_scale" while
+    // keeping every weight after it) would silently misalign the two
+    // arrays — buildAdjointGraph itself accepts any subset just fine, but
+    // this particular test-side indexing trick does not.
+    const thetaNames = builder.getAllAddressableNames();
+    const weightNames = [...builder.nnBlockWeightNames("corr")];
     expect(weightNames.length).toBeGreaterThan(0);
-    // Same alignment note as the previous test — this is the full parameter
-    // list ("k" was added before the block, weightNames preserves the
-    // block's own insertion order), so it matches `pars`'s order exactly.
-    const thetaNames = ["k", ...weightNames];
+    expect(thetaNames).toEqual(["k", "corr_scale", ...weightNames]);
     const adjointWat = builder.buildAdjointWat(thetaNames);
     const rhs = compileJsRhs(builder.buildJs());
     const runAdjoint = compileAdjointWat(
       adjointWat,
       1,
-      builder.parameters.size,
+      builder.getAllAddressableNames().length,
       thetaNames.length,
     );
 
     const y = [0.8];
-    const pars = builder.resolveParameters();
+    const pars = builder.resolveAllAddressableValues();
     const lambda = [1.7];
 
     const { dlambda, dtheta } = runAdjoint(y, lambda, pars);

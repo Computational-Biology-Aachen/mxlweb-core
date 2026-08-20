@@ -208,6 +208,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.assignments = new SvelteMap(this.assignments);
     cl.reactions = new SvelteMap(this.reactions);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
+    cl.nnWeights = new SvelteMap(this.nnWeights);
     return cl;
   }
 
@@ -330,11 +331,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       .map(([name, terms]) => {
         const lines = renderTerms(terms, texNames);
         const mechanisticTex = lines.join(" \\\\\n  & ");
-        const rendered = this.composeNNBlockTex(
-          name,
-          mechanisticTex,
-          terms.length === 0,
-        );
+        const rendered = this.composeNNBlockTex(name, mechanisticTex);
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rendered}`;
       })
       .join(" \\\\ \n  ");

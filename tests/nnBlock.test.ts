@@ -8,6 +8,7 @@ import {
 } from "@computational-biology-aachen/mxlweb-core/mathml";
 import {
   buildNNBlock,
+  softplusActivation,
   type NNBlockSpec,
 } from "@computational-biology-aachen/mxlweb-core";
 import { describe, expect, it } from "vitest";
@@ -35,25 +36,27 @@ describe("buildNNBlock: architecture", () => {
   const spec: NNBlockSpec = {
     name: "corr",
     inputs: ["a", "b"],
-    depth: 2,
-    width: 3,
-    outputs: 1,
+    layers: [
+      { type: "dense", width: 3 },
+      { type: "dense", width: 3 },
+      { type: "dense", width: 1 },
+    ],
     seed: 42,
     scale: 0.1,
+    activation: softplusActivation(),
   };
 
-  it("produces the expected parameter count", () => {
+  it("produces the expected weight/bias count", () => {
     // layer0 (2 in -> 3 out): 3*2 + 3 = 9
     // layer1 hidden->hidden (3 -> 3): 3*3 + 3 = 12
     // output layer (3 -> 1): 1*3 + 1 = 4
-    // plus one shared scale parameter
-    const { parameters } = buildNNBlock(spec);
-    expect(parameters.size).toBe(9 + 12 + 4 + 1);
+    const { weights } = buildNNBlock(spec);
+    expect(weights.size).toBe(9 + 12 + 4);
   });
 
   it("initializes the scale parameter to spec.scale", () => {
-    const { parameters } = buildNNBlock(spec);
-    expect(parameters.get("corr_scale")?.value).toBe(0.1);
+    const { scale } = buildNNBlock(spec);
+    expect(scale.value).toBe(0.1);
   });
 
   it("produces one output expression", () => {
@@ -61,48 +64,49 @@ describe("buildNNBlock: architecture", () => {
     expect(outputs).toHaveLength(1);
   });
 
-  it("names every parameter under the block's namespace, with no collisions", () => {
-    const { parameters } = buildNNBlock(spec);
-    for (const name of parameters.keys()) {
+  it("names every weight under the block's namespace, with no collisions", () => {
+    const { weights } = buildNNBlock(spec);
+    for (const name of weights.keys()) {
       expect(name.startsWith("corr_")).toBe(true);
     }
-    expect(new Set(parameters.keys()).size).toBe(parameters.size);
+    expect(new Set(weights.keys()).size).toBe(weights.size);
   });
 
   it("initializes every bias to exactly zero", () => {
-    const { parameters } = buildNNBlock(spec);
-    for (const [name, p] of parameters) {
-      if (name.includes("_b")) expect(p.value).toBe(0);
+    const { weights } = buildNNBlock(spec);
+    for (const [name, value] of weights) {
+      if (name.includes("_b")) expect(value).toBe(0);
     }
   });
 
-  it("gives every parameter its own texName, not just a displayName", () => {
-    // Generated names have multiple underscores (${key}_w${layer}_${i}_${j});
-    // Name.toTex falls back to the raw identifier whenever no texName is
-    // registered, and KaTeX parses two bare underscores as a "Double
-    // subscript" error. Every generated weight/bias needs a safe texName
-    // from the moment it's created — not only once some UI layer gets
-    // around to synthesizing one, since the live "Generated LaTeX" preview
-    // renders straight from this generator before any such pass ever runs.
-    const { parameters } = buildNNBlock(spec);
-    for (const [name, p] of parameters) {
-      expect(p.texName, `${name} has no texName`).toBeTruthy();
-      expect(p.texName!.startsWith("\\text{")).toBe(true);
-    }
+  it("scale is an ordinary Parameter with its own texName", () => {
+    // Unlike weights/biases (which have no display/tex metadata at all —
+    // they're never a table row or an individually-rendered LaTeX term),
+    // scale is a meaningful, user-facing knob and keeps that metadata.
+    const { scale } = buildNNBlock(spec);
+    expect(scale.texName).toBeTruthy();
+    expect(scale.texName!.startsWith("\\text{")).toBe(true);
   });
 
-  it("scales parameter count with depth and width (6x64-style block stays tractable to build)", () => {
+  it("scales weight count with layer depth/width (6x64-style block stays tractable to build)", () => {
     const big = buildNNBlock({
       name: "flux",
       inputs: ["x"],
-      depth: 6,
-      width: 64,
-      outputs: 1,
+      layers: [
+        { type: "dense", width: 64 },
+        { type: "dense", width: 64 },
+        { type: "dense", width: 64 },
+        { type: "dense", width: 64 },
+        { type: "dense", width: 64 },
+        { type: "dense", width: 64 },
+        { type: "dense", width: 1 },
+      ],
       seed: 1,
       scale: 0.1,
+      activation: softplusActivation(),
     });
-    // layer0: 64*1+64=128; 5x hidden->hidden: 5*(64*64+64)=20800; output: 1*64+1=65; +1 scale
-    expect(big.parameters.size).toBe(128 + 20800 + 65 + 1);
+    // layer0: 64*1+64=128; 5x hidden->hidden: 5*(64*64+64)=20800; output: 1*64+1=65
+    expect(big.weights.size).toBe(128 + 20800 + 65);
   });
 });
 
@@ -110,26 +114,28 @@ describe("buildNNBlock: reproducibility", () => {
   const spec: NNBlockSpec = {
     name: "corr",
     inputs: ["a"],
-    depth: 1,
-    width: 4,
-    outputs: 1,
+    layers: [
+      { type: "dense", width: 4 },
+      { type: "dense", width: 1 },
+    ],
     seed: 7,
     scale: 0.1,
+    activation: softplusActivation(),
   };
 
   it("the same seed produces identical weights", () => {
     const first = buildNNBlock(spec);
     const second = buildNNBlock(spec);
-    for (const [name, p] of first.parameters) {
-      expect(second.parameters.get(name)?.value).toBe(p.value);
+    for (const [name, value] of first.weights) {
+      expect(second.weights.get(name)).toBe(value);
     }
   });
 
   it("a different seed produces different weights", () => {
     const first = buildNNBlock(spec);
     const second = buildNNBlock({ ...spec, seed: 8 });
-    const anyDiffers = [...first.parameters.entries()].some(
-      ([name, p]) => second.parameters.get(name)?.value !== p.value,
+    const anyDiffers = [...first.weights.entries()].some(
+      ([name, value]) => second.weights.get(name) !== value,
     );
     expect(anyDiffers).toBe(true);
   });
@@ -141,14 +147,16 @@ describe("buildNNBlock: softplus numerical stability (ADR 0005 §2.1.1)", () => 
     // and bias 0 reduces to exactly softplus(input) at the hidden unit, fed
     // through a (likely nonzero) linear output weight — either way, no
     // Infinity/NaN should appear even for an extreme input.
-    const { parameters, outputs } = buildNNBlock({
+    const { weights, outputs } = buildNNBlock({
       name: "s",
       inputs: ["x"],
-      depth: 1,
-      width: 1,
-      outputs: 1,
+      layers: [
+        { type: "dense", width: 1 },
+        { type: "dense", width: 1 },
+      ],
       seed: 3,
       scale: 1,
+      activation: softplusActivation(),
     });
     // Force the hidden unit's weight/bias to the identity (weight=1, bias=0)
     // so the hidden pre-activation is exactly `x`, isolating softplus itself.
@@ -157,12 +165,12 @@ describe("buildNNBlock: softplus numerical stability (ADR 0005 §2.1.1)", () => 
     // weight would already keep the result bounded/finite on its own,
     // regardless of whether softplus itself overflowed internally. scale=1
     // above keeps the block's own output-scaling factor a no-op here too.
-    parameters.set("s_w0_0_0", { value: 1 });
-    parameters.set("s_b0_0", { value: 0 });
-    parameters.set("s_w1_0_0", { value: 1 });
-    parameters.set("s_b1_0", { value: 0 });
-    const env: Record<string, number> = { x: 1000 };
-    for (const [name, p] of parameters) env[name] = p.value;
+    weights.set("s_w0_0_0", 1);
+    weights.set("s_b0_0", 0);
+    weights.set("s_w1_0_0", 1);
+    weights.set("s_b1_0", 0);
+    const env: Record<string, number> = { x: 1000, s_scale: 1 };
+    for (const [name, value] of weights) env[name] = value;
     const value = evalExpr(outputs[0], env);
     expect(Number.isFinite(value)).toBe(true);
     expect(value).toBeCloseTo(1000, 3); // softplus(1000) ≈ 1000, not Infinity
@@ -176,21 +184,24 @@ describe("buildNNBlock: generated output is a valid, differentiable expression",
     // differentiation code — it should differentiate correctly using only
     // the per-node backward rules already implemented for Add/Mul/Name/
     // Max/Abs/Exp/Ln (stableSoftplus's primitives).
-    const { parameters, outputs } = buildNNBlock({
+    const { weights, scale, outputs } = buildNNBlock({
       name: "n",
       inputs: ["x"],
-      depth: 2,
-      width: 3,
-      outputs: 1,
+      layers: [
+        { type: "dense", width: 3 },
+        { type: "dense", width: 3 },
+        { type: "dense", width: 1 },
+      ],
       seed: 11,
       scale: 0.5,
+      activation: softplusActivation(),
     });
     const expr = outputs[0];
 
-    const env: Record<string, number> = { x: 0.6 };
-    for (const [name, p] of parameters) env[name] = p.value;
+    const env: Record<string, number> = { x: 0.6, n_scale: scale.value };
+    for (const [name, value] of weights) env[name] = value;
 
-    // Checking every parameter's gradient would be slow and redundant (the
+    // Checking every weight's gradient would be slow and redundant (the
     // per-node rules are already exhaustively tested); spot-check the input,
     // the shared scale factor (a non-1 value here so this actually exercises
     // the scale multiplication, not just a no-op), and a couple of
@@ -210,11 +221,13 @@ describe("buildNNBlock: input wiring", () => {
     const { outputs } = buildNNBlock({
       name: "n",
       inputs: ["conc"],
-      depth: 1,
-      width: 2,
-      outputs: 1,
+      layers: [
+        { type: "dense", width: 2 },
+        { type: "dense", width: 1 },
+      ],
       seed: 5,
       scale: 0.1,
+      activation: softplusActivation(),
     });
     const symbols = outputs[0].getSymbols(new Set<string>());
     expect(symbols.has("conc")).toBe(true);
