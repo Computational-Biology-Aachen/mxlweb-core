@@ -315,6 +315,22 @@ export function mathMLToAst(el: Element): Base {
  * @param name Human-readable model name (also sanitised into the model `id`).
  */
 export function modelToSbml(model: KineticModelBuilder, name: string): string {
+  // NN blocks aren't representable here at all: this builds <listOfReactions>
+  // purely from model.reactions, which -- like buildMxlpy -- used to get a
+  // block "for free" via wireNNBlockOutputs wiring it in as an ordinary
+  // reaction. That trick is gone (NNBlockConfig.mechanism's doc comment):
+  // composition now happens outside model.reactions entirely, so a naive
+  // export would silently emit an SBML model missing every block's
+  // dynamical contribution, with its weight/bias/scale parameters exported
+  // as orphaned <parameter> elements nothing references. Loud failure
+  // instead of a silently wrong exported model, same as buildMxlpy.
+  if (model.nnBlocks.size > 0) {
+    throw new Error(
+      "modelToSbml: NN blocks are not yet representable in SBML export " +
+        "(ADR 0005) — remove them before exporting, or export as " +
+        ".mxl.json / mxlweb TS source instead.",
+    );
+  }
   const modelId = name.replace(/[^A-Za-z0-9_]/g, "_") || "model";
 
   const compartmentXml = `<listOfCompartments>
