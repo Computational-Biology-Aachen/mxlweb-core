@@ -180,12 +180,51 @@ describe("OdeModelBuilder.addNNBlock", () => {
 
     expect(withBlock).not.toBe(withoutBlock);
     expect(withBlock).toContain("k \\cdot x");
-    // Every generated weight/bias must render safely -- see nnBlock.test.ts's
-    // texName coverage for why a raw multi-underscore id would otherwise
-    // reach KaTeX as a "Double subscript" parse error.
+    expect(withBlock).toContain("NN_{corr}(\\vec{x})");
+  });
+
+  it("collapses the block to NN_{block}(x), not the fully-expanded expression tree", () => {
+    // The full expansion (every weight/bias/max/ln/abs node, literally) is
+    // unreadable regardless of whether it parses as valid LaTeX -- a 6x64
+    // block prints ~20,800 nested terms -- and isn't how the UDE/Neural-ODE
+    // literature notates this split anyway (e.g. Rackauckas et al.:
+    // `f(x,p,t) + NN(x,θ)`). No generated weight/bias name should appear at
+    // all in the rendered row.
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", { ...smallBlock, depth: 3 });
+
+    const tex = builder.buildTex();
     for (const name of builder.parameters.keys()) {
-      if (name === "k") continue;
-      expect(withBlock).not.toContain(name);
+      expect(tex).not.toContain(name);
+    }
+  });
+
+  it("omits a redundant '0 +' prefix for a pure-NODE variable (no hand-authored differential)", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", smallBlock);
+    expect(builder.buildTex()).toContain("&= NN_{corr}(\\vec{x})");
+  });
+
+  it("escapes a block name containing '_' so it stays valid inside \\text{} (KaTeX, unlike plain LaTeX, rejects a bare '_' there)", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("my_block", smallBlock);
+    expect(builder.buildTex()).toContain("NN_{my\\_block}(\\vec{x})");
+  });
+});
+
+describe("KineticModelBuilder.buildTex with an NN block", () => {
+  it("collapses the block's reaction to NN_{block}(x) instead of the expanded rate law", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", { ...smallBlock, depth: 3 });
+
+    const tex = builder.buildTex();
+    expect(tex).toContain("NN_{corr}(\\vec{x})");
+    for (const name of builder.parameters.keys()) {
+      expect(tex).not.toContain(name);
     }
   });
 });

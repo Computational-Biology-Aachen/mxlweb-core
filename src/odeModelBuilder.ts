@@ -110,8 +110,21 @@ export class OdeModelBuilder extends ModelBuilderBase {
 
     const rhsString = [...this.variables.keys()]
       .map((name) => {
-        const expr = this.dxdtExpr(name);
-        return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${expr.toTex(texNames)}`;
+        // Own hand-authored differential, plus one abbreviated NN_{block}(x)
+        // term (see nnBlockTexTerm's doc comment) per block targeting this
+        // variable — not dxdtExpr()'s fully expanded sum, which is what
+        // buildJs()/buildWat() need but is unreadable to render.
+        const own = this.differentials.get(name) ?? new Num(0);
+        const blockTerms = [...this.nnBlocks.entries()]
+          .filter(([, config]) => config.targets.includes(name))
+          .map(([key]) => this.nnBlockTexTerm(key));
+
+        const ownIsZero = own instanceof Num && own.value === 0;
+        const rhs =
+          ownIsZero && blockTerms.length > 0
+            ? blockTerms.join(" + ")
+            : [own.toTex(texNames), ...blockTerms].join(" + ");
+        return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rhs}`;
       })
       .join(" \\\\ \n  ");
 

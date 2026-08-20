@@ -90,8 +90,26 @@ export function defaultValue(a: string | undefined, b: string): string {
   return a;
 }
 
+/**
+ * Escapes characters KaTeX treats specially even inside `\text{...}` —
+ * contrary to plain LaTeX, KaTeX's text mode does *not* accept a bare `_`
+ * literally (`\text{a_b}` throws "Expected 'EOF', got '_'", not a rendered
+ * underscore), and likewise for `{`/`}`/`#`/`$`/`%`/`&`/`~`/`^`/`\`. Apply
+ * to any arbitrary/user-provided string before it lands inside `\text{}` —
+ * every generated `displayName` (e.g. an NN block's weight/bias names,
+ * always containing `_`) needs this, not just user-typed ones.
+ */
+export function texEscape(s: string): string {
+  return s.replace(/[\\{}_#$%&~^]/g, (c) => {
+    if (c === "\\") return "\\textbackslash{}";
+    if (c === "~") return "\\textasciitilde{}";
+    if (c === "^") return "\\textasciicircum{}";
+    return `\\${c}`;
+  });
+}
+
 export function defaultTexName(name: string): string {
-  return `\\text{${name}}`;
+  return `\\text{${texEscape(name)}}`;
 }
 
 /** A derived computation that becomes a named local during code generation. */
@@ -307,6 +325,23 @@ export abstract class ModelBuilderBase {
       }
     }
     return owned;
+  }
+
+  /**
+   * Abbreviated LaTeX for one NN block's contribution to a `buildTex()` row
+   * — deliberately not the fully expanded expression tree. A 6×64 block
+   * (ADR 0005 §2.1's own cited scale) prints ~20,800 nested `\max`/`\ln`
+   * terms, which is unreadable regardless of whether it parses, and isn't
+   * how the UDE/Neural-ODE literature notates this term anyway: standard
+   * practice (e.g. Rackauckas et al., "Universal Differential Equations for
+   * Scientific Machine Learning") writes the mechanistic/learned split as
+   * `f(x,p,t) + NN(x,θ)` — one labeled function of the state, not its
+   * internals. A block's inputs are always every state variable (no
+   * per-block input picker), so `\vec{x}` is exactly accurate, not a
+   * simplification.
+   */
+  protected nnBlockTexTerm(blockKey: string): string {
+    return `NN_{${texEscape(blockKey)}}(\\vec{x})`;
   }
 
   /**
