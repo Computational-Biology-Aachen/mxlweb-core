@@ -120,6 +120,7 @@ function addNNBlocks(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
       targets: entry.targets!,
       trained: entry.trained!,
       scale: entry.scale!,
+      mechanism: entry.mechanism!,
     });
   }
 }

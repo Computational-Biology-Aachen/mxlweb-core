@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Base, type JsonNode } from "./mathml/index.js";
+import { Add, Base, Mul, Num, type JsonNode } from "./mathml/index.js";
 import {
   evalInitialAssignment,
   irToAdjointWat,
@@ -43,7 +43,7 @@ export type Assign = {
  * (weights/biases) live in {@link ModelBuilderBase.parameters} like any other
  * parameter, and the generated expression is recomputed fresh from this
  * config wherever it's needed rather than stored, since it's a pure function
- * of the architecture (see {@link ModelBuilderBase.nnBlockOutputsByTarget}).
+ * of the architecture (see {@link ModelBuilderBase.composeNNBlocks}).
  */
 export type NNBlockConfig = {
   /** Names of existing variables/parameters/derived quantities the block reads. */
@@ -72,6 +72,22 @@ export type NNBlockConfig = {
    * or a direct edit updates it there, same as any weight/bias).
    */
   scale: number;
+  /**
+   * How this block's output composes onto its target(s)' mechanistic dx/dt
+   * (grill-me follow-up to ADR 0005 §2.1, resolved alongside `scale`):
+   * `"additive"` is `dx/dt = f(x,p,t) + scale · NN(x,θ)` (the original,
+   * only, behavior); `"multiplicative"` is `dx/dt = f(x,p,t) · (1 + scale ·
+   * NN(x,θ))` — a near-zero/untrained network leaves `f` unchanged, so
+   * (unlike a bare `f · scale · NN`) it doesn't zero out the mechanistic
+   * dynamics *or* the gradient w.r.t. every mechanistic parameter on the
+   * first fit iteration. Composed in `ModelBuilderBase.composeNNBlocks`,
+   * not by either builder's own `dxdtExpr` — multiplication can't be
+   * expressed as one more stoichiometric reaction term, so this can't be
+   * "just another reaction" the way an additive `KineticModelBuilder`
+   * block used to be; both mechanisms, for both builders, compose at the
+   * same shared `lower()` stage instead.
+   */
+  mechanism: "additive" | "multiplicative";
 };
 
 /**
@@ -155,6 +171,7 @@ export type MxlEntity = {
   targets?: string[];
   trained?: boolean;
   scale?: number;
+  mechanism?: "additive" | "multiplicative";
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
@@ -200,23 +217,32 @@ export abstract class ModelBuilderBase {
    */
   protected abstract extraIntermediates(): Map<string, IntermediateDef>;
 
-  /** The fully lowered dx/dt expression for a single state variable. */
+  /**
+   * The *mechanistic* dx/dt expression for a single state variable — never
+   * includes any NN block's contribution. `lower()` composes every
+   * targeting block on top of this afterward, via {@link composeNNBlocks}
+   * — see `NNBlockConfig.mechanism`'s doc comment for why that composition
+   * can't happen inside `dxdtExpr` itself (a multiplicative block can't be
+   * expressed as one more stoichiometric reaction term the way an additive
+   * `KineticModelBuilder` block used to be, so both mechanisms, for both
+   * builders, need the same shared post-`dxdtExpr` stage).
+   */
   protected abstract dxdtExpr(varName: string): Base;
 
   /**
    * Builder-specific wiring for a freshly-added NN block's output
-   * expressions (ADR 0005 §2.1) — `KineticModelBuilder` adds one ordinary
-   * reaction per output (stoichiometry `{ target: 1 }`); `OdeModelBuilder`
-   * needs no stored wiring at all, since its `dxdtExpr` already sums
-   * {@link nnBlockOutputsByTarget} fresh on every call.
+   * expressions. Default no-op: neither `KineticModelBuilder` nor
+   * `OdeModelBuilder` needs any stored wiring — `composeNNBlocks` handles
+   * every block uniformly at `lower()` time instead (this used to have
+   * `KineticModelBuilder` add one ordinary reaction per output; retired
+   * once a multiplicative block made that impossible to keep doing
+   * consistently — see `NNBlockConfig.mechanism`'s doc comment).
+   * `SteadyStateModelBuilder` overrides this to throw instead (no dx/dt for
+   * a correction term to feed into).
    */
-  protected abstract wireNNBlockOutputs(
-    key: string,
-    outputs: Base[],
-    targets: string[],
-  ): void;
-  /** Inverse of {@link wireNNBlockOutputs}, called by {@link removeNNBlock}. */
-  protected abstract unwireNNBlockOutputs(key: string, targets: string[]): void;
+  protected wireNNBlockOutputs(): void {}
+  /** Inverse of {@link wireNNBlockOutputs}, called by {@link removeNNBlock}. Default no-op for the same reason. */
+  protected unwireNNBlockOutputs(): void {}
 
   /** Render the model's equations as LaTeX (formulation-specific). */
   abstract buildTex(): string;
@@ -284,7 +310,13 @@ export abstract class ModelBuilderBase {
    */
   addNNBlock(key: string, config: NNBlockConfig) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    const { parameters, outputs } = buildNNBlock({
+    // Only `parameters` is needed here now: `wireNNBlockOutputs` no longer
+    // takes the generated output expressions (composeNNBlocks regenerates
+    // them fresh at lower() time instead — NNBlockConfig.mechanism's doc
+    // comment), so there's nothing left to build for `wireNNBlockOutputs`
+    // to consume, only for it to run as a builder-specific validation hook
+    // (SteadyStateModelBuilder's throw).
+    const { parameters } = buildNNBlock({
       name: key,
       inputs: config.inputs,
       depth: config.depth,
@@ -297,7 +329,7 @@ export abstract class ModelBuilderBase {
     // (no dx/dt for a correction term to feed into) — calling it before
     // touching `parameters`/`nnBlocks` means that throw leaves the builder
     // completely untouched instead of half-mutated.
-    this.wireNNBlockOutputs(key, outputs, config.targets);
+    this.wireNNBlockOutputs();
     for (const [name, p] of parameters) this.addParameter(name, p);
     this.nnBlocks.set(key, config);
     return this;
@@ -316,7 +348,7 @@ export abstract class ModelBuilderBase {
   removeNNBlock(key: string) {
     const config = this.nnBlocks.get(key);
     if (!config) return this;
-    this.unwireNNBlockOutputs(key, config.targets);
+    this.unwireNNBlockOutputs();
     for (const name of this.parameters.keys()) {
       if (isNNBlockOwnedParamName(name, key)) {
         this.removeParameter(name);
@@ -369,19 +401,83 @@ export abstract class ModelBuilderBase {
   }
 
   /**
-   * Fresh output expressions for every NN block, keyed by target variable.
-   * Recomputed on every call rather than cached: the expression *shape* is a
-   * pure function of each block's config (weight/bias `Name` references, not
-   * their current values — those live in `this.parameters` and are what
-   * fitting actually mutates), so regenerating is correct, and only runs on
-   * structural edits/compiles, not per fit-iteration or per value edit (see
-   * ADR 0005 §2.2's note on `buildModelWat`'s structure-only dependency).
-   * Recomputes once per `dxdtExpr` call rather than once per `.lower()` —
-   * fine for the handful of blocks a model realistically has, not optimized
-   * further for now.
+   * Assembles one variable's already-rendered mechanistic tex with every
+   * targeting block's abbreviated term (`nnBlockTexTerm`), in the same
+   * multiplicative-product-then-additive-sum order as `composeNNBlocks`
+   * (`NNBlockConfig.mechanism`'s doc comment) — string-based rather than
+   * `Base`-based since `KineticModelBuilder.buildTex`'s mechanistic term is
+   * already a rendered (and possibly sign/line-wrapped, via `renderTerms`)
+   * string by this point, not a single expression the way `OdeModelBuilder`
+   * has one. `mechanisticIsZero` lets a pure-NODE variable (no
+   * hand-authored differential/reactions at all) skip a redundant "0 +"
+   * prefix — but only when there's no multiplicative factor to apply,
+   * since multiplying a genuine zero by anything honestly is zero, and
+   * showing that is more informative than hiding a degenerate
+   * configuration.
    */
-  protected nnBlockOutputsByTarget(): Map<string, Base[]> {
-    const byTarget = new Map<string, Base[]>();
+  protected composeNNBlockTex(
+    varName: string,
+    mechanisticTex: string,
+    mechanisticIsZero: boolean,
+  ): string {
+    const targeting = [...this.nnBlocks.entries()].filter(([, config]) =>
+      config.targets.includes(varName),
+    );
+    if (targeting.length === 0) return mechanisticTex;
+
+    const multiplicativeFactors = targeting
+      .filter(([, config]) => config.mechanism === "multiplicative")
+      .map(([key]) => `(1 + ${this.nnBlockTexTerm(key)})`);
+    const additiveTerms = targeting
+      .filter(([, config]) => config.mechanism === "additive")
+      .map(([key]) => this.nnBlockTexTerm(key));
+
+    const terms: string[] = [];
+    if (!(mechanisticIsZero && multiplicativeFactors.length === 0)) {
+      let base = mechanisticTex;
+      if (multiplicativeFactors.length > 0) {
+        base = `(${base}) \\cdot ${multiplicativeFactors.join(" \\cdot ")}`;
+      }
+      terms.push(base);
+    }
+    terms.push(...additiveTerms);
+
+    return terms.length > 0 ? terms.join(" + ") : "0";
+  }
+
+  /**
+   * Composes every NN block's contribution onto the purely-mechanistic
+   * dx/dt `dxdtExpr` computed per variable — shared between both builders
+   * (`lower()` calls this once, after building the mechanistic map) since
+   * neither has a way to express "multiply this variable's whole dx/dt by
+   * a factor" as one more reaction/stoichiometry term (`NNBlockConfig.
+   * mechanism`'s doc comment). When a variable has multiple blocks
+   * targeting it — the common case, not an edge case, since every block
+   * targets every variable and there's no per-block picker — every
+   * `"multiplicative"` block combines into a single factor on the
+   * mechanistic term first (product across blocks), then every
+   * `"additive"` block is summed on top; fixed and independent of
+   * insertion order.
+   *
+   * Recomputes every block's output expressions fresh on every call rather
+   * than cached: the expression *shape* is a pure function of each block's
+   * config (weight/bias `Name` references, not their current values —
+   * those live in `this.parameters` and are what fitting actually
+   * mutates), so regenerating is correct, and only runs on structural
+   * edits/compiles via `lower()`, not per fit-iteration or per value edit
+   * (see ADR 0005 §2.2's note on `buildModelWat`'s structure-only
+   * dependency) — fine for the handful of blocks a model realistically
+   * has, not optimized further for now.
+   */
+  protected composeNNBlocks(
+    mechanistic: Map<string, Base>,
+  ): Map<string, Base> {
+    if (this.nnBlocks.size === 0) return mechanistic;
+
+    const outputsByTarget = new Map<
+      string,
+      { output: Base; mechanism: NNBlockConfig["mechanism"] }[]
+    >();
     for (const [key, config] of this.nnBlocks) {
       const { outputs } = buildNNBlock({
         name: key,
@@ -394,15 +490,37 @@ export abstract class ModelBuilderBase {
       });
       outputs.forEach((output, i) => {
         const target = config.targets[i];
-        const existing = byTarget.get(target);
-        if (existing) {
-          existing.push(output);
-        } else {
-          byTarget.set(target, [output]);
-        }
+        const entry = { output, mechanism: config.mechanism };
+        const existing = outputsByTarget.get(target);
+        if (existing) existing.push(entry);
+        else outputsByTarget.set(target, [entry]);
       });
     }
-    return byTarget;
+
+    const composed = new Map<string, Base>();
+    for (const [name, expr] of mechanistic) {
+      const contributions = outputsByTarget.get(name);
+      if (!contributions) {
+        composed.set(name, expr);
+        continue;
+      }
+      const multiplicativeFactors = contributions
+        .filter((c) => c.mechanism === "multiplicative")
+        .map((c) => new Add([new Num(1), c.output]));
+      const additiveTerms = contributions
+        .filter((c) => c.mechanism === "additive")
+        .map((c) => c.output);
+
+      let result = expr;
+      if (multiplicativeFactors.length > 0) {
+        result = new Mul([result, ...multiplicativeFactors]);
+      }
+      if (additiveTerms.length > 0) {
+        result = new Add([result, ...additiveTerms]);
+      }
+      composed.set(name, result);
+    }
+    return composed;
   }
 
   private intermediateDefs(): Map<string, IntermediateDef> {
@@ -499,9 +617,10 @@ export abstract class ModelBuilderBase {
       name,
       expr: defs.get(name)!.fn,
     }));
-    const dxdt = new Map(
+    const mechanistic = new Map(
       [...this.variables.keys()].map((name) => [name, this.dxdtExpr(name)]),
     );
+    const dxdt = this.composeNNBlocks(mechanistic);
     return {
       varNames: [...this.variables.keys()],
       parNames: [...this.parameters.keys()],
@@ -733,6 +852,7 @@ ${chains.join("\n")};
         targets: b.targets,
         trained: b.trained,
         scale: b.scale,
+        mechanism: b.mechanism,
       };
     }
     return out;
@@ -794,6 +914,7 @@ ${chains.join("\n")};
       ["targets", JSON.stringify(b.targets)],
       ["trained", `${b.trained}`],
       ["scale", `${b.scale}`],
+      ["mechanism", JSON.stringify(b.mechanism)],
     ]);
   }
 }

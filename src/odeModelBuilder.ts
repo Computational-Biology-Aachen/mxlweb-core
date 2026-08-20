@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Add, Base, Num } from "./mathml/index.js";
+import { Base, Num } from "./mathml/index.js";
 import {
   defaultTexName,
   type IntermediateDef,
@@ -35,16 +35,10 @@ export class OdeModelBuilder extends ModelBuilderBase {
     return cl;
   }
 
-  /**
-   * No stored wiring needed: unlike `KineticModelBuilder`, there's no
-   * reaction/stoichiometry mechanism to reuse, and mutating the stored
-   * `differentials` entry directly would make `removeNNBlock` unable to
-   * cleanly subtract a block's contribution back out. `dxdtExpr` below sums
-   * {@link ModelBuilderBase.nnBlockOutputsByTarget} fresh instead, so adding
-   * or removing a block is just adding/removing its `nnBlocks` entry.
-   */
-  protected wireNNBlockOutputs(): void {}
-  protected unwireNNBlockOutputs(): void {}
+  // NN block wiring uses ModelBuilderBase's default no-op — dxdtExpr below
+  // is purely mechanistic; ModelBuilderBase.composeNNBlocks handles every
+  // block, for every builder, at the shared lower() stage instead (see
+  // NNBlockConfig.mechanism's doc comment).
 
   /** Set the dx/dt expression for an existing variable. */
   setDifferential(key: string, fn: Base) {
@@ -74,10 +68,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
   }
 
   protected dxdtExpr(varName: string): Base {
-    const own = this.differentials.get(varName) ?? new Num(0);
-    const blockTerms = this.nnBlockOutputsByTarget().get(varName);
-    if (!blockTerms || blockTerms.length === 0) return own;
-    return new Add([own, ...blockTerms]);
+    return this.differentials.get(varName) ?? new Num(0);
   }
 
   protected mxlKind(): MxlKind {
@@ -110,20 +101,16 @@ export class OdeModelBuilder extends ModelBuilderBase {
 
     const rhsString = [...this.variables.keys()]
       .map((name) => {
-        // Own hand-authored differential, plus one abbreviated NN_{block}(x)
-        // term (see nnBlockTexTerm's doc comment) per block targeting this
-        // variable — not dxdtExpr()'s fully expanded sum, which is what
-        // buildJs()/buildWat() need but is unreadable to render.
+        // Own hand-authored differential, composed with every targeting NN
+        // block's abbreviated term (composeNNBlockTex) — not dxdtExpr()'s
+        // fully expanded sum, which is what buildJs()/buildWat() need but is
+        // unreadable to render.
         const own = this.differentials.get(name) ?? new Num(0);
-        const blockTerms = [...this.nnBlocks.entries()]
-          .filter(([, config]) => config.targets.includes(name))
-          .map(([key]) => this.nnBlockTexTerm(key));
-
-        const ownIsZero = own instanceof Num && own.value === 0;
-        const rhs =
-          ownIsZero && blockTerms.length > 0
-            ? blockTerms.join(" + ")
-            : [own.toTex(texNames), ...blockTerms].join(" + ");
+        const rhs = this.composeNNBlockTex(
+          name,
+          own.toTex(texNames),
+          own instanceof Num && own.value === 0,
+        );
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rhs}`;
       })
       .join(" \\\\ \n  ");

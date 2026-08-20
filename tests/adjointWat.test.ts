@@ -158,11 +158,13 @@ describe("adjoint WAT: OdeModelBuilder with an active NN block", () => {
         targets: ["x"],
         trained: true,
         scale: 0.1,
+        mechanism: "additive",
       });
 
     const weightNames = [...builder.parameters.keys()].filter((k) =>
       k.startsWith("corr_"),
     );
+    expect(weightNames.length).toBeGreaterThan(0);
     // Same alignment note as the previous test — this is the full parameter
     // list ("k" was added before the block, weightNames preserves the
     // block's own insertion order), so it matches `pars`'s order exactly.
@@ -190,5 +192,17 @@ describe("adjoint WAT: OdeModelBuilder with an active NN block", () => {
       const numeric = centralDiff((pp) => L(y, pp), pars, k);
       expect(-dtheta[k]).toBeCloseTo(numeric, 3);
     }
+
+    // Guards against a silently vacuous version of this test: a missing
+    // `mechanism` field (schema-required but not enforced by vitest, which
+    // doesn't type-check tests/ — tsconfig.json only includes src/) makes
+    // composeNNBlocks drop the block's contribution entirely, so dx/dt
+    // stops depending on its weights at all — dtheta for those indices
+    // would then correctly match a numeric derivative that's also exactly
+    // zero, "passing" without ever exercising the NN block's gradient path.
+    const weightThetaIdx = thetaNames
+      .map((name, i) => (name.startsWith("corr_") ? i : -1))
+      .filter((i) => i >= 0);
+    expect(weightThetaIdx.some((i) => Math.abs(dtheta[i]) > 1e-6)).toBe(true);
   });
 });

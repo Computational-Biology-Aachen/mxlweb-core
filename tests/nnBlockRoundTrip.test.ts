@@ -25,6 +25,7 @@ const block: NNBlockConfig = {
   targets: ["x"],
   trained: true,
   scale: 0.1,
+  mechanism: "additive",
 };
 
 describe("NN blocks round-trip through .mxl.json", () => {
@@ -36,7 +37,9 @@ describe("NN blocks round-trip through .mxl.json", () => {
       builder.buildMxlJson("m"),
     ) as KineticModelBuilder;
     expect(reimported.nnBlocks.get("corr")).toEqual(block);
-    expect(reimported.reactions.has("corr_out0")).toBe(true);
+    // No reaction created — mechanism composition happens at lower() time,
+    // not via stoichiometry (NNBlockConfig.mechanism's doc comment).
+    expect(reimported.reactions.size).toBe(0);
   });
 
   it("architecture survives (ode)", () => {
