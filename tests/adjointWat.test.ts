@@ -157,6 +157,7 @@ describe("adjoint WAT: OdeModelBuilder with an active NN block", () => {
         seed: 1,
         targets: ["x"],
         trained: true,
+        scale: 0.1,
       });
 
     const weightNames = [...builder.parameters.keys()].filter((k) =>

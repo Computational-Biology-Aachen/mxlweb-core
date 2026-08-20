@@ -119,6 +119,7 @@ function addNNBlocks(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
       seed: entry.seed!,
       targets: entry.targets!,
       trained: entry.trained!,
+      scale: entry.scale!,
     });
   }
 }

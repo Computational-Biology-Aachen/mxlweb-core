@@ -24,6 +24,7 @@ const block: NNBlockConfig = {
   seed: 3,
   targets: ["x"],
   trained: true,
+  scale: 0.1,
 };
 
 describe("NN blocks round-trip through .mxl.json", () => {
