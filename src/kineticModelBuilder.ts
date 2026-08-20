@@ -363,11 +363,24 @@ export class KineticModelBuilder extends ModelBuilderBase {
       this.reactions.entries(),
     );
 
+    // A block's reaction key maps back to the block that generated it, so
+    // its row can render the abbreviated NN_{block}(x) term (see
+    // nnBlockTexTerm's doc comment) instead of the full expanded rate law.
+    const reactionBlock = new Map<string, string>();
+    for (const [blockKey, config] of this.nnBlocks) {
+      config.targets.forEach((_, i) =>
+        reactionBlock.set(nnBlockReactionKey(blockKey, i), blockKey),
+      );
+    }
+
     // Collect rhs terms per variable
     const rhs: Record<string, { tex: string; value: Base }[]> =
       Object.fromEntries([...this.variables.entries()].map(([k]) => [k, []]));
-    this.reactions.entries().forEach(([_, rxn]) => {
-      const rxnTex = rxn.fn.toTex(texNames);
+    this.reactions.entries().forEach(([rxnKey, rxn]) => {
+      const blockKey = reactionBlock.get(rxnKey);
+      const rxnTex = blockKey
+        ? this.nnBlockTexTerm(blockKey)
+        : rxn.fn.toTex(texNames);
       rxn.stoichiometry.forEach(({ name: varName, value: stoich }) => {
         rhs[varName].push({ tex: rxnTex, value: stoich });
       });
