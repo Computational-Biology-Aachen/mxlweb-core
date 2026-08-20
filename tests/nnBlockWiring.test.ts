@@ -291,9 +291,9 @@ describe("ModelBuilderBase.nnBlockOwnedParameterNames", () => {
 // composes both mechanisms, for both builders, at the shared lower() stage
 // instead. These tests verify the actual formulas numerically, not just
 // that *something* changed.
-describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", () => {
+describe("NN block mechanism: relative_multiply composes as f * (1 + scale*NN)", () => {
   it("OdeModelBuilder: verified numerically against the additive case's own raw contribution", () => {
-    const mkBuilder = (mechanism: "additive" | "multiplicative") =>
+    const mkBuilder = (mechanism: "additive" | "relative_multiply") =>
       new OdeModelBuilder()
         .addVariable("x", { value: 1 })
         .addParameter("k", { value: 0.5 })
@@ -301,8 +301,8 @@ describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", ()
         .addNNBlock("corr", { ...smallBlock, mechanism });
 
     const [dxdtMultiplicative] = evalJs(
-      mkBuilder("multiplicative").buildJs(),
-      [0, [1], mkBuilder("multiplicative").resolveParameters()],
+      mkBuilder("relative_multiply").buildJs(),
+      [0, [1], mkBuilder("relative_multiply").resolveParameters()],
     );
     const [dxdtAdditive] = evalJs(mkBuilder("additive").buildJs(), [
       0,
@@ -320,7 +320,7 @@ describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", ()
   });
 
   it("KineticModelBuilder: same formula, despite having no stoichiometric way to express it directly", () => {
-    const mkBuilder = (mechanism: "additive" | "multiplicative") =>
+    const mkBuilder = (mechanism: "additive" | "relative_multiply") =>
       new KineticModelBuilder()
         .addVariable("x", { value: 1 })
         .addReaction("v1", {
@@ -330,8 +330,8 @@ describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", ()
         .addNNBlock("corr", { ...smallBlock, mechanism });
 
     const [dxdtMultiplicative] = evalJs(
-      mkBuilder("multiplicative").buildJs(),
-      [0, [1], mkBuilder("multiplicative").resolveParameters()],
+      mkBuilder("relative_multiply").buildJs(),
+      [0, [1], mkBuilder("relative_multiply").resolveParameters()],
     );
     const [dxdtAdditive] = evalJs(mkBuilder("additive").buildJs(), [
       0,
@@ -351,7 +351,7 @@ describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", ()
       .addVariable("x", { value: 1 })
       .addParameter("k", { value: 0.5 })
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
-      .addNNBlock("m", { ...smallBlock, seed: 1, mechanism: "multiplicative" })
+      .addNNBlock("m", { ...smallBlock, seed: 1, mechanism: "relative_multiply" })
       .addNNBlock("a", { ...smallBlock, seed: 2, mechanism: "additive" });
     const [dxdt] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
 
@@ -379,10 +379,78 @@ describe("NN block mechanism: multiplicative composes as f * (1 + scale*NN)", ()
       .addVariable("x", { value: 1 })
       .addParameter("k", { value: 0.5, texName: "k" })
       .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
-      .addNNBlock("corr", { ...smallBlock, mechanism: "multiplicative" });
+      .addNNBlock("corr", { ...smallBlock, mechanism: "relative_multiply" });
     expect(builder.buildTex()).toContain(
       "(k \\cdot x) \\cdot (1 + s_{corr} \\cdot NN_{corr}(\\vec{x}))",
     );
+  });
+});
+
+describe("NN block mechanism: multiply composes as f * scale*NN (bare product, no safeguard)", () => {
+  it("verified numerically against the additive case's own raw contribution", () => {
+    const mkBuilder = (mechanism: "additive" | "multiply") =>
+      new OdeModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addParameter("k", { value: 0.5 })
+        .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+        .addNNBlock("corr", { ...smallBlock, mechanism });
+
+    const [dxdtMultiply] = evalJs(mkBuilder("multiply").buildJs(), [
+      0,
+      [1],
+      mkBuilder("multiply").resolveParameters(),
+    ]);
+    const [dxdtAdditive] = evalJs(mkBuilder("additive").buildJs(), [
+      0,
+      [1],
+      mkBuilder("additive").resolveParameters(),
+    ]);
+
+    // f(x) = k*x = 0.5. scale*NN = dxdtAdditive - f (same extraction
+    // technique as relative_multiply's test above). "multiply" is the bare
+    // product f * (scale*NN), unlike relative_multiply's f * (1 + scale*NN).
+    const f = 0.5;
+    const scaledNN = dxdtAdditive - f;
+    expect(dxdtMultiply).toBeCloseTo(f * scaledNN, 8);
+  });
+
+  it("buildTex shows scale*NN(x) as a bare multiplicative factor, no (1 + ...) wrapping", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5, texName: "k" })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+      .addNNBlock("corr", { ...smallBlock, mechanism: "multiply" });
+    expect(builder.buildTex()).toContain(
+      "(k \\cdot x) \\cdot s_{corr} \\cdot NN_{corr}(\\vec{x})",
+    );
+  });
+
+  it("three mechanisms on the same variable: relative_multiply and multiply combine into one running product, then additive is summed on top", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+      .addNNBlock("rm", { ...smallBlock, seed: 1, mechanism: "relative_multiply" })
+      .addNNBlock("mu", { ...smallBlock, seed: 2, mechanism: "multiply" })
+      .addNNBlock("ad", { ...smallBlock, seed: 3, mechanism: "additive" });
+    const [dxdt] = evalJs(builder.buildJs(), [0, [1], builder.resolveParameters()]);
+
+    const isolatedScaledNN = (id: string, seed: number) => {
+      const solo = new OdeModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addParameter("k", { value: 0.5 })
+        .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+        .addNNBlock(id, { ...smallBlock, seed, mechanism: "additive" });
+      const [dxdtSolo] = evalJs(solo.buildJs(), [0, [1], solo.resolveParameters()]);
+      return dxdtSolo - 0.5;
+    };
+    const scaledNNrm = isolatedScaledNN("rm", 1);
+    const scaledNNmu = isolatedScaledNN("mu", 2);
+    const scaledNNad = isolatedScaledNN("ad", 3);
+
+    const f = 0.5;
+    const expected = f * (1 + scaledNNrm) * scaledNNmu + scaledNNad;
+    expect(dxdt).toBeCloseTo(expected, 8);
   });
 });
 
