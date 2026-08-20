@@ -75,19 +75,29 @@ export type NNBlockConfig = {
   /**
    * How this block's output composes onto its target(s)' mechanistic dx/dt
    * (grill-me follow-up to ADR 0005 §2.1, resolved alongside `scale`):
-   * `"additive"` is `dx/dt = f(x,p,t) + scale · NN(x,θ)` (the original,
-   * only, behavior); `"multiplicative"` is `dx/dt = f(x,p,t) · (1 + scale ·
-   * NN(x,θ))` — a near-zero/untrained network leaves `f` unchanged, so
-   * (unlike a bare `f · scale · NN`) it doesn't zero out the mechanistic
-   * dynamics *or* the gradient w.r.t. every mechanistic parameter on the
-   * first fit iteration. Composed in `ModelBuilderBase.composeNNBlocks`,
-   * not by either builder's own `dxdtExpr` — multiplication can't be
-   * expressed as one more stoichiometric reaction term, so this can't be
-   * "just another reaction" the way an additive `KineticModelBuilder`
-   * block used to be; both mechanisms, for both builders, compose at the
-   * same shared `lower()` stage instead.
+   * - `"additive"`: `dx/dt = f(x,p,t) + scale · NN(x,θ)` — the original,
+   *   default behavior.
+   * - `"relative_multiply"`: `dx/dt = f(x,p,t) · (1 + scale · NN(x,θ))` —
+   *   a near-zero/untrained network leaves `f` unchanged, so it doesn't
+   *   zero out the mechanistic dynamics *or* the gradient w.r.t. every
+   *   mechanistic parameter on the first fit iteration.
+   * - `"multiply"`: `dx/dt = f(x,p,t) · scale · NN(x,θ)` — a bare product,
+   *   with none of `"relative_multiply"`'s safeguard: a near-zero/untrained
+   *   network zeroes out both the dynamics and that same gradient. Offered
+   *   anyway (deliberately, not by omission) for cases where that's
+   *   actually the intended model, not an initialization hazard.
+   *
+   * Composed in `ModelBuilderBase.composeNNBlocks`, not by either builder's
+   * own `dxdtExpr` — neither multiplicative form can be expressed as one
+   * more stoichiometric reaction term, so this can't be "just another
+   * reaction" the way an additive `KineticModelBuilder` block used to be;
+   * every mechanism, for both builders, composes at the same shared
+   * `lower()` stage instead. When a variable has multiple blocks, every
+   * `"relative_multiply"`/`"multiply"` block combines into one running
+   * product factor on `f` (in that order), then every `"additive"` block
+   * is summed on top.
    */
-  mechanism: "additive" | "multiplicative";
+  mechanism: "additive" | "relative_multiply" | "multiply";
 };
 
 /**
@@ -171,7 +181,7 @@ export type MxlEntity = {
   targets?: string[];
   trained?: boolean;
   scale?: number;
-  mechanism?: "additive" | "multiplicative";
+  mechanism?: "additive" | "relative_multiply" | "multiply";
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
@@ -425,18 +435,22 @@ export abstract class ModelBuilderBase {
     );
     if (targeting.length === 0) return mechanisticTex;
 
-    const multiplicativeFactors = targeting
-      .filter(([, config]) => config.mechanism === "multiplicative")
+    const relativeMultiplyFactors = targeting
+      .filter(([, config]) => config.mechanism === "relative_multiply")
       .map(([key]) => `(1 + ${this.nnBlockTexTerm(key)})`);
+    const multiplyFactors = targeting
+      .filter(([, config]) => config.mechanism === "multiply")
+      .map(([key]) => this.nnBlockTexTerm(key));
     const additiveTerms = targeting
       .filter(([, config]) => config.mechanism === "additive")
       .map(([key]) => this.nnBlockTexTerm(key));
+    const productFactors = [...relativeMultiplyFactors, ...multiplyFactors];
 
     const terms: string[] = [];
-    if (!(mechanisticIsZero && multiplicativeFactors.length === 0)) {
+    if (!(mechanisticIsZero && productFactors.length === 0)) {
       let base = mechanisticTex;
-      if (multiplicativeFactors.length > 0) {
-        base = `(${base}) \\cdot ${multiplicativeFactors.join(" \\cdot ")}`;
+      if (productFactors.length > 0) {
+        base = `(${base}) \\cdot ${productFactors.join(" \\cdot ")}`;
       }
       terms.push(base);
     }
@@ -454,9 +468,9 @@ export abstract class ModelBuilderBase {
    * mechanism`'s doc comment). When a variable has multiple blocks
    * targeting it — the common case, not an edge case, since every block
    * targets every variable and there's no per-block picker — every
-   * `"multiplicative"` block combines into a single factor on the
-   * mechanistic term first (product across blocks), then every
-   * `"additive"` block is summed on top; fixed and independent of
+   * `"relative_multiply"`/`"multiply"` block combines into a single running
+   * product factor on the mechanistic term first (in that order), then
+   * every `"additive"` block is summed on top; fixed and independent of
    * insertion order.
    *
    * Recomputes every block's output expressions fresh on every call rather
@@ -504,16 +518,20 @@ export abstract class ModelBuilderBase {
         composed.set(name, expr);
         continue;
       }
-      const multiplicativeFactors = contributions
-        .filter((c) => c.mechanism === "multiplicative")
+      const relativeMultiplyFactors = contributions
+        .filter((c) => c.mechanism === "relative_multiply")
         .map((c) => new Add([new Num(1), c.output]));
+      const multiplyFactors = contributions
+        .filter((c) => c.mechanism === "multiply")
+        .map((c) => c.output);
       const additiveTerms = contributions
         .filter((c) => c.mechanism === "additive")
         .map((c) => c.output);
 
       let result = expr;
-      if (multiplicativeFactors.length > 0) {
-        result = new Mul([result, ...multiplicativeFactors]);
+      const productFactors = [...relativeMultiplyFactors, ...multiplyFactors];
+      if (productFactors.length > 0) {
+        result = new Mul([result, ...productFactors]);
       }
       if (additiveTerms.length > 0) {
         result = new Add([result, ...additiveTerms]);

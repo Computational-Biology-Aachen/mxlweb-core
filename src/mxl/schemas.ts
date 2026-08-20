@@ -143,9 +143,9 @@ export const kineticSchema: JsonSchema = {
         },
         mechanism: {
           type: "string",
-          enum: ["additive", "multiplicative"],
+          enum: ["additive", "relative_multiply", "multiply"],
           description:
-            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). multiplicative: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. When a variable has multiple blocks, all multiplicative ones combine into one factor on f (product), then all additive ones are summed on top.",
+            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). relative_multiply: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. multiply: dx/dt = f(x,p,t) * scale * NN(x,\u03b8) -- a bare product with no such safeguard; a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, every relative_multiply and multiply block combines into one running product factor on f (in that order), then every additive block is summed on top.",
         },
       },
     },
@@ -506,9 +506,9 @@ export const odeSchema: JsonSchema = {
         },
         mechanism: {
           type: "string",
-          enum: ["additive", "multiplicative"],
+          enum: ["additive", "relative_multiply", "multiply"],
           description:
-            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). multiplicative: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. When a variable has multiple blocks, all multiplicative ones combine into one factor on f (product), then all additive ones are summed on top.",
+            "How this block's output composes onto the mechanistic dynamics of its target(s). additive: dx/dt = f(x,p,t) + scale * NN(x,\u03b8). relative_multiply: dx/dt = f(x,p,t) * (1 + scale * NN(x,\u03b8)) -- a near-zero/untrained network leaves f unchanged. multiply: dx/dt = f(x,p,t) * scale * NN(x,\u03b8) -- a bare product with no such safeguard; a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, every relative_multiply and multiply block combines into one running product factor on f (in that order), then every additive block is summed on top.",
         },
       },
     },
