@@ -11,6 +11,7 @@ import {
   SteadyStateModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
 import { Mul, Name, Num } from "@computational-biology-aachen/mxlweb-core/mathml";
+import { modelToSbml } from "@computational-biology-aachen/mxlweb-core/sbml";
 import { describe, expect, it } from "vitest";
 
 function evalJs(fn: string, args: unknown[]): number[] {
@@ -221,7 +222,7 @@ describe("OdeModelBuilder.addNNBlock", () => {
 });
 
 describe("KineticModelBuilder.buildTex with an NN block", () => {
-  it("collapses the block's reaction to NN_{block}(x) instead of the expanded rate law", () => {
+  it("collapses the block's composed contribution to NN_{block}(x) instead of the expanded rate law", () => {
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
       .addNNBlock("corr", { ...smallBlock, depth: 3 });
@@ -470,6 +471,29 @@ describe("KineticModelBuilder.buildMxlpy with NN blocks", () => {
         stoichiometry: [{ name: "x", value: new Num(-1) }],
       });
     expect(() => builder.buildMxlpy()).not.toThrow();
+  });
+});
+
+describe("modelToSbml with NN blocks", () => {
+  it("throws rather than silently omitting a block's dynamical contribution", () => {
+    // Same hazard as buildMxlpy: modelToSbml builds <listOfReactions>
+    // purely from model.reactions, which used to get a block "for free"
+    // via the now-removed reaction trick. Missed in the first pass of the
+    // mechanism-composition change -- caught by an independent review.
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", smallBlock);
+    expect(() => modelToSbml(builder, "m")).toThrow(/NN blocks/);
+  });
+
+  it("still works normally for a model with no NN blocks", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addReaction("v1", {
+        fn: new Name("x"),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      });
+    expect(() => modelToSbml(builder, "m")).not.toThrow();
   });
 });
 
