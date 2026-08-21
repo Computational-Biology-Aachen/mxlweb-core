@@ -32,7 +32,7 @@ function makeSmallBlock(): NNBlockConfig {
   return {
     inputs: ["x"],
     layers: [
-      { type: "dense", width: 2 },
+      { type: "dense", width: 2, activation: softplusActivation() },
       { type: "dense", width: 1 },
     ],
     seed: 1,
@@ -40,7 +40,6 @@ function makeSmallBlock(): NNBlockConfig {
     trained: true,
     scale: 0.1,
     mechanism: additiveMechanism(),
-    activation: softplusActivation(),
   };
 }
 

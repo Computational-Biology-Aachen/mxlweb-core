@@ -44,7 +44,7 @@ function makeBlock(): NNBlockConfig {
   return {
     inputs: ["x"],
     layers: [
-      { type: "dense", width: 2 },
+      { type: "dense", width: 2, activation: softplusActivation() },
       { type: "dense", width: 1 },
     ],
     seed: 3,
@@ -52,23 +52,27 @@ function makeBlock(): NNBlockConfig {
     trained: true,
     scale: 0.1,
     mechanism: new Add([new Name("ode"), new Name("nde")]),
-    activation: softplusActivation(),
   };
 }
 
-/** Structural equality for an NNBlockConfig, comparing `Base` fields via `toJson()` (fresh imports get fresh process-unique `id`s, so plain `toEqual` on the `Base` instances themselves would spuriously fail). */
+/** Structural equality for an NNBlockConfig, comparing `Base` fields via `toJson()` (fresh imports get fresh process-unique `id`s, so plain `toEqual` on the `Base` instances themselves would spuriously fail) — including each layer's optional `activation.expression`, nested inside `layers`. */
 function expectSameBlock(actual: NNBlockConfig, expected: NNBlockConfig) {
   expect(actual.inputs).toEqual(expected.inputs);
-  expect(actual.layers).toEqual(expected.layers);
+  expect(actual.layers.length).toEqual(expected.layers.length);
+  actual.layers.forEach((layer, i) => {
+    const expectedLayer = expected.layers[i];
+    expect(layer.type).toEqual(expectedLayer.type);
+    expect(layer.width).toEqual(expectedLayer.width);
+    expect(layer.activation?.name).toEqual(expectedLayer.activation?.name);
+    expect(layer.activation?.expression.toJson()).toEqual(
+      expectedLayer.activation?.expression.toJson(),
+    );
+  });
   expect(actual.seed).toEqual(expected.seed);
   expect(actual.targets).toEqual(expected.targets);
   expect(actual.trained).toEqual(expected.trained);
   expect(actual.scale).toEqual(expected.scale);
   expect(actual.mechanism.toJson()).toEqual(expected.mechanism.toJson());
-  expect(actual.activation.name).toEqual(expected.activation.name);
-  expect(actual.activation.expression.toJson()).toEqual(
-    expected.activation.expression.toJson(),
-  );
 }
 
 describe("NN blocks round-trip through .mxl.json", () => {
@@ -221,7 +225,6 @@ describe("NN blocks round-trip through buildMxlweb", () => {
       layers: makeBlock().layers,
       seed: makeBlock().seed,
       scale: makeBlock().scale,
-      activation: makeBlock().activation,
     });
     expect(new Set(rebuilt.nnWeights.keys())).toEqual(new Set(weights.keys()));
   });

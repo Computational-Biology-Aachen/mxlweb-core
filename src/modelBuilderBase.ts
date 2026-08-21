@@ -10,11 +10,7 @@ import {
   irToWatDerived,
   type ModelIR,
 } from "./modelIr.js";
-import {
-  buildNNBlock,
-  type NNBlockActivation,
-  type NNBlockLayer,
-} from "./nnBlock.js";
+import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
 
 export type SliderArgs = {
   min: string;
@@ -104,8 +100,6 @@ export type NNBlockConfig = {
    * enum's type-grouped ordering, is the only well-defined generalization).
    */
   mechanism: Base;
-  /** Elementwise activation applied after every layer except the last — see `nnBlock.ts`'s {@link NNBlockSpec.activation}. */
-  activation: NNBlockActivation;
 };
 
 /**
@@ -174,6 +168,28 @@ export type IntermediateDef = {
 /** The model-formulation discriminator written to (and selecting) an `.mxl.json` schema. */
 export type MxlKind = "kinetic" | "ode" | "steady-state";
 
+/** JSON-shaped `nnBlock.layers[i]` — mirrors {@link NNBlockLayer} but with a `JsonNode` expression (not a live `Base`) inside `activation`, same split as every other `Base`-carrying field in {@link MxlEntity}. */
+export type MxlNNLayer = {
+  type: "dense";
+  width: number;
+  activation?: { name: string; expression: JsonNode };
+};
+
+/** {@link NNBlockLayer} -> {@link MxlNNLayer}: revives nothing, only converts each layer's optional `activation.expression` from a live `Base` to a `JsonNode` via `.toJson()`. */
+function mxlNNLayer(layer: NNBlockLayer): MxlNNLayer {
+  if (layer.activation === undefined) {
+    return { type: layer.type, width: layer.width };
+  }
+  return {
+    type: layer.type,
+    width: layer.width,
+    activation: {
+      name: layer.activation.name,
+      expression: layer.activation.expression.toJson(),
+    },
+  };
+}
+
 /** One entity (variable/parameter/derived/reaction/nn_block) in the `.mxl.json` model section. */
 export type MxlEntity = {
   value?: JsonNode;
@@ -184,14 +200,13 @@ export type MxlEntity = {
   slider?: { min: string; max: string; step: string; desc?: string };
   /** `nn_blocks` entries only — see {@link NNBlockConfig}. */
   inputs?: string[];
-  layers?: NNBlockLayer[];
+  layers?: MxlNNLayer[];
   seed?: number;
   targets?: string[];
   trained?: boolean;
   weights_ref?: string;
   scale?: number;
   mechanism?: JsonNode;
-  activation?: { name: string; expression: JsonNode };
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
@@ -367,7 +382,6 @@ export abstract class ModelBuilderBase {
       layers: config.layers,
       seed: config.seed,
       scale: config.scale,
-      activation: config.activation,
     });
     if (trainedWeights !== undefined) {
       const expected = new Set(weights.keys());
@@ -578,7 +592,6 @@ export abstract class ModelBuilderBase {
         layers: config.layers,
         seed: config.seed,
         scale: config.scale,
-        activation: config.activation,
       });
       outputs.forEach((output, i) => {
         const target = config.targets[i];
@@ -950,16 +963,12 @@ ${chains.join("\n")};
     for (const [id, b] of this.nnBlocks) {
       const entry: MxlEntity = {
         inputs: b.inputs,
-        layers: b.layers,
+        layers: b.layers.map((layer) => mxlNNLayer(layer)),
         seed: b.seed,
         targets: b.targets,
         trained: b.trained,
         scale: b.scale,
         mechanism: b.mechanism.toJson(),
-        activation: {
-          name: b.activation.name,
-          expression: b.activation.expression.toJson(),
-        },
       };
       if (b.trained) entry.weights_ref = `${id}.weights.json`;
       out[id] = entry;
@@ -1051,23 +1060,33 @@ ${chains.join("\n")};
     return value !== undefined ? JSON.stringify(value) : undefined;
   }
 
-  /** `collect` must see `mechanism`/`activation.expression` so their constructors are imported — same contract as every other `Base`-emitting `ts*` helper. */
+  /** `collect` must see `mechanism`/every layer's `activation.expression` so their constructors are imported — same contract as every other `Base`-emitting `ts*` helper. */
   private tsNNBlock(b: NNBlockConfig, collect: (expr: Base) => void): string {
     collect(b.mechanism);
-    collect(b.activation.expression);
     return this.tsFields([
       ["inputs", JSON.stringify(b.inputs)],
-      ["layers", JSON.stringify(b.layers)],
+      ["layers", this.tsNNLayers(b.layers, collect)],
       ["seed", `${b.seed}`],
       ["targets", JSON.stringify(b.targets)],
       ["trained", `${b.trained}`],
       ["scale", `${b.scale}`],
       ["mechanism", b.mechanism.toTs()],
-      [
-        "activation",
-        `{ name: ${JSON.stringify(b.activation.name)}, expression: ${b.activation.expression.toTs()} }`,
-      ],
     ]);
+  }
+
+  /** `layers` as a TS array literal — unlike a plain `JSON.stringify`, each layer's optional `activation.expression` is a live `Base` and must be emitted via `.toTs()` (and passed to `collect`), not serialized as JSON. */
+  private tsNNLayers(
+    layers: NNBlockLayer[],
+    collect: (expr: Base) => void,
+  ): string {
+    const entries = layers.map((layer) => {
+      if (layer.activation === undefined) {
+        return `{ type: ${JSON.stringify(layer.type)}, width: ${layer.width} }`;
+      }
+      collect(layer.activation.expression);
+      return `{ type: ${JSON.stringify(layer.type)}, width: ${layer.width}, activation: { name: ${JSON.stringify(layer.activation.name)}, expression: ${layer.activation.expression.toTs()} } }`;
+    });
+    return `[${entries.join(", ")}]`;
   }
 
   /** `key`'s current live weight/bias values as a TS `Map` literal — the third `addNNBlock` argument `buildMxlweb` emits, so the regenerated source reconstructs the block with its actual (possibly fitting-updated) weights rather than a fresh Glorot reinitialization. */

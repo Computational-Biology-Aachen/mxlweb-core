@@ -16,9 +16,11 @@ import { KineticModelBuilder, type Reaction } from "./kineticModelBuilder.js";
 import {
   type MxlEntity,
   type MxlJsonDocument,
+  type MxlNNLayer,
   type ModelBuilderBase,
   type SliderArgs,
 } from "./modelBuilderBase.js";
+import type { NNBlockLayer } from "./nnBlock.js";
 import { OdeModelBuilder } from "./odeModelBuilder.js";
 import { SteadyStateModelBuilder } from "./steadyStateModelBuilder.js";
 import { kineticSchema, odeSchema, steadyStateSchema } from "./mxl/schemas.js";
@@ -150,6 +152,21 @@ function flattenNNWeights(
  * and are instead passed straight into `addNNBlock`'s `trainedWeights`
  * argument, reshaped from `weightsByRef`.
  */
+/** {@link MxlNNLayer} -> {@link NNBlockLayer}: revives each layer's optional `activation.expression` from a `JsonNode` into a live `Base` via `nodeFromJson`. `activation` itself is genuinely optional per the schema (absent means linear), unlike this function's sibling fields. */
+function nnBlockLayer(layer: MxlNNLayer): NNBlockLayer {
+  if (layer.activation === undefined) {
+    return { type: layer.type, width: layer.width };
+  }
+  return {
+    type: layer.type,
+    width: layer.width,
+    activation: {
+      name: layer.activation.name,
+      expression: nodeFromJson(layer.activation.expression),
+    },
+  };
+}
+
 function addNNBlocks(
   builder: ModelBuilderBase,
   doc: MxlJsonDocument,
@@ -159,19 +176,16 @@ function addNNBlocks(
     // Every field is required by the schema, already validated by the time
     // this runs (mxlJsonToModel validates before calling buildKinetic/
     // buildOde) — non-null assertions are safe here, same as elsewhere in
-    // this file (e.g. entry.fn!).
+    // this file (e.g. entry.fn!). Per-layer `activation` is the one
+    // genuinely optional exception, handled by `nnBlockLayer`.
     const config = {
       inputs: entry.inputs!,
-      layers: entry.layers!,
+      layers: entry.layers!.map((layer) => nnBlockLayer(layer)),
       seed: entry.seed!,
       targets: entry.targets!,
       trained: entry.trained!,
       scale: entry.scale!,
       mechanism: nodeFromJson(entry.mechanism!),
-      activation: {
-        name: entry.activation!.name,
-        expression: nodeFromJson(entry.activation!.expression),
-      },
     };
     let trainedWeights: Map<string, number> | undefined;
     if (entry.trained) {

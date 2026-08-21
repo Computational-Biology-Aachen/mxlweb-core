@@ -37,13 +37,12 @@ describe("buildNNBlock: architecture", () => {
     name: "corr",
     inputs: ["a", "b"],
     layers: [
-      { type: "dense", width: 3 },
-      { type: "dense", width: 3 },
+      { type: "dense", width: 3, activation: softplusActivation() },
+      { type: "dense", width: 3, activation: softplusActivation() },
       { type: "dense", width: 1 },
     ],
     seed: 42,
     scale: 0.1,
-    activation: softplusActivation(),
   };
 
   it("produces the expected weight/bias count", () => {
@@ -93,17 +92,16 @@ describe("buildNNBlock: architecture", () => {
       name: "flux",
       inputs: ["x"],
       layers: [
-        { type: "dense", width: 64 },
-        { type: "dense", width: 64 },
-        { type: "dense", width: 64 },
-        { type: "dense", width: 64 },
-        { type: "dense", width: 64 },
-        { type: "dense", width: 64 },
+        { type: "dense", width: 64, activation: softplusActivation() },
+        { type: "dense", width: 64, activation: softplusActivation() },
+        { type: "dense", width: 64, activation: softplusActivation() },
+        { type: "dense", width: 64, activation: softplusActivation() },
+        { type: "dense", width: 64, activation: softplusActivation() },
+        { type: "dense", width: 64, activation: softplusActivation() },
         { type: "dense", width: 1 },
       ],
       seed: 1,
       scale: 0.1,
-      activation: softplusActivation(),
     });
     // layer0: 64*1+64=128; 5x hidden->hidden: 5*(64*64+64)=20800; output: 1*64+1=65
     expect(big.weights.size).toBe(128 + 20800 + 65);
@@ -115,12 +113,11 @@ describe("buildNNBlock: reproducibility", () => {
     name: "corr",
     inputs: ["a"],
     layers: [
-      { type: "dense", width: 4 },
+      { type: "dense", width: 4, activation: softplusActivation() },
       { type: "dense", width: 1 },
     ],
     seed: 7,
     scale: 0.1,
-    activation: softplusActivation(),
   };
 
   it("the same seed produces identical weights", () => {
@@ -151,12 +148,11 @@ describe("buildNNBlock: softplus numerical stability (ADR 0005 §2.1.1)", () => 
       name: "s",
       inputs: ["x"],
       layers: [
-        { type: "dense", width: 1 },
+        { type: "dense", width: 1, activation: softplusActivation() },
         { type: "dense", width: 1 },
       ],
       seed: 3,
       scale: 1,
-      activation: softplusActivation(),
     });
     // Force the hidden unit's weight/bias to the identity (weight=1, bias=0)
     // so the hidden pre-activation is exactly `x`, isolating softplus itself.
@@ -188,13 +184,12 @@ describe("buildNNBlock: generated output is a valid, differentiable expression",
       name: "n",
       inputs: ["x"],
       layers: [
-        { type: "dense", width: 3 },
-        { type: "dense", width: 3 },
+        { type: "dense", width: 3, activation: softplusActivation() },
+        { type: "dense", width: 3, activation: softplusActivation() },
         { type: "dense", width: 1 },
       ],
       seed: 11,
       scale: 0.5,
-      activation: softplusActivation(),
     });
     const expr = outputs[0];
 
@@ -222,12 +217,11 @@ describe("buildNNBlock: input wiring", () => {
       name: "n",
       inputs: ["conc"],
       layers: [
-        { type: "dense", width: 2 },
+        { type: "dense", width: 2, activation: softplusActivation() },
         { type: "dense", width: 1 },
       ],
       seed: 5,
       scale: 0.1,
-      activation: softplusActivation(),
     });
     const symbols = outputs[0].getSymbols(new Set<string>());
     expect(symbols.has("conc")).toBe(true);

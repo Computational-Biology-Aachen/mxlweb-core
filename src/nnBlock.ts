@@ -33,11 +33,25 @@ import { defaultTexName, type Parameter } from "./modelBuilderBase.js";
  * `composeNNBlocks`).
  */
 
-/** One layer of an nn_block's stack (mxl-schemas `nnLayer`). Only `dense` exists today, but every layer is tagged so a future kind is a new variant rather than a restructure. */
-export type NNBlockLayer = { type: "dense"; width: number };
-
 /** A named activation function with a portable definition (mxl-schemas `nnActivation`). `expression` is instantiated per pre-activation value via `substituteName(expression, "x", preActivation)`. */
 export type NNBlockActivation = { name: string; expression: Base };
+
+/**
+ * One layer of an nn_block's stack (mxl-schemas `nnLayer`). Only `dense`
+ * exists today, but every layer is tagged so a future kind is a new variant
+ * rather than a restructure. `activation`, if present, is applied
+ * elementwise to this layer's output; if absent, this layer's output is
+ * used as-is (a plain linear combination, so it can take any real value) —
+ * most commonly omitted on the final layer, but any layer, including the
+ * final one, may carry a non-identity activation (mxl-schemas nn_blocks:
+ * activation moved from block-level to per-layer so the final layer isn't
+ * forced to be linear).
+ */
+export type NNBlockLayer = {
+  type: "dense";
+  width: number;
+  activation?: NNBlockActivation;
+};
 
 /**
  * `max(x, 0) + ln(1 + exp(-|x|))` — softplus in its numerically-stable form
@@ -90,7 +104,7 @@ export type NNBlockSpec = {
   name: string;
   /** Names of existing variables/parameters/derived quantities the block reads. */
   inputs: string[];
-  /** Layer stack, input-to-output order. The last layer is a plain linear combination (no activation), so outputs can take any real value; its width is the block's output count. */
+  /** Layer stack, input-to-output order — each layer's own optional `activation` (see {@link NNBlockLayer}) applies elementwise to it; the last layer's width is the block's output count. */
   layers: NNBlockLayer[];
   /** Seed for reproducible Glorot-uniform weight initialization. */
   seed: number;
@@ -104,8 +118,6 @@ export type NNBlockSpec = {
    * network's own expressiveness.
    */
   scale: number;
-  /** Elementwise activation applied after every layer except the last. */
-  activation: NNBlockActivation;
 };
 
 export type NNBlockResult = {
@@ -172,8 +184,9 @@ function buildLayer(
 }
 
 /**
- * Builds a fully-connected network per `spec.layers`: every layer but the
- * last is activated (`spec.activation`), the last is a plain linear
+ * Builds a fully-connected network per `spec.layers`: each layer's own
+ * `activation` (if any — see {@link NNBlockLayer}) is applied elementwise to
+ * that layer's output; a layer with no `activation` is a plain linear
  * combination. Every weight is Glorot-uniform-initialized from `spec.seed`;
  * every bias starts at zero. Throws if `spec.layers` is empty — a block
  * needs at least an output layer.
@@ -189,7 +202,6 @@ export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
   let layerInputs: Base[] = spec.inputs.map((name) => new Name(name));
 
   spec.layers.forEach((layer, layerIdx) => {
-    const isOutputLayer = layerIdx === spec.layers.length - 1;
     const preActivations = buildLayer(
       spec.name,
       layerIdx,
@@ -198,11 +210,12 @@ export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
       rng,
       weights,
     );
-    layerInputs = isOutputLayer
-      ? preActivations
-      : preActivations.map((pre) =>
-          substituteName(spec.activation.expression, "x", pre),
-        );
+    layerInputs =
+      layer.activation === undefined
+        ? preActivations
+        : preActivations.map((pre) =>
+            substituteName(layer.activation!.expression, "x", pre),
+          );
   });
 
   // Single trainable factor shared across every output (NNBlockSpec.scale's

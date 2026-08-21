@@ -100,7 +100,7 @@ export const kineticSchema: JsonSchema = {
     nnBlock: {
       type: "object",
       description:
-        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`.",
+        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`. Each layer carries its own optional activation (see `nnLayer`) — there is no separate block-level activation field.",
       required: [
         "inputs",
         "layers",
@@ -109,7 +109,6 @@ export const kineticSchema: JsonSchema = {
         "trained",
         "scale",
         "mechanism",
-        "activation",
       ],
       additionalProperties: false,
       properties: {
@@ -163,11 +162,6 @@ export const kineticSchema: JsonSchema = {
           description:
             "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
         },
-        activation: {
-          $ref: "#/$defs/nnActivation",
-          description:
-            "Activation applied elementwise after every layer except the last (which is a plain linear combination, so outputs can take any real value).",
-        },
       },
       allOf: [
         {
@@ -215,6 +209,11 @@ export const kineticSchema: JsonSchema = {
           description:
             "Number of output units of this layer (a dense layer's fan-out).",
           minimum: 1,
+        },
+        activation: {
+          $ref: "#/$defs/nnActivation",
+          description:
+            "Activation applied elementwise to this layer's output. Absent means identity/linear (so this layer's output can take any real value) — the common case for the final layer, but any layer, including the final one, may carry a non-identity activation.",
         },
       },
     },
@@ -725,7 +724,7 @@ export const odeSchema: JsonSchema = {
     nnBlock: {
       type: "object",
       description:
-        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`.",
+        "A UDE/NODE correction term: a stack of layers (only `dense` exists today) added onto one or more existing variables' dynamics via `mechanism`. Each layer carries its own optional activation (see `nnLayer`) — there is no separate block-level activation field.",
       required: [
         "inputs",
         "layers",
@@ -734,7 +733,6 @@ export const odeSchema: JsonSchema = {
         "trained",
         "scale",
         "mechanism",
-        "activation",
       ],
       additionalProperties: false,
       properties: {
@@ -788,11 +786,6 @@ export const odeSchema: JsonSchema = {
           description:
             "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
         },
-        activation: {
-          $ref: "#/$defs/nnActivation",
-          description:
-            "Activation applied elementwise after every layer except the last (which is a plain linear combination, so outputs can take any real value).",
-        },
       },
       allOf: [
         {
@@ -840,6 +833,11 @@ export const odeSchema: JsonSchema = {
           description:
             "Number of output units of this layer (a dense layer's fan-out).",
           minimum: 1,
+        },
+        activation: {
+          $ref: "#/$defs/nnActivation",
+          description:
+            "Activation applied elementwise to this layer's output. Absent means identity/linear (so this layer's output can take any real value) — the common case for the final layer, but any layer, including the final one, may carry a non-identity activation.",
         },
       },
     },
