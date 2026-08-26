@@ -35,7 +35,7 @@ block is ≈20,800 weights). Two constraints rule out the standard neural-ODE pl
   ("`BacksolveAdjoint`" in SciMLSensitivity/diffrax terms — reconstruct the forward
   trajectory by re-integrating the vector field backward in time, alongside the adjoint
   variable) is documented as unstable on stiff problems by both ecosystems: a
-  forward-dissipative vector field is an *expanding*, error-amplifying process when run
+  forward-dissipative vector field is an _expanding_, error-amplifying process when run
   backward, which corrupts the coupled adjoint variable regardless of its own dynamics.
 - **An opaque solver rules out discrete adjoint.** diffrax's own preferred default
   (`RecursiveCheckpointAdjoint`) differentiates the solver's step function directly —
@@ -45,7 +45,7 @@ block is ≈20,800 weights). Two constraints rule out the standard neural-ODE pl
   compiled machine code.
 
 The reframe that unblocks both: the adjoint method doesn't require differentiating the
-*solver*, only computing vector-Jacobian products of the RHS — and the RHS is already a
+_solver_, only computing vector-Jacobian products of the RHS — and the RHS is already a
 `mathml` AST, a closed set of ~48 node types evaluated through a shared visitor pattern
 (`toWat`/`toJs`/`toPy`/`toTex`/`toSBML`). A VJP for that graph is one more visitor
 method, generated once at compile time.
@@ -85,7 +85,7 @@ smoothness the adjoint method's own derivation assumes.
 node class using that node's own known local derivative rule — the same two-pass graph
 walk PyTorch/JAX use internally (forward pass records structure, one backward pass
 accumulates one adjoint per node in reverse topological order), not textual symbolic
-differentiation. Critically, `pushGradient` builds a *symbolic* adjoint — another
+differentiation. Critically, `pushGradient` builds a _symbolic_ adjoint — another
 `Base` expression tree, not a runtime number — because this needs to run live in the
 browser (`ModelEditor.svelte` recompiles the AST on every structural edit) with no CAS
 or `simplify()`/CSE pass available. Because the node-type set is closed and the graph
@@ -94,7 +94,7 @@ has no control flow, mutation, or aliasing, none is needed: `mulAdjoint`/`negAdj
 that would otherwise clutter generated expressions, and nothing more elaborate is
 required.
 
-Both forward and backward codegen depend only on model *structure* — `buildModelWat`'s
+Both forward and backward codegen depend only on model _structure_ — `buildModelWat`'s
 signature (`equations`, `varNames`, `parNames`) never bakes in values, including weight
 values during fitting, which flow in separately at runtime via `y_ptr`/`rpar_ptr`. So
 differentiating a 20,800-parameter block is paid once per deliberate architecture
@@ -104,7 +104,7 @@ keystroke.
 #### 2.2.1 Non-smooth node types: zero gradient by convention, documented at each site
 
 Most node types are ordinary calculus with no design decision to make. The exceptions,
-each requiring an explicit code comment stating *why* the rule is zero (a documented
+each requiring an explicit code comment stating _why_ the rule is zero (a documented
 convention, not a silent stub that reads as an oversight):
 
 - **`Floor`/`Ceiling`**: piecewise-constant, so the derivative is `0` almost everywhere.
@@ -133,7 +133,7 @@ Forward-solve as today, unmodified. For the backward pass: do **not** reconstruc
 rejection). Instead, obtain `y(t)` at whatever points the backward pass needs directly
 from the forward solve's own output. Only the adjoint variable `λ` (plus a
 parameter-gradient quadrature accumulator) is backward-integrated. `λ`'s ODE is linear
-given `y(t)` and inherits the *same* stiffness ratio as the forward problem (transposed,
+given `y(t)` and inherits the _same_ stiffness ratio as the forward problem (transposed,
 not worse) — it needs an implicit integrator too, but being linear, its per-step
 "Newton iteration" is a single linear solve, cheaper than the forward nonlinear one.
 
@@ -188,19 +188,19 @@ Both this codebase's comments and SciMLSensitivity's own naming (`InterpolatingA
 use the word "checkpoint" for the `(t, y)` points saved above — but that is a different
 concept from the memory-saving "checkpointing" (a.k.a. gradient checkpointing /
 rematerialization) that Griewank & Walther's binomial/"revolve" algorithm, and
-diffrax's `RecursiveCheckpointAdjoint`, implement. That family stores only a *subset*
-of forward states under a fixed memory budget and *recomputes* the missing segments
+diffrax's `RecursiveCheckpointAdjoint`, implement. That family stores only a _subset_
+of forward states under a fixed memory budget and _recomputes_ the missing segments
 on demand during the backward pass — an explicit compute/memory tradeoff with its own
 scheduling problem (online variants exist specifically because adaptive-step solvers
 don't know their step count in advance).
 
 Nothing like that exists in this code. `fwd_t`/`fwd_y` (`adjoint_wrapper.c`) store
-*every single accepted step* of the forward solve, full stop — `O(steps)` memory, the
+_every single accepted step_ of the forward solve, full stop — `O(steps)` memory, the
 exact cost real checkpointing exists to avoid — and nothing is ever recomputed from an
 earlier checkpoint during the backward pass; Hermite interpolation only ever reads the
 two already-stored endpoints bracketing a query time. If a future PETC/PAM model's
 forward trajectory ever gets long enough that storing every step becomes the actual
-memory bottleneck, *that* would be the point to reach for real checkpointing — this
+memory bottleneck, _that_ would be the point to reach for real checkpointing — this
 ADR's design does not provide it today, and "we already checkpoint" is not a correct
 reason to skip that work when it comes up.
 
@@ -218,7 +218,7 @@ completely unchanged, just with a different RHS registered via `set_model_fn_ptr
 #### 2.3.3 The `-1`-seed trick: one backward pass for both dλ/dt and dθ/dt
 
 `L = Σᵢ λᵢ · fᵢ` (`fᵢ = dxᵢ/dt`) is one scalar expression. Seeding its reverse-mode walk
-(`pushGradient`) with `−1` produces `dλ/dt = −∂L/∂y` and `dθ/dt = −∂L/∂θ` in a *single*
+(`pushGradient`) with `−1` produces `dλ/dt = −∂L/∂y` and `dθ/dt = −∂L/∂θ` in a _single_
 backward pass — exactly the vector-Jacobian product the adjoint method needs, with `λ`
 playing the role of the seed cotangent (`buildAdjointGraph`, `modelIr.ts`):
 
@@ -252,7 +252,7 @@ Walking `intermediates` in reverse (mirroring their forward topological order) r
 than treating `L` as one flat tree is what makes this cheap rather than
 naive-symbolic-diff-shaped. `buildAdjointWat` (`wat-codegen.ts`) then lays out the
 result as a WAT module exporting one `fcn(n, t, y_ptr, lambda_ptr, pars_ptr,
-out_dlambda_ptr, out_dtheta_ptr)`, with `λ` resolved as a *runtime* leaf
+out_dlambda_ptr, out_dtheta_ptr)`, with `λ` resolved as a _runtime_ leaf
 (`WatContext.lambdaIndex`) exactly like `y`/`pars` resolve via `varIndex`/`parIndex`.
 
 #### 2.3.4 Multi-observation jump conditions
@@ -261,7 +261,7 @@ The zettelkasten-standard continuous-adjoint derivation assumes a single termina
 integrated loss. The real fit loss is a sum over discrete observation times,
 `Loss = Σⱼ gⱼ(y(tⱼ))` with `gⱼ = Σₖ ((y_{idxₖ}(tⱼ) − dataₖ)/scaleₖ)²` — extending the
 Lagrangian derivation to this case requires `λ` to take an additive **jump** at each
-`tⱼ`, applied *at* `tⱼ` when the backward integration passes through it:
+`tⱼ`, applied _at_ `tⱼ` when the backward integration passes through it:
 `λ(tⱼ⁻) = λ(tⱼ⁺) + (∂gⱼ/∂y)ᵀ`, with `λ(t_end⁺) = 0`. Segments between consecutive data
 points are integrated one solver call at a time, backward, applying each jump the
 instant the integration arrives there:
@@ -306,7 +306,7 @@ exactly for that cancellation to hold, which is why `adjoint_wrapper.c`'s own co
 spells out the full derivation rather than just asserting the result.
 
 **v1 restricts fit targets to raw state variables**, not derived quantities: a derived
-target's jump would need `d(derived)/dy`, which needs a *second* generated adjoint
+target's jump would need `d(derived)/dy`, which needs a _second_ generated adjoint
 graph (over the derived-quantity expression tree, not `dxdt`'s) that doesn't exist yet.
 Not a fundamental limit, just unbuilt — the `"lm"` backend keeps supporting both.
 
@@ -320,7 +320,7 @@ optimizer is **Adam** (lr `1e-4`, standard beta1/beta2/eps), not Gauss-Newton: t
 reason this backend exists is that `lmdif` needs the full residual Jacobian, which
 reverse-mode/adjoint isn't cheap for. One Adam step = one full forward solve + one full
 backward solve (all segments) + one parameter update; `adjoint_chunk` runs up to
-`maxIterations` *complete* Adam steps, unlike `lmdif`'s function-evaluation-granularity
+`maxIterations` _complete_ Adam steps, unlike `lmdif`'s function-evaluation-granularity
 chunking. L-BFGS was considered and rejected outright: its line-search-driven, more
 locally-quadratic assumption doesn't fit deep, non-convex ODE/UDE loss landscapes,
 reinforced by direct prior experience with these specific loss landscapes.
