@@ -29,6 +29,17 @@ export interface ModelIR {
   initialValues: Map<string, number | Base>;
   /** Assignments (and, for kinetic models, reactions) in topological order. */
   intermediates: ModelIntermediate[];
+  /**
+   * Report-only quantities, in topological order (mxlweb-core issue #6) —
+   * may reference `intermediates`, variables/parameters, or an earlier
+   * readout, but nothing in `intermediates`/`dxdt` may ever reference one of
+   * these. Never folded into `intermediates`: `irToJs`/`irToWat` (the actual
+   * RHS the integrator steps) ignore this field entirely, so a readout is
+   * structurally incapable of feeding `dxdt`. Only the "selectable derived
+   * output" backends (`irToJsDerived`, `irToWatDerived`, `irToPython`)
+   * compute these, after a simulation's variable trajectory already exists.
+   */
+  readouts: ModelIntermediate[];
   /** Variable id → its dx/dt expression, referencing vars/params/intermediates. */
   dxdt: Map<string, Base>;
   /** Display/python-facing name for every id (falls back to the id). */
@@ -88,11 +99,17 @@ export function irToJsDerived(
   const parDestructure =
     ir.parNames.length > 0 ? `const [${ir.parNames.join(", ")}] = pars;` : "";
 
-  const fns = ir.intermediates
+  // Readouts appended after intermediates: both lists are already
+  // internally topologically ordered, and every readout's dependencies are
+  // either an intermediate (computed above) or an earlier readout, never
+  // the reverse (ModelIR.readouts's doc comment) — so straight
+  // concatenation is a valid evaluation order.
+  const allIntermediates = [...ir.intermediates, ...ir.readouts];
+  const fns = allIntermediates
     .map((m) => `  const ${m.name} = ${m.expr.toJs()};`)
     .join("\n");
 
-  const order = ir.intermediates.map((m) => m.name);
+  const order = allIntermediates.map((m) => m.name);
 
   const allDerived = `(time, variables, pars) => {
   ${varDestructure}
@@ -131,14 +148,15 @@ export function irToWat(ir: ModelIR): string {
  * derived-quantity fit targets without leaving WASM during a fit.
  */
 export function irToWatDerived(ir: ModelIR, selectedDerived: string[]): string {
-  const byName = new Map(ir.intermediates.map((m) => [m.name, m.expr]));
+  const allIntermediates = [...ir.intermediates, ...ir.readouts];
+  const byName = new Map(allIntermediates.map((m) => [m.name, m.expr]));
   for (const key of selectedDerived) {
     if (!byName.has(key)) {
       throw new Error(`irToWatDerived: unknown derived key "${key}"`);
     }
   }
-  const needed = transitiveDerivedDeps(ir, selectedDerived);
-  const intermediates = ir.intermediates.filter((m) => needed.has(m.name));
+  const needed = transitiveDerivedDeps(allIntermediates, selectedDerived);
+  const intermediates = allIntermediates.filter((m) => needed.has(m.name));
   const outputs = selectedDerived.map((key) => ({
     name: key,
     expr: byName.get(key)!,
@@ -260,10 +278,10 @@ export function irToAdjointWat(ir: ModelIR, thetaNames: string[]): string {
 }
 
 function transitiveDerivedDeps(
-  ir: ModelIR,
+  intermediates: ModelIntermediate[],
   selectedKeys: string[],
 ): Set<string> {
-  const byName = new Map(ir.intermediates.map((m) => [m.name, m.expr]));
+  const byName = new Map(intermediates.map((m) => [m.name, m.expr]));
   const needed = new Set<string>();
   const visit = (key: string) => {
     if (needed.has(key) || !byName.has(key)) return;
@@ -284,7 +302,13 @@ export function irToPython(
       throw new Error(`buildPython: unknown parameter key "${key}"`);
     }
   }
-  const order = ir.intermediates.map((m) => m.name);
+  // `fns` (intermediates only) feeds `def model(...)` below — the actual
+  // dxdt RHS, which must never see a readout (ModelIR.readouts's doc
+  // comment). `allFns`/`order` fold in readouts too, for `def all_derived`/
+  // `selected_derived` — the post-simulation "selectable report output"
+  // functions, where a readout is a legal selection.
+  const allIntermediates = [...ir.intermediates, ...ir.readouts];
+  const order = allIntermediates.map((m) => m.name);
   if (selectedDerived !== undefined) {
     const known = new Set(order);
     for (const key of selectedDerived) {
@@ -310,10 +334,14 @@ export function irToPython(
     .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
     .join("\n    ");
 
+  const allFns = allIntermediates
+    .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
+    .join("\n    ");
+
   const selectedFns = selectedDerived
     ? (() => {
-        const needed = transitiveDerivedDeps(ir, selectedDerived);
-        return ir.intermediates
+        const needed = transitiveDerivedDeps(allIntermediates, selectedDerived);
+        return allIntermediates
           .filter((m) => needed.has(m.name))
           .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
           .join("\n    ");
@@ -380,7 +408,7 @@ def all_derived(
 ):
     ${variables} = variables
     ${parameters}
-    ${fns}
+    ${allFns}
     return [${order.map(Name).join(", ")}]
 ${selectedDerivedBlock}
 y0 = {${y0}}

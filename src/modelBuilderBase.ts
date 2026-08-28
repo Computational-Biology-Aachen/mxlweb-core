@@ -266,6 +266,20 @@ export abstract class ModelBuilderBase {
   protected abstract extraIntermediates(): Map<string, IntermediateDef>;
 
   /**
+   * Readouts — report-only quantities computed after simulation finishes,
+   * never available to {@link dxdtExpr}/{@link extraIntermediates} or any
+   * other readout that sorts before them (mxlweb-core issue #6). Default
+   * empty: only {@link KineticModelBuilder} and {@link OdeModelBuilder}
+   * carry an actual `readouts` map (and `addReadout`/`updateReadout`/
+   * `removeReadout`) — `SteadyStateModelBuilder` has no such map or methods
+   * at all, matching its `.mxl.json` schema, which has no `readouts` key.
+   * Concrete (not abstract) so `SteadyStateModelBuilder` needs no override.
+   */
+  protected extraReadouts(): Map<string, IntermediateDef> {
+    return new Map();
+  }
+
+  /**
    * The *mechanistic* dx/dt expression for a single state variable — never
    * includes any NN block's contribution. `lower()` composes every
    * targeting block on top of this afterward, via {@link composeNNBlocks}
@@ -641,45 +655,80 @@ export abstract class ModelBuilderBase {
     });
   }
 
-  // Topologically order the intermediates so each only depends on already
-  // available symbols (parameters, variables, earlier intermediates).
-  sortDependencies(): string[] {
+  /**
+   * Shared worklist topological sort: repeatedly pop the next element off
+   * `toSort` and settle it once its `args` are all already in `available`
+   * (adding its own name to `available` in turn); an element that isn't
+   * resolvable yet goes back on the end of the queue. Gives up (settling the
+   * stuck element anyway) once the same element comes up twice in a row with
+   * nothing resolved in between, since that means nothing left in `toSort`
+   * can ever become resolvable. `available` is mutated in place — callers
+   * that need it afterward (none currently do) get the fully-settled set.
+   */
+  private static topoSort(
+    available: Set<string>,
+    toSort: Array<{ k: string; args: Set<string> }>,
+  ): string[] {
     const order: string[] = [];
-    let available: Set<string> = new Set([
-      ...this.parameters.keys(),
-      ...this.variables.keys(),
-    ]);
-    const toSort: Array<{ k: string; args: Set<string> }> = [
-      ...this.intermediateDefs()
-        .entries()
-        .map(([key, val]) => {
-          return { k: key, args: val.fn.getSymbols(new Set()) };
-        }),
-    ];
-
-    const maxIters = toSort.length * toSort.length;
+    const remaining = [...toSort];
+    const maxIters = remaining.length * remaining.length;
 
     let lastName = "";
     for (let i = 0; i < maxIters; i++) {
-      const el = toSort.shift();
+      const el = remaining.shift();
 
       if (el === undefined) {
         break;
       }
       const { k, args } = el;
       if (args.isSubsetOf(available)) {
-        available = available.add(k);
+        available.add(k);
         order.push(k);
       } else {
         if (lastName === k) {
           order.push(lastName);
           break;
         }
-        toSort.push(el);
+        remaining.push(el);
         lastName = k;
       }
     }
     return order;
+  }
+
+  // Topologically order the intermediates so each only depends on already
+  // available symbols (parameters, variables, earlier intermediates).
+  sortDependencies(): string[] {
+    const available: Set<string> = new Set([
+      ...this.parameters.keys(),
+      ...this.variables.keys(),
+    ]);
+    const toSort = [...this.intermediateDefs().entries()].map(([key, val]) => ({
+      k: key,
+      args: val.fn.getSymbols(new Set()),
+    }));
+    return ModelBuilderBase.topoSort(available, toSort);
+  }
+
+  /**
+   * Topologically order `extraReadouts()` — a readout may depend on
+   * parameters, variables, any assignment/reaction (`intermediateDefs()`),
+   * or another readout that sorts before it, but nothing in
+   * `intermediateDefs()` may ever depend on a readout (mxlweb-core issue
+   * #6): that direction simply isn't in `available` here. Empty for a
+   * builder with no `extraReadouts()` override (`SteadyStateModelBuilder`).
+   */
+  sortReadoutDependencies(): string[] {
+    const available: Set<string> = new Set([
+      ...this.parameters.keys(),
+      ...this.variables.keys(),
+      ...this.intermediateDefs().keys(),
+    ]);
+    const toSort = [...this.extraReadouts().entries()].map(([key, val]) => ({
+      k: key,
+      args: val.fn.getSymbols(new Set()),
+    }));
+    return ModelBuilderBase.topoSort(available, toSort);
   }
 
   getNames(): Array<string> {
@@ -695,6 +744,9 @@ export abstract class ModelBuilderBase {
       names.set(id, parameter.displayName || id);
     }
     for (const [id, def] of this.intermediateDefs()) {
+      names.set(id, def.displayName || id);
+    }
+    for (const [id, def] of this.extraReadouts()) {
       names.set(id, def.displayName || id);
     }
     return names;
@@ -715,6 +767,12 @@ export abstract class ModelBuilderBase {
     const intermediates = order.map((name) => ({
       name,
       expr: defs.get(name)!.fn,
+    }));
+    const readoutOrder = this.sortReadoutDependencies();
+    const readoutDefs = this.extraReadouts();
+    const readouts = readoutOrder.map((name) => ({
+      name,
+      expr: readoutDefs.get(name)!.fn,
     }));
     const mechanistic = new Map(
       [...this.variables.keys()].map((name) => [name, this.dxdtExpr(name)]),
@@ -738,6 +796,12 @@ export abstract class ModelBuilderBase {
         [...this.variables.entries()].map(([k, v]) => [k, v.value]),
       ),
       intermediates,
+      // Post-simulation-only report outputs — never folded into
+      // `intermediates`/`dxdt` above, so `irToJs`/`irToWat` (the actual RHS
+      // the integrator steps) never sees a readout at all. Only the
+      // "selectable derived output" backends (`irToJsDerived`,
+      // `irToWatDerived`, `irToPython`) read this field.
+      readouts,
       dxdt,
       displayNames: this.getDisplayNames(),
     };
@@ -925,15 +989,32 @@ ${chains.join("\n")};
     return out;
   }
 
-  /** Serialise the assignments as the `derived` section. */
-  protected mxlDerived(): Record<string, MxlEntity> {
+  /** Shared `fn`/displayName/texName shape behind both `derived` and `readouts` — see {@link mxlDerived}/{@link mxlReadouts}. */
+  private mxlIntermediateEntities(
+    defs: Iterable<[string, IntermediateDef]>,
+  ): Record<string, MxlEntity> {
     const out: Record<string, MxlEntity> = {};
-    for (const [id, a] of this.assignments) {
-      const entry: MxlEntity = { fn: a.fn.toJson() };
-      this.mxlApplyMeta(entry, a.displayName, a.texName);
+    for (const [id, def] of defs) {
+      const entry: MxlEntity = { fn: def.fn.toJson() };
+      this.mxlApplyMeta(entry, def.displayName, def.texName);
       out[id] = entry;
     }
     return out;
+  }
+
+  /** Serialise the assignments as the `derived` section. */
+  protected mxlDerived(): Record<string, MxlEntity> {
+    return this.mxlIntermediateEntities(this.assignments);
+  }
+
+  /**
+   * Serialise `extraReadouts()` as the `readouts` section — real content for
+   * `KineticModelBuilder`/`OdeModelBuilder`, `{}` for any builder without an
+   * override (matching `SteadyStateModelBuilder`'s schema, which allows no
+   * `readouts` key at all — its `mxlModel()` simply never calls this).
+   */
+  protected mxlReadouts(): Record<string, MxlEntity> {
+    return this.mxlIntermediateEntities(this.extraReadouts());
   }
 
   /**
