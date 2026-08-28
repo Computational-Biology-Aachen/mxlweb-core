@@ -196,6 +196,8 @@ function reactionTerm(coeff: Base, rxnName: string): Base {
 export class KineticModelBuilder extends ModelBuilderBase {
   readonly builderType = "KineticModelBuilder";
   reactions: SvelteMap<string, Reaction> = new SvelteMap();
+  /** Report-only quantities computed after simulation finishes — see `ModelBuilderBase.extraReadouts`'s doc comment (mxlweb-core issue #6). */
+  readouts: SvelteMap<string, Assign> = new SvelteMap();
 
   constructor() {
     super();
@@ -207,9 +209,34 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
     cl.reactions = new SvelteMap(this.reactions);
+    cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
     return cl;
+  }
+
+  // Readouts
+  addReadout(key: string, readout: Assign) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
+    this.readouts.set(key, readout);
+    return this;
+  }
+  updateReadout(key: string, readout: Assign) {
+    this.readouts.set(key, readout);
+    return this;
+  }
+  removeReadout(key: string) {
+    this.readouts.delete(key);
+    return this;
+  }
+
+  protected extraReadouts(): Map<string, IntermediateDef> {
+    return new Map(
+      [...this.readouts.entries()].map(([key, ro]) => [
+        key,
+        { fn: ro.fn, displayName: ro.displayName, texName: ro.texName },
+      ]),
+    );
   }
 
   // NN block wiring uses ModelBuilderBase's default no-op — see
@@ -250,6 +277,12 @@ export class KineticModelBuilder extends ModelBuilderBase {
       ]);
       chains.push(`    .addReaction(${JSON.stringify(id)}, ${opts})`);
     }
+    for (const [id, ro] of this.readouts) {
+      collect(ro.fn);
+      chains.push(
+        `    .addReadout(${JSON.stringify(id)}, ${this.tsAssign(ro)})`,
+      );
+    }
     return chains;
   }
 
@@ -272,7 +305,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       parameters: this.mxlParameters(),
       reactions: this.mxlReactions(),
       derived: this.mxlDerived(),
-      readouts: {},
+      readouts: this.mxlReadouts(),
       nn_blocks: this.mxlNNBlocks(),
     };
   }

@@ -98,6 +98,16 @@ function addDerived(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
   }
 }
 
+/** `addReadout` only exists on `KineticModelBuilder`/`OdeModelBuilder` — `buildSteadyState` never calls this (its schema has no `readouts` key). */
+function addReadouts(
+  builder: KineticModelBuilder | OdeModelBuilder,
+  doc: MxlJsonDocument,
+): void {
+  for (const [id, entry] of Object.entries(section(doc, "readouts"))) {
+    builder.addReadout(id, { fn: nodeFromJson(entry.fn!), ...meta(entry) });
+  }
+}
+
 /**
  * A `weights_ref` sidecar file's already-parsed content (mxl-schemas
  * nn-weights.schema.json): `w{n}`/`b{n}`, 1-indexed by layer, matrix shape
@@ -225,6 +235,7 @@ function buildKinetic(
     builder.addReaction(id, reaction);
   }
   addDerived(builder, doc);
+  addReadouts(builder, doc);
   return builder;
 }
 
@@ -242,6 +253,7 @@ function buildOde(
     }
   }
   addDerived(builder, doc);
+  addReadouts(builder, doc);
   return builder;
 }
 
