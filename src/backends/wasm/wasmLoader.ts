@@ -74,12 +74,18 @@ export interface EmscriptenModule {
     rtol: number,
     atol: number,
     targetResidualNorm: number,
+    progressInterval: number,
   ): number;
   _fit_chunk(maxfev: number): number;
   _fit_get_nfev(): number;
   _fit_get_residual_norm(): number;
   _fit_get_params(outPtr: number): void;
   _fit_free(): void;
+  /** Fires the registered callback every `progressInterval` evaluations
+   * *within* a chunk — mid-chunk progress, independent of fit_chunk's own
+   * (correctness-mandated) budget. Registered once, globally, not per fit
+   * session — fitWorker.ts's own doc comment. */
+  _fit_set_progress_fn(tableIdx: number): void;
   /** Adjoint-only exports (adjoint_wrapper.c, ADR 0005 §2.3.3) — unused by "lm" fits and the plain simulation worker. */
   _set_forward_model_fn(tableIdx: number): void;
   _set_adjoint_fn(tableIdx: number): void;
@@ -108,6 +114,7 @@ export interface EmscriptenModule {
     gradNormTol: number,
     plateauPatience: number,
     plateauMinDelta: number,
+    progressInterval: number,
   ): number;
   _adjoint_chunk(maxIterations: number): number;
   _adjoint_get_steps(): number;
@@ -116,6 +123,9 @@ export interface EmscriptenModule {
   _adjoint_get_grad(outPtr: number): void;
   _adjoint_get_params(outPtr: number): void;
   _adjoint_free(): void;
+  /** See `_fit_set_progress_fn`'s doc comment — same mechanism, one Adam
+   * step per unit instead of one evaluation. */
+  _adjoint_set_progress_fn(tableIdx: number): void;
   /** Analytic-Jacobian "lm" exports (jacobian_wrapper.c) — used when a fit
    * session's fitted set includes a small trained NN block, in place of
    * fit_wrapper.c's finite-difference lmdif path. */
@@ -140,12 +150,15 @@ export interface EmscriptenModule {
     rtol: number,
     atol: number,
     targetResidualNorm: number,
+    progressInterval: number,
   ): number;
   _jacobian_chunk(maxfev: number): number;
   _jacobian_get_nfev(): number;
   _jacobian_get_residual_norm(): number;
   _jacobian_get_params(outPtr: number): void;
   _jacobian_free(): void;
+  /** See `_fit_set_progress_fn`'s doc comment. */
+  _jacobian_set_progress_fn(tableIdx: number): void;
   HEAPF64: Float64Array;
   HEAP32: Int32Array;
   wasmMemory: WebAssembly.Memory;

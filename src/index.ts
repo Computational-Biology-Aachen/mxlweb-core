@@ -217,6 +217,15 @@ export interface FitInitRequest {
    * one forward solve. Either way the decision (and, when `"adjoint"`,
    * generating `adjointWat`) happens before this request is even built. */
   backend?: FitBackend;
+  /** Fires an extra {@link FitProgress} (`intermediate: true`) every this
+   * many evaluations/steps *within* a chunk — independent of the actual
+   * per-chunk budget a backend needs for correctness (ADR 0005 §2.5's own
+   * `chunkMaxfev`, which for "lm"/"lm-jacobian" has to stay large enough
+   * for the optimizer to make real progress, often far more than a UI
+   * would want between redraws). Undefined or <=0 disables mid-chunk
+   * reporting — the caller only ever sees the one `FitProgress` per actual
+   * `FitChunkRequest`, as before this field existed. */
+  progressUpdateInterval?: number;
 }
 
 export interface FitInitResult {
@@ -261,6 +270,16 @@ export interface FitProgress {
   /** Present iff done. */
   reason?: FitStopReason;
   err?: SimulationError;
+  /** True for a mid-chunk report fired by `progressUpdateInterval`
+   * (`FitInitRequest`'s own doc comment) — purely a display signal, not a
+   * "this chunk is finished" one. Always paired with `done: false` and no
+   * `reason`/`err`; a caller should update its display from these but
+   * never treat one as reason to decide whether to request another chunk,
+   * run stall/patience tracking, or otherwise treat the fit session as
+   * having advanced a real step — that bookkeeping belongs only on the
+   * ordinary (non-intermediate) `FitProgress` a `FitChunkRequest` itself
+   * resolves with. Absent (not just `false`) on every other report. */
+  intermediate?: boolean;
 }
 
 export interface FitFreeRequest {

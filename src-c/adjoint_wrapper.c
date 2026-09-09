@@ -95,6 +95,19 @@ void set_adjoint_fn(int table_idx) { g_adjoint_fn = (AdjointFn)(intptr_t)table_i
 static ModelFn g_forward_model_fn = NULL;
 void set_forward_model_fn(int table_idx) { g_forward_model_fn = (ModelFn)(intptr_t)table_idx; }
 
+/* Fires every `progress_interval` Adam steps from inside adjoint_chunk's
+ * own loop — see fit_wrapper.c's identical g_progress_fn doc comment for
+ * the full rationale (mid-chunk progress independent of adjoint_chunk's
+ * own correctness-mandated chunkMaxfev budget). Registered once, globally.
+ * Simpler than fit_wrapper.c's/jacobian_wrapper.c's own version: one Adam
+ * step is already the natural per-iteration unit here, no separate
+ * eval-vs-step distinction to track. */
+typedef void (*ProgressFn)(int, double);
+static ProgressFn g_progress_fn = NULL;
+void adjoint_set_progress_fn(int table_idx) {
+  g_progress_fn = (ProgressFn)(intptr_t)table_idx;
+}
+
 /* ------------------------------------------------------------------ */
 /* Adjoint session state — persists across adjoint_chunk() calls.     */
 /* ------------------------------------------------------------------ */
@@ -149,6 +162,12 @@ typedef struct {
   double last_residual_norm;
   double last_grad_norm;
   double *last_theta_grad; /* length n_theta — the raw gradient, not just its norm; mainly for tests/debugging */
+
+  /* Mid-chunk progress reporting — see g_progress_fn's own doc comment.
+   * <=0 disables. No separate "since last chunk" counter needed here,
+   * unlike fit_wrapper.c/jacobian_wrapper.c: total_steps already increases
+   * monotonically in real time as adjoint_chunk's own loop runs. */
+  int progress_interval;
 } AdjointSession;
 
 static AdjointSession *g_adj = NULL;
@@ -457,6 +476,10 @@ static int adam_step(AdjointSession *s, double *out_loss, double *out_grad_norm)
  * ADR 0005 §2.5's stopping criteria — pass <=0 (or negative, for
  * target_residual_norm) to disable any of them.
  *
+ * progress_interval: see fit_init's identical parameter — fires the
+ * registered progress callback (adjoint_set_progress_fn) every this many
+ * Adam steps within a chunk. <=0 disables.
+ *
  * Returns 0 on success, -1 on allocation failure.
  */
 int adjoint_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
@@ -464,7 +487,7 @@ int adjoint_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int
                   double *data_t, double *data_y, double t_end, int solver_id, double rtol,
                   double atol, double lr, double beta1, double beta2, double eps,
                   double target_residual_norm, double grad_norm_tol, int plateau_patience,
-                  double plateau_min_delta) {
+                  double plateau_min_delta, int progress_interval) {
   adjoint_free();
 
   AdjointSession *s = (AdjointSession *)calloc(1, sizeof(AdjointSession));
@@ -512,6 +535,7 @@ int adjoint_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int
   s->grad_norm_tol = grad_norm_tol;
   s->plateau_patience = plateau_patience;
   s->plateau_min_delta = plateau_min_delta;
+  s->progress_interval = progress_interval;
   s->adam_t = 0;
   s->total_steps = 0;
   s->plateau_counter = 0;
@@ -565,6 +589,12 @@ int adjoint_chunk(int maxIterations) {
     s->total_steps += 1;
     s->last_residual_norm = loss;
     s->last_grad_norm = grad_norm;
+
+    /* Mid-chunk progress — see g_progress_fn's own doc comment. */
+    if (s->progress_interval > 0 && g_progress_fn &&
+        s->total_steps % s->progress_interval == 0) {
+      g_progress_fn(s->total_steps, loss);
+    }
 
     if (s->target_residual_norm >= 0.0 && loss <= s->target_residual_norm) {
       return ADJOINT_INFO_TARGET_REACHED;

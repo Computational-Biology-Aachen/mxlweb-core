@@ -60,6 +60,20 @@ void set_derived_fn(int table_idx) {
   g_derived_fn = (DerivedFn)(intptr_t)table_idx;
 }
 
+/* Fires every `progress_interval` real evaluations (FitSession's own field,
+ * below) from inside fit_fcn — a genuine mid-chunk progress signal,
+ * independent of fit_chunk's own (much coarser, correctness-mandated)
+ * budget. See docs/adrs/0005-neural-network-corrections-and-adjoint-
+ * fitting.md §2.5's own follow-up: chunkMaxfev has to stay large enough for
+ * lmdif to make real progress, but the UI still wants to redraw at
+ * whatever cadence the user actually asked for — this is how. Registered
+ * once, globally, not per fit session (fitWorker.ts's own doc comment). */
+typedef void (*ProgressFn)(int, double);
+static ProgressFn g_progress_fn = NULL;
+void fit_set_progress_fn(int table_idx) {
+  g_progress_fn = (ProgressFn)(intptr_t)table_idx;
+}
+
 /* ------------------------------------------------------------------ */
 /* Fit session state — persists across fit_chunk() calls.             */
 /* ------------------------------------------------------------------ */
@@ -120,6 +134,14 @@ typedef struct {
   int total_nfev;
   int last_info;
   double last_residual_norm;
+
+  /* Mid-chunk progress reporting (see g_progress_fn's own doc comment). <=0
+   * disables. chunk_nfev is evals-so-far in the *currently executing*
+   * fit_chunk call, reset at that call's start — total_nfev (above) only
+   * gets its own update *after* the chunk finishes, so total_nfev +
+   * chunk_nfev is the true live count while a chunk is still running. */
+  int progress_interval;
+  int chunk_nfev;
 } FitSession;
 
 static FitSession *g_fit = NULL;
@@ -187,6 +209,7 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
   (void)p;
   (void)m;
   FitSession *s = g_fit;
+  s->chunk_nfev++;
 
   /* Build the full parameter vector for this trial: fixed values from
    * s->pars, fitted values from x (undoing the log-space transform). */
@@ -261,6 +284,22 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
   free(y_interp);
   free(derived_out);
 
+  /* Mid-chunk progress — see g_progress_fn's own doc comment. Skipped on
+   * the idid<0 penalty path above (that fvec is an artificial large
+   * constant, not a real residual — reporting it would show as a fake
+   * spike on the chart) but fires on both iflag==1 and iflag==2 here,
+   * unlike the target-reached check below: fvec is a genuine, meaningful
+   * residual either way (iflag==2's fdjac2 perturbation is a tiny epsilon
+   * step off the last real trial, indistinguishable at display precision),
+   * and gating on iflag==1 only would make the reporting cadence
+   * inconsistent with total_nfev's own count (which includes both). */
+  if (s->progress_interval > 0 && g_progress_fn &&
+      s->chunk_nfev % s->progress_interval == 0) {
+    double ss = 0.0;
+    for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
+    g_progress_fn(s->total_nfev + s->chunk_nfev, sqrt(ss));
+  }
+
   /* iflag==1 is lmdif's "evaluate at this x" call — the actual trial point,
    * as opposed to fdjac2's iflag==2 perturbed calls used only to estimate
    * the Jacobian's columns. Checking the target on those would fire on a
@@ -301,6 +340,11 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
  * to or below this (see FIT_TARGET_REACHED) — pass a negative value to
  * disable and rely on lmdif's own convergence criteria only.
  *
+ * progress_interval: fires the registered progress callback (fit_set_
+ * progress_fn) every this many evaluations *within* a chunk — independent
+ * of fit_chunk's own maxfev budget, see g_progress_fn's own doc comment.
+ * <=0 disables mid-chunk reporting entirely.
+ *
  * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
  * parameter's initial value is <= 0 (log undefined).
  */
@@ -308,7 +352,7 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
              int *log_flags, int n_targets, int *target_kind, int *target_index,
              double *target_scale, int n_points, double *data_t, double *data_y,
              double t_end, int n_derived, int solver_id, double rtol, double atol,
-             double target_residual_norm) {
+             double target_residual_norm, int progress_interval) {
   fit_free();
 
   FitSession *s = (FitSession *)calloc(1, sizeof(FitSession));
@@ -353,6 +397,8 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
   s->atol = atol;
   s->target_residual_norm = target_residual_norm;
   s->total_nfev = 0;
+  s->progress_interval = progress_interval;
+  s->chunk_nfev = 0;
   s->last_info = 0;
   s->last_residual_norm = 0.0;
 
@@ -419,6 +465,11 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
 int fit_chunk(int maxfev) {
   FitSession *s = g_fit;
   if (!s) return -1;
+
+  /* Evals-so-far in *this* chunk (g_progress_fn's own doc comment) — reset
+   * here, not per lmdif restart-attempt below, so the mid-chunk progress
+   * counter increases monotonically across this whole external call. */
+  s->chunk_nfev = 0;
 
   const int n = s->n_fit;
   const int m = s->n_targets * s->n_points;

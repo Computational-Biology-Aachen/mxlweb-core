@@ -56,6 +56,57 @@ function postProgress(progress: FitProgress) {
   postMessage({ type: "FIT_PROGRESS", ...progress });
 }
 
+// Mid-chunk progress (ADR 0005 §2.5, `FitInitRequest.progressUpdateInterval`'s
+// doc comment) — a single JS callback shared across all three C drivers
+// (fit_wrapper.c/jacobian_wrapper.c/adjoint_wrapper.c each get their own
+// `*_set_progress_fn`, but the same registered table index), registered
+// once per worker lifetime the first time `mod` loads, not per fit session:
+// it's stateless itself, just reads whatever `session`/`currentChunkRequestId`
+// currently are at call time. `currentChunkRequestId` is set right before
+// each `_fit_chunk`/`_jacobian_chunk`/`_adjoint_chunk` call and read back
+// inside the callback, which fires *synchronously* from within that
+// (blocking, from JS's perspective) WASM call — calling back into other
+// exported WASM functions (`_fit_get_params` etc.) from here is safe, the
+// same reentrant JS<->WASM pattern `previewTrajectory` already relies on
+// one layer up, just one layer deeper here.
+let progressFnIdx: number | null = null;
+let currentChunkRequestId: string | null = null;
+
+function registerProgressFn(mod: EmscriptenModule) {
+  if (progressFnIdx !== null) return;
+  const onIntermediateProgress = (...args: unknown[]) => {
+    const n = args[0] as number;
+    const residualNorm = args[1] as number;
+    if (!session || currentChunkRequestId === null) return;
+    const outPtr = mod._malloc(session.nPars * 8);
+    let params: number[];
+    try {
+      if (session.backend === "adjoint") mod._adjoint_get_params(outPtr);
+      else if (session.backend === "lm-jacobian")
+        mod._jacobian_get_params(outPtr);
+      else mod._fit_get_params(outPtr);
+      params = Array.from(
+        mod.HEAPF64.subarray(outPtr / 8, outPtr / 8 + session.nPars),
+      );
+    } finally {
+      mod._free(outPtr);
+    }
+    postProgress({
+      requestId: currentChunkRequestId,
+      backend: session.backend === "adjoint" ? "adjoint" : "lm",
+      nfev: n,
+      residualNorm,
+      params,
+      done: false,
+      intermediate: true,
+    });
+  };
+  progressFnIdx = mod.addFunction(onIntermediateProgress, "vid");
+  mod._fit_set_progress_fn(progressFnIdx);
+  mod._jacobian_set_progress_fn(progressFnIdx);
+  mod._adjoint_set_progress_fn(progressFnIdx);
+}
+
 const SOLVER_ID: Record<FitSolver, number> = {
   radau5: 0,
   dop853: 1,
@@ -253,6 +304,7 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
       req.rtol,
       req.atol,
       req.targetResidualNorm ?? -1,
+      req.progressUpdateInterval ?? 0,
     );
   } finally {
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
@@ -356,6 +408,7 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
       req.rtol,
       req.atol,
       req.targetResidualNorm ?? -1,
+      req.progressUpdateInterval ?? 0,
     );
   } finally {
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
@@ -467,6 +520,7 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
       req.gradNormTol ?? -1,
       req.plateau?.patience ?? 0,
       req.plateau?.minDelta ?? 0,
+      req.progressUpdateInterval ?? 0,
     );
   } finally {
     for (const ptr of Object.values(ptrs)) mod._free(ptr);
@@ -514,6 +568,8 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     });
     return;
   }
+
+  currentChunkRequestId = req.requestId;
 
   if (session.backend === "adjoint") {
     handleAdjointChunk(req, mod, session);
@@ -688,6 +744,7 @@ onmessage = async function (event: MessageEvent) {
     );
     return;
   }
+  registerProgressFn(mod);
 
   try {
     switch (event.data.type) {

@@ -83,6 +83,16 @@ static ModelFn g_aug_fn = NULL;   /* jacobianWat: n_y*(1+n_theta) outputs */
 void jacobian_set_plain_fn(int table_idx) { g_plain_fn = (ModelFn)(intptr_t)table_idx; }
 void jacobian_set_augmented_fn(int table_idx) { g_aug_fn = (ModelFn)(intptr_t)table_idx; }
 
+/* Fires every `progress_interval` real evaluations from inside
+ * jacobian_fcn — see fit_wrapper.c's identical g_progress_fn doc comment
+ * for the full rationale (mid-chunk progress independent of jacobian_
+ * chunk's own correctness-mandated budget). Registered once, globally. */
+typedef void (*ProgressFn)(int, double);
+static ProgressFn g_progress_fn = NULL;
+void jacobian_set_progress_fn(int table_idx) {
+  g_progress_fn = (ProgressFn)(intptr_t)table_idx;
+}
+
 /* ------------------------------------------------------------------ */
 /* Fit session state — persists across jacobian_chunk() calls.        */
 /* ------------------------------------------------------------------ */
@@ -123,6 +133,11 @@ typedef struct {
   int total_nfev;
   int last_info;
   double last_residual_norm;
+
+  /* Mid-chunk progress reporting — see g_progress_fn's own doc comment and
+   * fit_wrapper.c's identical fields for the full rationale. */
+  int progress_interval;
+  int chunk_nfev;
 } JacobianSession;
 
 static JacobianSession *g_jac = NULL;
@@ -217,11 +232,27 @@ static void build_pars_full(JacobianSession *s, const double *x, double *pars_fu
 /* iflag==2: fill fjac (at the x set by the preceding iflag==1 call),    */
 /* don't touch fvec.                                                     */
 /* ------------------------------------------------------------------ */
+/* Mid-chunk progress — see g_progress_fn's own doc comment and
+ * fit_wrapper.c's identical helper for the full rationale. Called on both
+ * iflag==1 and iflag==2's *successful* paths (skipped on idid<0 penalty/
+ * zero-jacobian paths, whose fvec/residual isn't a meaningful trial point)
+ * — fvec is valid either way: freshly computed for iflag==1, or still
+ * holding the last iflag==1 call's value for iflag==2 (that branch never
+ * touches fvec, this file's own doc comment). */
+static void report_jacobian_progress(JacobianSession *s, int m, const double *fvec) {
+  if (s->progress_interval <= 0 || !g_progress_fn) return;
+  if (s->chunk_nfev % s->progress_interval != 0) return;
+  double ss = 0.0;
+  for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
+  g_progress_fn(s->total_nfev + s->chunk_nfev, sqrt(ss));
+}
+
 static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
                          double *fjac, int ldfjac, int iflag) {
   (void)p;
   (void)n;
   JacobianSession *s = g_jac;
+  s->chunk_nfev++;
 
   double *pars_full = (double *)malloc((size_t)s->n_pars * sizeof(double));
   if (!pars_full) return -1;
@@ -260,6 +291,8 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
     free_output();
     free(y_work);
     free(y_interp);
+
+    report_jacobian_progress(s, m, fvec);
 
     /* Same target-reached short-circuit as fit_wrapper.c's fit_fcn, checked
      * only on the real trial-point evaluation (iflag==1), not perturbed/
@@ -323,6 +356,8 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
   free(pars_full);
   free(y_aug);
   free(y_interp_aug);
+
+  report_jacobian_progress(s, m, fvec);
   return 1;
 }
 
@@ -336,6 +371,10 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
  * must be ascending; target_index is state-variable indices only (this
  * file's own doc comment).
  *
+ * progress_interval: see fit_init's identical parameter — fires the
+ * registered progress callback (jacobian_set_progress_fn) every this many
+ * evaluations within a chunk. <=0 disables.
+ *
  * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
  * parameter's initial value is <= 0.
  */
@@ -343,7 +382,7 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
                    int *theta_idx, int *log_flags, int n_targets, int *target_index,
                    double *target_scale, int n_points, double *data_t, double *data_y,
                    double t_end, int solver_id, double rtol, double atol,
-                   double target_residual_norm) {
+                   double target_residual_norm, int progress_interval) {
   jacobian_free();
 
   JacobianSession *s = (JacobianSession *)calloc(1, sizeof(JacobianSession));
@@ -385,6 +424,8 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
   s->atol = atol;
   s->target_residual_norm = target_residual_norm;
   s->total_nfev = 0;
+  s->progress_interval = progress_interval;
+  s->chunk_nfev = 0;
   s->last_info = 0;
   s->last_residual_norm = 0.0;
 
@@ -438,6 +479,10 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
 int jacobian_chunk(int maxfev) {
   JacobianSession *s = g_jac;
   if (!s) return -1;
+
+  /* See fit_chunk's identical reset — mid-chunk progress counter, not tied
+   * to the attempt-retry loop below. */
+  s->chunk_nfev = 0;
 
   const int n = s->n_theta;
   const int m = s->n_targets * s->n_points;
