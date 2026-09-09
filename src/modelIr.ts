@@ -356,7 +356,32 @@ export function buildJacobianGraph(
       expr.pushGradient(new Name(accumName), grads);
     }
 
-    dfDy.push(ir.varNames.map((name) => sumContributions(grads.get(name))));
+    // dfDy[k][m] gets embedded in *every* j's sensitivity equation for this
+    // k (n_theta times over — the sensitivity ODE's own coupling term,
+    // ∂f_k/∂y_m, doesn't depend on which fit parameter j the equation is
+    // for). Bind each one to a named intermediate here, exactly like the
+    // per-node accumulators above, so the WAT codegen (which shares an
+    // expression only when it's a `Name` reference to something already
+    // computed, same as `ir.intermediates` generally) computes it once and
+    // references it — not re-serializes the whole (potentially large, e.g.
+    // an NN block's reverse-mode expansion) expression n_theta times.
+    // Without this, a modest model (2 states, ~25 fit params, one small NN
+    // block) generated >1MB of WAT text with ~90k nodes, deep enough to
+    // stack-overflow the (separately recursive, non-tail-call) wat-compiler
+    // encoder — not from nesting depth (only ~30 levels) but from sheer
+    // duplicated node count. dfDTheta[k][j] doesn't need this: each entry
+    // is used exactly once (one equation per (j,k) pair), so there's
+    // nothing to share.
+    const dfDyRow: Base[] = [];
+    for (let m = 0; m < nY; m++) {
+      const dfdyName = `__jac_${k}_dfdy_${m}`;
+      accum.push({
+        name: dfdyName,
+        expr: sumContributions(grads.get(ir.varNames[m])),
+      });
+      dfDyRow.push(new Name(dfdyName));
+    }
+    dfDy.push(dfDyRow);
     dfDTheta.push(thetaNames.map((name) => sumContributions(grads.get(name))));
   }
 

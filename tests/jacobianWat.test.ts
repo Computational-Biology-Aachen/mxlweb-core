@@ -14,11 +14,13 @@
 import {
   KineticModelBuilder,
   additiveMechanism,
+  relativeMultiplyMechanism,
   softplusActivation,
   OdeModelBuilder,
 } from "@computational-biology-aachen/mxlweb-core";
 import { mathImports } from "@computational-biology-aachen/mxlweb-core/backends/wasm";
 import {
+  Minus,
   Mul,
   Name,
   Num,
@@ -220,5 +222,130 @@ describe("jacobian WAT: OdeModelBuilder with an active NN block", () => {
       .map((name, i) => (name.startsWith("corr_") ? i : -1))
       .filter((i) => i >= 0);
     expect(weightThetaIdx.some((j) => Math.abs(dfDTheta[j]) > 1e-6)).toBe(true);
+  });
+});
+
+describe("jacobian WAT: mechanistic reactions fit alongside a relative-multiply NN block", () => {
+  it("compiles without a stack overflow and matches finite differences (regression for buildJacobianGraph's unshared dfDy)", () => {
+    // Mirrors the UDE showcase's actual model (2 coupled state variables,
+    // 4 mechanistic reaction parameters, a trained relative-multiply NN
+    // block) — this exact combination used to generate >1MB of WAT (dfDy[k][m]
+    // re-serialized once per fit parameter instead of shared via a named
+    // intermediate) and crash wat-compiler's own recursive encoder with
+    // "Maximum call stack size exceeded", even though max paren nesting
+    // depth was a modest ~30 — the blowup was sheer duplicated node count,
+    // not nesting. Fitting the mechanistic parameters *alongside* the block
+    // (not just the block's own weights) is what triggers the duplication:
+    // n_theta grows past just the block's weights, multiplying dfDy's
+    // resend count.
+    const builder = new KineticModelBuilder()
+      .addVariable("Prey", { value: 10 })
+      .addVariable("Predator", { value: 10 })
+      .addParameter("Alpha", { value: 0.1 })
+      .addParameter("Beta", { value: 0.02 })
+      .addParameter("Gamma", { value: 0.4 })
+      .addParameter("Delta", { value: 0.02 })
+      .addReaction("prey_growth", {
+        fn: new Mul([new Name("Alpha"), new Name("Prey")]),
+        stoichiometry: [{ name: "Prey", value: new Num(1) }],
+      })
+      .addReaction("predation", {
+        fn: new Mul([new Name("Predator"), new Name("Prey")]),
+        stoichiometry: [
+          { name: "Prey", value: new Minus([new Name("Beta")]) },
+          { name: "Predator", value: new Name("Delta") },
+        ],
+      })
+      .addReaction("predator_death", {
+        fn: new Mul([new Name("Gamma"), new Name("Predator")]),
+        stoichiometry: [{ name: "Predator", value: new Num(-1) }],
+      })
+      .addNNBlock("ude_correction", {
+        inputs: ["Prey", "Predator"],
+        targets: ["Prey", "Predator"],
+        layers: [
+          { type: "dense", width: 4, activation: softplusActivation() },
+          { type: "dense", width: 2 },
+        ],
+        seed: 42,
+        scale: 0.01,
+        trained: true,
+        mechanism: relativeMultiplyMechanism(),
+      });
+
+    const nY = 2;
+    const weightNames = [...builder.nnBlockWeightNames("ude_correction")];
+    const thetaNames = [
+      "Alpha",
+      "Beta",
+      "ude_correction_scale",
+      ...weightNames,
+    ];
+    const nTheta = thetaNames.length;
+    expect(nTheta).toBeGreaterThan(20); // large enough to have tripped the bug
+
+    const jacobianWat = builder.buildJacobianWat(thetaNames);
+    // The bug was in *compiling* this (wat-compiler's own recursive
+    // encoder), not in generating the WAT text — buildJacobianWat alone
+    // never threw. Compiling it is the actual regression check.
+    const rhs = compileJsRhs(builder.buildJs());
+    const runJacobian = compileJacobianWat(
+      jacobianWat,
+      nY + nY * nTheta,
+      nY + nY * nTheta,
+    );
+
+    const y = [11.4, 9.6];
+    // Not resolveParameters(): that's mechanistic-only, and the WAT's
+    // pars_ptr is indexed against getAllAddressableNames() (parameters,
+    // then NN weights) — thetaNames here mixes both.
+    const allNames = builder.getAllAddressableNames();
+    const pars = builder.resolveAllAddressableValues();
+    // thetaNames is a reordered *subset* of allNames (skips Gamma/Delta) —
+    // buildJacobianGraph itself is name-based and doesn't care about this,
+    // but finite-differencing dfDTheta[k][j] needs to perturb thetaNames[j]'s
+    // *actual* position in pars, not treat j as a pars index directly.
+    const thetaParIdx = thetaNames.map((name) => allNames.indexOf(name));
+    const s = Array.from({ length: nTheta }, (_, j) => [
+      0.3 + 0.01 * j,
+      -0.2 + 0.01 * j,
+    ]); // s[j][k]
+
+    const yAug = [
+      ...y,
+      ...Array.from({ length: nTheta * nY }, (_, idx) => {
+        const j = Math.floor(idx / nY);
+        const k = idx % nY;
+        return s[j][k];
+      }),
+    ];
+    const dydtAug = runJacobian(yAug, pars);
+
+    const dfDy: number[][] = [];
+    const dfDThetaByJ: number[][] = [];
+    for (let k = 0; k < nY; k++) {
+      dfDy.push(
+        Array.from({ length: nY }, (_, m) =>
+          centralDiff((yy) => rhs(0, yy, pars)[k], y, m),
+        ),
+      );
+      dfDThetaByJ.push(
+        Array.from({ length: nTheta }, (_, j) =>
+          centralDiff((pp) => rhs(0, y, pp)[k], pars, thetaParIdx[j]),
+        ),
+      );
+    }
+
+    for (let k = 0; k < nY; k++) {
+      expect(dydtAug[k]).toBeCloseTo(rhs(0, y, pars)[k], 6);
+    }
+    for (let j = 0; j < nTheta; j++) {
+      for (let k = 0; k < nY; k++) {
+        const expected =
+          dfDy[k].reduce((acc, dkm, m) => acc + dkm * s[j][m], 0) +
+          dfDThetaByJ[k][j];
+        expect(dydtAug[nY + j * nY + k]).toBeCloseTo(expected, 3);
+      }
+    }
   });
 });
