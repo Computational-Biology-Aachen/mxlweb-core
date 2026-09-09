@@ -116,6 +116,36 @@ export interface EmscriptenModule {
   _adjoint_get_grad(outPtr: number): void;
   _adjoint_get_params(outPtr: number): void;
   _adjoint_free(): void;
+  /** Analytic-Jacobian "lm" exports (jacobian_wrapper.c) — used when a fit
+   * session's fitted set includes a small trained NN block, in place of
+   * fit_wrapper.c's finite-difference lmdif path. */
+  _jacobian_set_plain_fn(tableIdx: number): void;
+  _jacobian_set_augmented_fn(tableIdx: number): void;
+  _jacobian_init(
+    nY: number,
+    y0Ptr: number,
+    nPars: number,
+    parsPtr: number,
+    nTheta: number,
+    thetaIdxPtr: number,
+    logFlagsPtr: number,
+    nTargets: number,
+    targetIndexPtr: number,
+    targetScalePtr: number,
+    nPoints: number,
+    dataTPtr: number,
+    dataYPtr: number,
+    tEnd: number,
+    solverId: number,
+    rtol: number,
+    atol: number,
+    targetResidualNorm: number,
+  ): number;
+  _jacobian_chunk(maxfev: number): number;
+  _jacobian_get_nfev(): number;
+  _jacobian_get_residual_norm(): number;
+  _jacobian_get_params(outPtr: number): void;
+  _jacobian_free(): void;
   HEAPF64: Float64Array;
   HEAP32: Int32Array;
   wasmMemory: WebAssembly.Memory;

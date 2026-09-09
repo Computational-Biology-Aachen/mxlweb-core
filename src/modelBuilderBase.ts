@@ -3,6 +3,7 @@ import { Base, substituteName, type JsonNode } from "./mathml/index.js";
 import {
   evalInitialAssignment,
   irToAdjointWat,
+  irToJacobianWat,
   irToJs,
   irToJsDerived,
   irToPython,
@@ -833,6 +834,17 @@ export abstract class ModelBuilderBase {
    */
   buildAdjointWat(thetaNames: string[]): string {
     return irToAdjointWat(this.lower(), thetaNames);
+  }
+
+  /**
+   * The forward-sensitivity augmented-system WAT module for the given fitted
+   * parameter names (`modelIr.ts`'s `buildJacobianGraph`) — call only when
+   * actually starting an `"lm"` fit session with a small trained NN block,
+   * where an analytic Jacobian beats both finite-difference lmdif and
+   * adjoint+Adam.
+   */
+  buildJacobianWat(thetaNames: string[]): string {
+    return irToJacobianWat(this.lower(), thetaNames);
   }
 
   /** WAT module computing `selectedDerived` (see ADR 0004 in the mxlweb repo). */

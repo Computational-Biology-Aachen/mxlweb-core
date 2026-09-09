@@ -143,10 +143,15 @@ function adjointInfoToReason(info: number): FitStopReason {
 }
 
 interface FitSession {
-  backend: "lm" | "adjoint";
-  /** "lm": the forward model_fn. "adjoint": also the forward model_fn (registered via set_forward_model_fn instead of set_model_fn — see handleAdjointInit). */
+  /** "lm-jacobian" is an internal-only variant of "lm" (jacobian_wrapper.c's
+   * analytic-Jacobian lmder path, `handleJacobianInit`) — reported to the
+   * caller as plain "lm" (see `FitInitRequest.jacobianWat`'s doc comment),
+   * distinguished here only so handleFitChunk/handleFitFree call the right
+   * exported C functions. */
+  backend: "lm" | "lm-jacobian" | "adjoint";
+  /** "lm": the forward model_fn. "lm-jacobian": the plain (cheap) forward model_fn. "adjoint": also the forward model_fn (registered via set_forward_model_fn instead of set_model_fn — see handleAdjointInit). */
   primaryFnIdx: number;
-  /** "lm": derived_fn, if any target needed one. "adjoint": the adjoint_fn — always present, never null (adjointWat is required for this backend). */
+  /** "lm": derived_fn, if any target needed one. "lm-jacobian": the augmented (forward-sensitivity) model_fn — always present. "adjoint": the adjoint_fn — always present, never null (adjointWat is required for this backend). */
   secondaryFnIdx: number | null;
   nPars: number;
 }
@@ -178,6 +183,10 @@ function fitInitError(rc: number): string {
 async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
   if (req.backend === "adjoint") {
     await handleAdjointInit(req, mod);
+    return;
+  }
+  if (req.jacobianWat) {
+    await handleJacobianInit(req, mod);
     return;
   }
 
@@ -270,6 +279,109 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
     requestId: req.requestId,
     ok: true,
     initialResidualNorm: mod._fit_get_residual_norm(),
+  });
+}
+
+/**
+ * The "lm" backend's analytic-Jacobian path (`req.jacobianWat` present,
+ * `FitInitRequest.jacobianWat`'s doc comment) — jacobian_wrapper.c's `lmder`
+ * driver in place of fit_wrapper.c's finite-difference `lmdif`. Compiles
+ * *two* forward RHS functions, unlike the plain "lm" path's one:
+ * `req.rhsWat` (cheap, n_y outputs) for residual-only evaluations and
+ * `req.jacobianWat` (n_y*(1+n_theta) outputs) for Jacobian evaluations —
+ * jacobian_wrapper.c switches between them per MINPACK's iflag, exactly the
+ * efficiency win a finite-difference Jacobian doesn't have (one augmented
+ * solve instead of n_theta+1 perturbed forward solves).
+ */
+async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
+  if (req.targets.some((t) => t.kind === "derived")) {
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error:
+        'The analytic-Jacobian "lm" path only supports state-variable fit targets, not derived quantities — see jacobianWat\'s doc comment on FitInitRequest.',
+    });
+    return;
+  }
+
+  const plainInstance = await compileModel(req.rhsWat, mod, basePath);
+  const plainFn = plainInstance.exports.fcn as (...args: unknown[]) => void;
+  const plainFnIdx = mod.addFunction(plainFn, "vidiii");
+  mod._jacobian_set_plain_fn(plainFnIdx);
+
+  const augInstance = await compileModel(req.jacobianWat!, mod, basePath);
+  const augFn = augInstance.exports.fcn as (...args: unknown[]) => void;
+  const augFnIdx = mod.addFunction(augFn, "vidiii");
+  mod._jacobian_set_augmented_fn(augFnIdx);
+
+  const nPoints = req.dataT.length;
+  const ptrs = {
+    y0: allocF64(mod, req.y0),
+    pars: allocF64(mod, req.pars),
+    fitIdx: allocI32(mod, req.fitIdx),
+    logFlags: allocI32(
+      mod,
+      req.logFlags.map((b) => (b ? 1 : 0)),
+    ),
+    targetIndex: allocI32(
+      mod,
+      req.targets.map((t) => t.index),
+    ),
+    targetScale: allocF64(
+      mod,
+      req.targets.map((t) => t.scale),
+    ),
+    dataT: allocF64(mod, req.dataT),
+    dataY: allocF64(mod, req.dataY),
+  };
+
+  let rc: number;
+  try {
+    rc = mod._jacobian_init(
+      req.y0.length,
+      ptrs.y0,
+      req.pars.length,
+      ptrs.pars,
+      req.fitIdx.length,
+      ptrs.fitIdx,
+      ptrs.logFlags,
+      req.targets.length,
+      ptrs.targetIndex,
+      ptrs.targetScale,
+      nPoints,
+      ptrs.dataT,
+      ptrs.dataY,
+      req.tEnd,
+      SOLVER_ID[req.solver],
+      req.rtol,
+      req.atol,
+      req.targetResidualNorm ?? -1,
+    );
+  } finally {
+    for (const ptr of Object.values(ptrs)) mod._free(ptr);
+  }
+
+  if (rc !== 0) {
+    mod.removeFunction(plainFnIdx);
+    mod.removeFunction(augFnIdx);
+    postInitResult({
+      requestId: req.requestId,
+      ok: false,
+      error: fitInitError(rc),
+    });
+    return;
+  }
+
+  session = {
+    backend: "lm-jacobian",
+    primaryFnIdx: plainFnIdx,
+    secondaryFnIdx: augFnIdx,
+    nPars: req.pars.length,
+  };
+  postInitResult({
+    requestId: req.requestId,
+    ok: true,
+    initialResidualNorm: mod._jacobian_get_residual_norm(),
   });
 }
 
@@ -407,6 +519,10 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     handleAdjointChunk(req, mod, session);
     return;
   }
+  if (session.backend === "lm-jacobian") {
+    handleJacobianChunk(req, mod, session);
+    return;
+  }
 
   const info = mod._fit_chunk(req.maxIterations);
   const outPtr = mod._malloc(session.nPars * 8);
@@ -425,9 +541,48 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
   const done = info !== 5;
   postProgress({
     requestId: req.requestId,
-    backend: session.backend,
+    backend: "lm",
     nfev: mod._fit_get_nfev(),
     residualNorm: mod._fit_get_residual_norm(),
+    params,
+    done,
+    reason: done ? infoToReason(info) : undefined,
+    err:
+      info < 0 && info !== FIT_TARGET_REACHED
+        ? {
+            message: `Fit failed (code ${info}).`,
+            hints: ["Check the browser console."],
+          }
+        : undefined,
+  });
+}
+
+/** The "lm" backend's analytic-Jacobian path (session.backend ===
+ * "lm-jacobian", `handleJacobianInit`) — same lmdif-derived `info` code
+ * semantics as the plain "lm" path (`infoToReason`/`FIT_TARGET_REACHED`
+ * apply unchanged), reported to the caller as ordinary "lm" (this file's own
+ * `FitSession.backend` doc comment). */
+function handleJacobianChunk(
+  req: FitChunkRequest,
+  mod: EmscriptenModule,
+  s: FitSession,
+) {
+  const info = mod._jacobian_chunk(req.maxIterations);
+  const outPtr = mod._malloc(s.nPars * 8);
+  let params: number[];
+  try {
+    mod._jacobian_get_params(outPtr);
+    params = Array.from(mod.HEAPF64.subarray(outPtr / 8, outPtr / 8 + s.nPars));
+  } finally {
+    mod._free(outPtr);
+  }
+
+  const done = info !== 5;
+  postProgress({
+    requestId: req.requestId,
+    backend: "lm",
+    nfev: mod._jacobian_get_nfev(),
+    residualNorm: mod._jacobian_get_residual_norm(),
     params,
     done,
     reason: done ? infoToReason(info) : undefined,
@@ -480,6 +635,8 @@ function handleAdjointChunk(
 function handleFitFree(req: FitFreeRequest, mod: EmscriptenModule) {
   if (session?.backend === "adjoint") {
     mod._adjoint_free();
+  } else if (session?.backend === "lm-jacobian") {
+    mod._jacobian_free();
   } else {
     mod._fit_free();
   }
@@ -513,7 +670,7 @@ onmessage = async function (event: MessageEvent) {
     } else {
       postProgress({
         requestId: event.data.requestId,
-        backend: session?.backend ?? "lm",
+        backend: session?.backend === "adjoint" ? "adjoint" : "lm",
         nfev: 0,
         residualNorm: 0,
         params: [],

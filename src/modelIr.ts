@@ -277,6 +277,135 @@ export function irToAdjointWat(ir: ModelIR, thetaNames: string[]): string {
   );
 }
 
+/**
+ * Symbolic name for the forward-sensitivity component `∂y_{stateIdx}/∂θ_{thetaIdx}`
+ * (a "just another state variable" trick — {@link buildJacobianGraph}'s doc
+ * comment). Double-underscore prefixed, same collision-avoidance reasoning as
+ * {@link adjointLambdaName}.
+ */
+export function sensitivityName(thetaIdx: number, stateIdx: number): string {
+  return `__sens_${thetaIdx}_${stateIdx}`;
+}
+
+/** Output of {@link buildJacobianGraph}: an *extended* model — original state
+ * variables plus one sensitivity component per (fit parameter × state) pair —
+ * ready to hand to `buildModelWat` unchanged. */
+export interface JacobianGraph {
+  varNames: string[];
+  equations: { varName: string; expr: Base }[];
+  intermediates: ModelIntermediate[];
+}
+
+/**
+ * Forward-sensitivity augmented system for the "lm" backend's analytic
+ * Jacobian (grill-me follow-up to ADR 0005 §2.3/§2.4 — that ADR's own
+ * reasoning for choosing adjoint+Adam over lmdif+finite-differences was
+ * "lmdif needs the full residual Jacobian, which reverse-mode/adjoint isn't
+ * cheap for"; forward sensitivity is a *third* option that ADR never
+ * considered, cheap exactly when reverse-mode is expensive — few fit
+ * parameters, many residuals — the small-NN-block regime this exists for).
+ *
+ * For sensitivity `s_{k,j} = ∂y_k/∂θ_j`, the variational equation is
+ * `ds_{k,j}/dt = Σ_m (∂f_k/∂y_m)·s_{m,j} + ∂f_k/∂θ_j`. Both per-equation
+ * partial-derivative rows — `∂f_k/∂y_m` for every m, `∂f_k/∂θ_j` for every j
+ * — come from *one* reverse-mode pass over `f_k` (seed `1`, not `n_theta`
+ * separate forward-mode passes): reverse-mode gives a full row of partials
+ * per output in one sweep, and there are only `n_y` outputs (equations) to
+ * differentiate, however large `n_theta` gets — the same "cheap outputs,
+ * expensive inputs" shape `buildAdjointGraph` exploits for its own single
+ * combined pass, just done once per equation here instead of once total
+ * (there's no single scalar loss to combine into, since a Jacobian needs
+ * every equation's own row, not one weighted sum of them).
+ *
+ * Each state k's sensitivity vectors (`s_{k,0..n_theta-1}`) are declared as
+ * ordinary *extra state variables* — `Name(sensitivityName(j,k))` resolves
+ * through the exact same `varIndex` machinery `y`/`pars` already use
+ * (`WatContext`/`Name.toWat`), so the augmented system needs no new WAT
+ * plumbing at all (contrast `buildAdjointGraph`, whose backward-integration,
+ * separately-signed lambda/theta-gradient output needs `buildAdjointWat`'s
+ * own `lambdaIndex`/out-pointer machinery): `buildModelWat` already treats
+ * "more state variables, more equations, same y_ptr/f_ptr buffers" as its
+ * ordinary case.
+ */
+export function buildJacobianGraph(
+  ir: ModelIR,
+  thetaNames: string[],
+): JacobianGraph {
+  const nY = ir.varNames.length;
+  const nTheta = thetaNames.length;
+
+  // One reverse pass per equation k, independent of the others (and of
+  // buildAdjointGraph's own pass) — each gets its own accumulator locals
+  // (`__jac_${k}_accum_...`) so the n_y passes can't collide while still
+  // sharing work *within* a pass the same way buildAdjointGraph does.
+  const accum: ModelIntermediate[] = [];
+  const dfDy: Base[][] = []; // dfDy[k][m] = ∂f_k/∂y_m
+  const dfDTheta: Base[][] = []; // dfDTheta[k][j] = ∂f_k/∂θ_j
+
+  for (let k = 0; k < nY; k++) {
+    const fK = rhsOf(ir, ir.varNames[k]);
+    const grads: GradMap = new Map();
+    fK.pushGradient(new Num(1), grads);
+
+    for (let i = ir.intermediates.length - 1; i >= 0; i--) {
+      const { name, expr } = ir.intermediates[i];
+      const contributions = grads.get(name);
+      if (!contributions || contributions.length === 0) continue;
+      const accumName = `__jac_${k}_accum_${name}`;
+      accum.push({ name: accumName, expr: sumContributions(contributions) });
+      expr.pushGradient(new Name(accumName), grads);
+    }
+
+    dfDy.push(ir.varNames.map((name) => sumContributions(grads.get(name))));
+    dfDTheta.push(thetaNames.map((name) => sumContributions(grads.get(name))));
+  }
+
+  const sensVarNames: string[] = [];
+  for (let j = 0; j < nTheta; j++) {
+    for (let k = 0; k < nY; k++) sensVarNames.push(sensitivityName(j, k));
+  }
+
+  const sensEquations: { varName: string; expr: Base }[] = [];
+  for (let j = 0; j < nTheta; j++) {
+    for (let k = 0; k < nY; k++) {
+      const terms: Base[] = ir.varNames.map(
+        (_, m) => new Mul([dfDy[k][m], new Name(sensitivityName(j, m))]),
+      );
+      terms.push(dfDTheta[k][j]);
+      sensEquations.push({
+        varName: sensitivityName(j, k),
+        expr: new Add(terms),
+      });
+    }
+  }
+
+  return {
+    varNames: [...ir.varNames, ...sensVarNames],
+    equations: [
+      ...ir.varNames.map((name) => ({ varName: name, expr: rhsOf(ir, name) })),
+      ...sensEquations,
+    ],
+    intermediates: [...ir.intermediates, ...accum],
+  };
+}
+
+/**
+ * irToJacobianWat — the forward-sensitivity augmented-system WAT module
+ * (`buildJacobianGraph`'s doc comment): `n_y + n_y·n_theta` state variables,
+ * generated lazily by callers only when a fit session actually needs the
+ * "lm" backend's analytic-Jacobian path (small trained NN block(s)).
+ */
+export function irToJacobianWat(ir: ModelIR, thetaNames: string[]): string {
+  const graph = buildJacobianGraph(ir, thetaNames);
+  return buildModelWat(
+    graph.equations,
+    graph.varNames,
+    ir.parNames,
+    "time",
+    graph.intermediates,
+  );
+}
+
 function transitiveDerivedDeps(
   intermediates: ModelIntermediate[],
   selectedKeys: string[],

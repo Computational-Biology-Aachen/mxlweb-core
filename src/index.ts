@@ -163,6 +163,22 @@ export interface FitInitRequest {
    * doc comment for why.
    */
   adjointWat?: string;
+  /**
+   * The forward-sensitivity augmented-system WAT module (`ModelBuilderBase.
+   * buildJacobianWat`, `modelIr.ts`'s `buildJacobianGraph`) — when present,
+   * the `"lm"` backend uses `jacobian_wrapper.c`'s analytic-Jacobian `lmder`
+   * path instead of `fit_wrapper.c`'s finite-difference `lmdif`, in place of
+   * (not alongside) `backend: "adjoint"`: small trained NN blocks make
+   * finite differences numerically unreliable (a `scale`-damped output can
+   * fall below the perturbation noise floor) without needing Adam's much
+   * slower per-step convergence. Ignored under `backend: "adjoint"`.
+   * Reported to the caller as an ordinary `"lm"` result either way (`ADR
+   * 0005 §2.4`'s "the audience should never need to know an optimizer
+   * choice exists" — this is one more such choice, not a new backend).
+   * Same v1 state-variable-only target restriction as `adjointWat`, for the
+   * same reason (`jacobian_wrapper.c`'s own doc comment).
+   */
+  jacobianWat?: string;
   y0: number[];
   /** Full parameter vector — fixed values stay put; fitted values (selected
    * by `fitIdx`) are the initial guess. */
