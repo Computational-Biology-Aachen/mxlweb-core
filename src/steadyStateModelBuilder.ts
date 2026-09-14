@@ -6,6 +6,7 @@ import {
   ModelBuilderBase,
   type MxlEntity,
   type MxlKind,
+  type NNBlockConfig,
 } from "./modelBuilderBase.js";
 
 /**
@@ -55,7 +56,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
    * silent no-op, which would let `Parameter`s and an `nnBlocks` entry
    * appear while nothing ever actually consumed the block's output.
    */
-  protected wireNNBlockOutputs(): void {
+  protected wireNNBlockOutputs(_config: NNBlockConfig): void {
     throw new Error(
       "NN blocks aren't supported on SteadyStateModelBuilder — there's no differential equation for a correction term to feed into",
     );

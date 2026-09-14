@@ -176,6 +176,7 @@ describe("jacobian WAT: OdeModelBuilder with an active NN block", () => {
           { type: "dense", width: 1 },
         ],
         seed: 1,
+        targetKind: "variable",
         targets: ["x"],
         trained: true,
         scale: 0.1,
@@ -262,6 +263,7 @@ describe("jacobian WAT: mechanistic reactions fit alongside a relative-multiply 
       })
       .addNNBlock("ude_correction", {
         inputs: ["Prey", "Predator"],
+        targetKind: "variable",
         targets: ["Prey", "Predator"],
         layers: [
           { type: "dense", width: 4, activation: softplusActivation() },

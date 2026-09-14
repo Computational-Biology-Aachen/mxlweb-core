@@ -7,6 +7,7 @@ import {
   ModelBuilderBase,
   type MxlEntity,
   type MxlKind,
+  type NNBlockConfig,
 } from "./modelBuilderBase.js";
 
 /**
@@ -64,10 +65,30 @@ export class OdeModelBuilder extends ModelBuilderBase {
     );
   }
 
-  // NN block wiring uses ModelBuilderBase's default no-op — dxdtExpr below
-  // is purely mechanistic; ModelBuilderBase.composeNNBlocks handles every
-  // block, for every builder, at the shared lower() stage instead (see
-  // NNBlockConfig.mechanism's doc comment).
+  // dxdtExpr below is purely mechanistic; ModelBuilderBase.composeNNBlocks
+  // handles every variable-mode block, for every builder, at the shared
+  // lower() stage instead (see NNBlockConfig.mechanism's doc comment).
+
+  /**
+   * A `"reaction"`-targeted block corrects a reaction's rate law
+   * (`NNBlockConfig.targetKind`'s doc comment) — there are no reactions
+   * here (dx/dt is authored directly, per-equation), so there's no
+   * sensible wiring target. Throwing at `addNNBlock` time matches
+   * `SteadyStateModelBuilder`'s existing pattern for a wiring request this
+   * builder can't satisfy; ode-model.schema.json's `target_kind` enum
+   * already restricts a *serialized* block to `"variable"` only, but a
+   * hand-built `NNBlockConfig` literal (e.g. from mxlweb-core's own tests)
+   * bypasses schema validation entirely, so this is the app-level
+   * backstop. A `"variable"`-targeted block still gets the base class's
+   * no-op — nothing to wire, `dxdtExpr` above is purely mechanistic.
+   */
+  protected wireNNBlockOutputs(config: NNBlockConfig): void {
+    if (config.targetKind !== "variable") {
+      throw new Error(
+        `addNNBlock: OdeModelBuilder only supports targetKind "variable" (got "${config.targetKind}") — there are no reactions here for a "reaction"-targeted block to correct`,
+      );
+    }
+  }
 
   /** Set the dx/dt expression for an existing variable. */
   setDifferential(key: string, fn: Base) {

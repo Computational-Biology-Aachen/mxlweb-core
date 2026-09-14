@@ -287,10 +287,22 @@ export class KineticModelBuilder extends ModelBuilderBase {
   }
 
   protected extraIntermediates(): Map<string, IntermediateDef> {
+    // Reaction-mode NN blocks correct a reaction's rate law here, before
+    // dxdtExpr's stoichiometry sum ever runs — see NNBlockConfig.
+    // targetKind's doc comment. Variable-mode blocks are unaffected: they
+    // compose later, in ModelBuilderBase.lower(), onto dxdtExpr's output.
+    const rawFns = new Map(
+      [...this.reactions.entries()].map(([key, rxn]) => [key, rxn.fn]),
+    );
+    const composedFns = this.composeReactionNNBlocks(rawFns);
     return new Map(
       [...this.reactions.entries()].map(([key, rxn]) => [
         key,
-        { fn: rxn.fn, displayName: rxn.displayName, texName: rxn.texName },
+        {
+          fn: composedFns.get(key)!,
+          displayName: rxn.displayName,
+          texName: rxn.texName,
+        },
       ]),
     );
   }
@@ -349,11 +361,36 @@ export class KineticModelBuilder extends ModelBuilderBase {
 
     // Collect rhs terms per variable — this.reactions never contains a
     // block-owned entry (NNBlockConfig.mechanism's doc comment), so this is
-    // purely the mechanistic, hand-authored contribution.
+    // purely the mechanistic, hand-authored contribution, with any
+    // reaction-mode NN block's correction folded into that reaction's own
+    // tex first (composeReactionNNBlockTex) — the same rate-law-level
+    // composition extraIntermediates applies numerically, so the rendered
+    // equation matches what actually simulates.
     const rhs: Record<string, { tex: string; value: Base }[]> =
       Object.fromEntries([...this.variables.entries()].map(([k]) => [k, []]));
-    this.reactions.entries().forEach(([, rxn]) => {
-      const rxnTex = rxn.fn.toTex(texNames);
+    this.reactions.entries().forEach(([rxnKey, rxn]) => {
+      const mechanisticRxnTex = rxn.fn.toTex(texNames);
+      const composedRxnTex = this.composeReactionNNBlockTex(
+        rxnKey,
+        mechanisticRxnTex,
+      );
+      // renderTerms below builds `coeff \cdot term`/`- term` by string
+      // interpolation, not through Base.toTex's own precedence-aware
+      // parenthesization (it has no AST to inspect — `tex` is already a
+      // rendered string) — safe for a raw rate law's tex (rxn.fn.toTex
+      // already parenthesizes any of its own sub-expressions that need it
+      // when embedded as a single term), but composeReactionNNBlockTex can
+      // return a top-level sum (e.g. additiveMechanism's `f + NN(x)`) that
+      // itself needs wrapping before a sign/coefficient is prepended to it.
+      // Comparing against the untouched mechanisticRxnTex (returned
+      // byte-identical when no reaction-mode block targets rxnKey) limits
+      // the extra parens to exactly the reactions composition actually
+      // changed, leaving every model with no such block's rendering
+      // pixel-identical to before this existed.
+      const rxnTex =
+        composedRxnTex === mechanisticRxnTex
+          ? composedRxnTex
+          : `(${composedRxnTex})`;
       rxn.stoichiometry.forEach(({ name: varName, value: stoich }) => {
         rhs[varName].push({ tex: rxnTex, value: stoich });
       });

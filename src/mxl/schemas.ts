@@ -105,6 +105,7 @@ export const kineticSchema: JsonSchema = {
         "inputs",
         "layers",
         "seed",
+        "target_kind",
         "targets",
         "trained",
         "scale",
@@ -134,10 +135,16 @@ export const kineticSchema: JsonSchema = {
           description:
             "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated and whenever trained is false (no weights_ref to load instead).",
         },
+        target_kind: {
+          type: "string",
+          enum: ["variable", "reaction"],
+          description:
+            "What targets names. \"variable\" corrects a state variable's dx/dt directly, composing mechanism onto the purely mechanistic dx/dt. \"reaction\" corrects a named reaction's rate law instead, composing mechanism onto that reaction's fn before the model's own stoichiometry fans it out into dx/dt — one correction then applies consistently across every variable that reaction's stoichiometry touches, exactly like the mechanistic rate law itself.",
+        },
         targets: {
           type: "array",
           description:
-            "Which existing variable(s) this block corrects — one entry per output, in order.",
+            "Which existing variable(s) or reaction(s) (per target_kind) this block corrects — one entry per output, in order.",
           items: {
             type: "string",
           },
@@ -729,6 +736,7 @@ export const odeSchema: JsonSchema = {
         "inputs",
         "layers",
         "seed",
+        "target_kind",
         "targets",
         "trained",
         "scale",
@@ -757,6 +765,12 @@ export const odeSchema: JsonSchema = {
           type: "integer",
           description:
             "Seed for reproducible Glorot-uniform weight initialization, used once when the block is (re-)generated and whenever trained is false (no weights_ref to load instead).",
+        },
+        target_kind: {
+          type: "string",
+          enum: ["variable"],
+          description:
+            'What targets names — always "variable" for an ode-model (dx/dt is authored directly, per-equation; there is no reaction/stoichiometry concept to correct at a finer grain here). Present, not omitted, for schema symmetry with kinetic-model.schema.json, which also allows "reaction".',
         },
         targets: {
           type: "array",

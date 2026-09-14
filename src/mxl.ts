@@ -192,6 +192,7 @@ function addNNBlocks(
       inputs: entry.inputs!,
       layers: entry.layers!.map((layer) => nnBlockLayer(layer)),
       seed: entry.seed!,
+      targetKind: entry.target_kind!,
       targets: entry.targets!,
       trained: entry.trained!,
       scale: entry.scale!,

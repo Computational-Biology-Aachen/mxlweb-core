@@ -36,6 +36,7 @@ function makeSmallBlock(): NNBlockConfig {
       { type: "dense", width: 1 },
     ],
     seed: 1,
+    targetKind: "variable",
     targets: ["x"],
     trained: true,
     scale: 0.1,
@@ -282,6 +283,80 @@ describe("KineticModelBuilder.buildTex with an NN block", () => {
     for (const name of builder.nnWeights.keys()) {
       expect(tex).not.toContain(name);
     }
+  });
+});
+
+describe('KineticModelBuilder.addNNBlock with targetKind: "reaction"', () => {
+  it("corrects the reaction's rate — one shared correction flows through the reaction's own stoichiometry into every variable it touches, rather than being applied independently per variable", () => {
+    const makeBuilder = (withBlock: boolean) => {
+      let b = new KineticModelBuilder()
+        .addVariable("x", { value: 1 })
+        .addVariable("y", { value: 1 })
+        .addReaction("v1", {
+          fn: new Num(0),
+          stoichiometry: [
+            { name: "x", value: new Num(-1) },
+            { name: "y", value: new Num(2) },
+          ],
+        });
+      if (withBlock) {
+        b = b.addNNBlock("corr", {
+          ...makeSmallBlock(),
+          targetKind: "reaction",
+          targets: ["v1"],
+        });
+      }
+      return b;
+    };
+
+    const [dxdtBefore, dydtBefore] = evalJs(makeBuilder(false).buildJs(), [
+      0,
+      [1, 1],
+      makeBuilder(false).resolveAllAddressableValues(),
+    ]);
+    expect(dxdtBefore).toBeCloseTo(0, 12);
+    expect(dydtBefore).toBeCloseTo(0, 12);
+
+    const withBlock = makeBuilder(true);
+    const [dxdtAfter, dydtAfter] = evalJs(withBlock.buildJs(), [
+      0,
+      [1, 1],
+      withBlock.resolveAllAddressableValues(),
+    ]);
+    expect(dxdtAfter).not.toBeCloseTo(0, 8);
+    // v1's stoichiometry is x:-1, y:+2 -- the *same* corrected rate feeds
+    // both, so dydt/dxdt must equal -2 regardless of what the network
+    // actually outputs.
+    expect(dydtAfter).toBeCloseTo(-2 * dxdtAfter, 8);
+  });
+
+  it("buildTex inlines the composed rate (not the raw fn=0) into every variable the reaction touches", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addReaction("v1", {
+        fn: new Num(0),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      })
+      .addNNBlock("corr", {
+        ...makeSmallBlock(),
+        targetKind: "reaction",
+        targets: ["v1"],
+      });
+    expect(builder.buildTex()).toContain("NN_{corr}(\\vec{x})");
+  });
+});
+
+describe('OdeModelBuilder.addNNBlock rejects targetKind: "reaction"', () => {
+  it("throws — no reactions here for a reaction-mode block to correct — and leaves the builder untouched", () => {
+    const builder = new OdeModelBuilder().addVariable("x", { value: 1 });
+    expect(() =>
+      builder.addNNBlock("corr", {
+        ...makeSmallBlock(),
+        targetKind: "reaction",
+        targets: ["v1"],
+      }),
+    ).toThrow(/targetKind/);
+    expect(builder.nnBlocks.size).toBe(0);
   });
 });
 

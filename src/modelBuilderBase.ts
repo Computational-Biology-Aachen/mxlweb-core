@@ -56,7 +56,22 @@ export type NNBlockConfig = {
   layers: NNBlockLayer[];
   /** Seed for reproducible Glorot initialization (used once, at `addNNBlock` time, and whenever the block has no trained weights to load instead). */
   seed: number;
-  /** Which existing variable(s) this block corrects — one per output, so its length *is* the block's output count. */
+  /**
+   * What `targets` names. `"variable"` corrects a state variable's dx/dt
+   * directly, composing `mechanism` onto the purely mechanistic dx/dt
+   * (`ModelBuilderBase.composeNNBlocks`, at `lower()` time). `"reaction"`
+   * corrects a named reaction's rate law instead, composing `mechanism`
+   * onto that reaction's `fn` *before* the model's own stoichiometry fans
+   * it out into dx/dt (`KineticModelBuilder.extraIntermediates`) — one
+   * correction then applies consistently across every variable that
+   * reaction's stoichiometry touches, exactly like the mechanistic rate
+   * law itself. Only `KineticModelBuilder` has reactions to target:
+   * `OdeModelBuilder.wireNNBlockOutputs` throws if this is ever
+   * `"reaction"` there, mirroring `SteadyStateModelBuilder`'s existing
+   * throw-on-`addNNBlock` pattern.
+   */
+  targetKind: "variable" | "reaction";
+  /** Which existing variable(s) or reaction(s) (per {@link targetKind}) this block corrects — one per output, so its length *is* the block's output count. */
   targets: string[];
   /** Whether this block's weights (and its `scale`) are included when fitting (ADR 0005 §2.1.3's per-block toggle) — a UI/fit-config concern downstream (`mxl-web`), not interpreted here. */
   trained: boolean;
@@ -203,6 +218,7 @@ export type MxlEntity = {
   inputs?: string[];
   layers?: MxlNNLayer[];
   seed?: number;
+  target_kind?: "variable" | "reaction";
   targets?: string[];
   trained?: boolean;
   weights_ref?: string;
@@ -295,15 +311,20 @@ export abstract class ModelBuilderBase {
   /**
    * Builder-specific wiring for a freshly-added NN block's output
    * expressions. Default no-op: neither `KineticModelBuilder` nor
-   * `OdeModelBuilder` needs any stored wiring — `composeNNBlocks` handles
-   * every block uniformly at `lower()` time instead (this used to have
+   * `OdeModelBuilder` needs any stored wiring — `composeNNBlocks`/
+   * `composeReactionNNBlocks` handle every block uniformly at `lower()`/
+   * `extraIntermediates()` time instead (this used to have
    * `KineticModelBuilder` add one ordinary reaction per output; retired
    * once a multiplicative block made that impossible to keep doing
    * consistently — see `NNBlockConfig.mechanism`'s doc comment).
    * `SteadyStateModelBuilder` overrides this to throw instead (no dx/dt for
-   * a correction term to feed into).
+   * a correction term to feed into); `OdeModelBuilder` overrides it to
+   * throw only for a `targetKind: "reaction"` block (no reactions to
+   * correct there either, but `"variable"` is fine). `config` is passed
+   * (unused by the default no-op) so those overrides can inspect
+   * `targetKind` without `addNNBlock` needing a separate validation hook.
    */
-  protected wireNNBlockOutputs(): void {}
+  protected wireNNBlockOutputs(_config: NNBlockConfig): void {}
   /** Inverse of {@link wireNNBlockOutputs}, called by {@link removeNNBlock}. Default no-op for the same reason. */
   protected unwireNNBlockOutputs(): void {}
 
@@ -414,7 +435,7 @@ export abstract class ModelBuilderBase {
     // (no dx/dt for a correction term to feed into) — calling it before
     // touching `nnWeights`/`parameters`/`nnBlocks` means that throw leaves
     // the builder completely untouched instead of half-mutated.
-    this.wireNNBlockOutputs();
+    this.wireNNBlockOutputs(config);
     for (const [name, value] of trainedWeights ?? weights) {
       this.nnWeights.set(name, value);
     }
@@ -539,8 +560,32 @@ export abstract class ModelBuilderBase {
    * `composeNNBlocks`'s move to sequential threading).
    */
   protected composeNNBlockTex(varName: string, mechanisticTex: string): string {
-    const targeting = [...this.nnBlocks.entries()].filter(([, config]) =>
-      config.targets.includes(varName),
+    return this.composeNNBlockTexByKind(varName, mechanisticTex, "variable");
+  }
+
+  /**
+   * {@link composeNNBlockTex}'s sibling for a reaction's rate-law tex,
+   * called from `KineticModelBuilder.buildTex` with a reaction's own key
+   * instead of a variable's — the two are identical except which
+   * `targetKind` of block they fold in, since a reaction-mode block's
+   * `targets` names reactions rather than variables (`NNBlockConfig.
+   * targetKind`'s doc comment).
+   */
+  protected composeReactionNNBlockTex(
+    rxnName: string,
+    mechanisticTex: string,
+  ): string {
+    return this.composeNNBlockTexByKind(rxnName, mechanisticTex, "reaction");
+  }
+
+  private composeNNBlockTexByKind(
+    targetName: string,
+    mechanisticTex: string,
+    kind: "variable" | "reaction",
+  ): string {
+    const targeting = [...this.nnBlocks.entries()].filter(
+      ([, config]) =>
+        config.targetKind === kind && config.targets.includes(targetName),
     );
     if (targeting.length === 0) return mechanisticTex;
 
@@ -594,13 +639,38 @@ export abstract class ModelBuilderBase {
    * for now.
    */
   protected composeNNBlocks(mechanistic: Map<string, Base>): Map<string, Base> {
-    if (this.nnBlocks.size === 0) return mechanistic;
+    return this.composeNNBlocksByKind(mechanistic, "variable");
+  }
+
+  /**
+   * {@link composeNNBlocks}'s sibling for reaction rate laws, called from
+   * `KineticModelBuilder.extraIntermediates` with each reaction's own `fn`
+   * instead of `dxdtExpr`'s per-variable map — a reaction-mode block's
+   * `targets` names reactions rather than variables (`NNBlockConfig.
+   * targetKind`'s doc comment), so the corrected rate becomes the
+   * reaction's intermediate value and flows through `dxdtExpr`'s existing,
+   * unchanged stoichiometry sum unmodified.
+   */
+  protected composeReactionNNBlocks(
+    reactionFns: Map<string, Base>,
+  ): Map<string, Base> {
+    return this.composeNNBlocksByKind(reactionFns, "reaction");
+  }
+
+  private composeNNBlocksByKind(
+    mechanistic: Map<string, Base>,
+    kind: "variable" | "reaction",
+  ): Map<string, Base> {
+    const relevant = [...this.nnBlocks.entries()].filter(
+      ([, config]) => config.targetKind === kind,
+    );
+    if (relevant.length === 0) return mechanistic;
 
     const outputsByTarget = new Map<
       string,
       { output: Base; mechanism: Base }[]
     >();
-    for (const [key, config] of this.nnBlocks) {
+    for (const [key, config] of relevant) {
       const { outputs } = buildNNBlock({
         name: key,
         inputs: config.inputs,
@@ -703,6 +773,15 @@ export abstract class ModelBuilderBase {
     const available: Set<string> = new Set([
       ...this.parameters.keys(),
       ...this.variables.keys(),
+      // A reaction-mode NN block's mechanism is composed onto its
+      // reaction's `fn` *before* this runs (KineticModelBuilder.
+      // extraIntermediates), so that reaction's dependency set can
+      // legitimately include generated weight/bias names — addressable via
+      // nnWeights (NNBlockConfig.targetKind's doc comment), never ordinary
+      // `parameters`, so they'd otherwise never resolve and the reaction
+      // would silently fall out of `order` (topoSort's give-up branch settles
+      // a permanently-unresolvable element without ever adding it here).
+      ...this.nnWeights.keys(),
     ]);
     const toSort = [...this.intermediateDefs().entries()].map(([key, val]) => ({
       k: key,
@@ -1058,6 +1137,7 @@ ${chains.join("\n")};
         inputs: b.inputs,
         layers: b.layers.map((layer) => mxlNNLayer(layer)),
         seed: b.seed,
+        target_kind: b.targetKind,
         targets: b.targets,
         trained: b.trained,
         scale: b.scale,
@@ -1160,6 +1240,7 @@ ${chains.join("\n")};
       ["inputs", JSON.stringify(b.inputs)],
       ["layers", this.tsNNLayers(b.layers, collect)],
       ["seed", `${b.seed}`],
+      ["targetKind", JSON.stringify(b.targetKind)],
       ["targets", JSON.stringify(b.targets)],
       ["trained", `${b.trained}`],
       ["scale", `${b.scale}`],

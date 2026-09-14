@@ -48,6 +48,7 @@ function makeBlock(): NNBlockConfig {
       { type: "dense", width: 1 },
     ],
     seed: 3,
+    targetKind: "variable",
     targets: ["x"],
     trained: true,
     scale: 0.1,
@@ -69,6 +70,7 @@ function expectSameBlock(actual: NNBlockConfig, expected: NNBlockConfig) {
     );
   });
   expect(actual.seed).toEqual(expected.seed);
+  expect(actual.targetKind).toEqual(expected.targetKind);
   expect(actual.targets).toEqual(expected.targets);
   expect(actual.trained).toEqual(expected.trained);
   expect(actual.scale).toEqual(expected.scale);
@@ -108,6 +110,30 @@ describe("NN blocks round-trip through .mxl.json", () => {
       weightsByRef,
     ) as OdeModelBuilder;
     expectSameBlock(reimported.nnBlocks.get("corr")!, block);
+  });
+
+  it('architecture survives (kinetic, targetKind: "reaction")', () => {
+    const block: NNBlockConfig = {
+      ...makeBlock(),
+      targetKind: "reaction",
+      targets: ["v1"],
+    };
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addReaction("v1", {
+        fn: new Num(0),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      })
+      .addNNBlock("corr", block);
+    const weightsByRef = new Map<string, NNWeightsFile>([
+      ["corr.weights.json", JSON.parse(builder.buildNNWeightsFile("corr"))],
+    ]);
+    const reimported = mxlJsonToModel(
+      builder.buildMxlJson("m"),
+      weightsByRef,
+    ) as KineticModelBuilder;
+    expectSameBlock(reimported.nnBlocks.get("corr")!, block);
+    expect(reimported.reactions.has("v1")).toBe(true);
   });
 
   it("fitted weight values survive — NOT reset to a fresh random draw", () => {
