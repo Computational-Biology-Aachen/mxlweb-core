@@ -15,9 +15,15 @@ import {
   ModelBuilderBase,
   type MxlEntity,
   type MxlKind,
+  nnBlockWeightMatrices,
   type Parameter,
   type Variable,
 } from "./modelBuilderBase.js";
+import {
+  buildNNBlockMxlpySource,
+  nnBlockMxlpyImportNames,
+  planNNBlockMxlpy,
+} from "./nnBlockMxlpy.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -425,89 +431,31 @@ export class KineticModelBuilder extends ModelBuilderBase {
    * argument placed first.
    */
   buildMxlpy(): string {
-    // NN blocks aren't representable here at all: this.reactions never
-    // contains a block-owned entry (NNBlockConfig.mechanism's doc comment),
-    // so a naive export would silently emit a model missing every block's
-    // dynamical contribution — weights/biases would still show up as
-    // add_parameter calls with no reaction ever using them. Loud failure
-    // instead of a silently wrong exported model; teaching buildMxlpy about
-    // NN blocks is a separate follow-up.
-    if (this.nnBlocks.size > 0) {
-      throw new Error(
-        "buildMxlpy: NN blocks are not yet representable in mxlpy export " +
-          "(ADR 0005) — remove them before exporting, or export as " +
-          ".mxl.json / mxlweb TS source instead.",
-      );
-    }
-    const displayNames = this.getDisplayNames();
-    const name = (id: string) => displayNames.get(id) ?? id;
+    const nnPlan = planNNBlockMxlpy(
+      this.nnBlocks,
+      [...this.variables.keys()],
+      [...this.reactions.keys()],
+    );
 
-    // Declaration-order index, used to order generated-function arguments.
-    const declOrder = new Map<string, number>();
-    for (const id of [
-      ...this.variables.keys(),
-      ...this.parameters.keys(),
-      ...this.assignments.keys(),
-      ...this.reactions.keys(),
-    ]) {
-      declOrder.set(id, declOrder.size);
-    }
-
-    const orderArgs = (expr: Base): string[] => {
-      const symbols = [...expr.getSymbols(new Set<string>())];
-      const known = symbols
-        .filter((s) => s !== "time")
-        .sort(
-          (a, b) =>
-            (declOrder.get(a) ?? Infinity) - (declOrder.get(b) ?? Infinity),
-        );
-      return symbols.includes("time") ? ["time", ...known] : known;
-    };
-
-    const argList = (args: string[]) =>
-      args.map((a) => `"${name(a)}"`).join(", ");
-
-    const defs: string[] = [];
-    // Emit a module-level `def <fnName>(...): return <expr>` and return the
-    // ordered arg ids so the call site can build a matching `args=[...]`.
-    const emitFn = (fnName: string, expr: Base): string[] => {
-      const args = orderArgs(expr);
-      const params = args.map(name).join(", ");
-      defs.push(
-        `def ${fnName}(${params}):\n    return ${expr.toPy(displayNames)}`,
-      );
-      return args;
-    };
-
-    let usesInitial = false;
-    let usesDerived = false;
-    const body: string[] = [];
-
-    for (const [id, p] of this.parameters) {
-      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
-    }
+    const {
+      defs,
+      body,
+      emitFn,
+      argList,
+      name,
+      initialValueSource,
+      usesInitial,
+      emitAssignments,
+    } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
-      if (v.value instanceof Base) {
-        usesInitial = true;
-        const fnName = `_init_${name(id)}`;
-        const args = emitFn(fnName, v.value);
-        body.push(
-          `m.add_variable("${name(id)}", InitialAssignment(${fnName}, args=[${argList(args)}]))`,
-        );
-      } else {
-        body.push(`m.add_variable("${name(id)}", ${v.value})`);
-      }
-    }
-
-    for (const [id, ass] of this.assignments) {
-      const fnName = `_derived_${name(id)}`;
-      const args = emitFn(fnName, ass.fn);
       body.push(
-        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)})`,
       );
     }
+    emitAssignments();
 
+    let usesDerived = false;
     for (const [id, rxn] of this.reactions) {
       const fnName = `_rate_${name(id)}`;
       const args = emitFn(fnName, rxn.fn);
@@ -541,7 +489,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
 
     const imports = ["Model"];
     if (usesDerived) imports.push("Derived");
-    if (usesInitial) imports.push("InitialAssignment");
+    if (usesInitial()) imports.push("InitialAssignment");
     imports.sort();
 
     const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";
@@ -549,14 +497,32 @@ export class KineticModelBuilder extends ModelBuilderBase {
       .map((line) => `    ${line}`)
       .join("\n");
 
+    let jaxImportBlock = "";
+    let nnBlock = "";
+    if (nnPlan) {
+      const matrices = nnBlockWeightMatrices(
+        nnPlan.key,
+        nnPlan.config,
+        this.nnWeights,
+      );
+      jaxImportBlock = `
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+
+from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
+`;
+      nnBlock = `\n\n${buildNNBlockMxlpySource(nnPlan, matrices)}`;
+    }
+
     return `import math
 
 import numpy as np
 
 from mxlpy import ${imports.join(", ")}
-
+${jaxImportBlock}
 ${defsBlock}def get_model() -> Model:
 ${factory}
-`;
+${nnBlock}`;
   }
 }

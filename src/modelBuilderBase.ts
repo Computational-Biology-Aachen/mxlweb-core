@@ -152,6 +152,44 @@ export function defaultValue(a: string | undefined, b: string): string {
   return a;
 }
 
+/** One layer's weight matrix (`[out_features, in_features]`) and bias vector, reshaped from {@link ModelBuilderBase.nnWeights}' flat naming — see {@link nnBlockWeightMatrices}. */
+export type NNBlockWeightMatrix = { w: number[][]; b: number[] };
+
+/**
+ * Reshapes NN block `key`'s current live weight/bias values (fitted or not)
+ * from `nnWeights`' flat `Name`-addressable naming (`${key}_w${layerIdx}_
+ * ${i}_${j}` / `${key}_b${layerIdx}_${i}`) into one `{ w, b }` matrix per
+ * layer, in `config.layers` order — the same reshape
+ * {@link ModelBuilderBase.buildNNWeightsFile}'s `.mxl.json` sidecar needs
+ * (there renamed to the schema's 1-indexed `w{n}`/`b{n}` keys) and
+ * `nnBlockMxlpy.ts`'s `eqx.tree_at` weight injection needs too — extracted
+ * once so both share it rather than reimplementing the same loop.
+ */
+export function nnBlockWeightMatrices(
+  key: string,
+  config: NNBlockConfig,
+  nnWeights: Map<string, number>,
+): NNBlockWeightMatrix[] {
+  const out: NNBlockWeightMatrix[] = [];
+  let fanIn = config.inputs.length;
+  config.layers.forEach((layer, layerIdx) => {
+    const fanOut = layer.width;
+    const w: number[][] = [];
+    const b: number[] = [];
+    for (let i = 0; i < fanOut; i++) {
+      b.push(nnWeights.get(`${key}_b${layerIdx}_${i}`) ?? 0);
+      const row: number[] = [];
+      for (let j = 0; j < fanIn; j++) {
+        row.push(nnWeights.get(`${key}_w${layerIdx}_${i}_${j}`) ?? 0);
+      }
+      w.push(row);
+    }
+    out.push({ w, b });
+    fanIn = fanOut;
+  });
+  return out;
+}
+
 /**
  * Escapes characters KaTeX treats specially even inside `\text{...}` —
  * contrary to plain LaTeX, KaTeX's text mode does *not* accept a bare `_`
@@ -1166,24 +1204,126 @@ ${chains.join("\n")};
       throw new Error(`buildNNWeightsFile: no such NN block "${key}"`);
     }
     const out: Record<string, number[][] | number[]> = {};
-    let fanIn = config.inputs.length;
-    config.layers.forEach((layer, layerIdx) => {
-      const fanOut = layer.width;
-      const w: number[][] = [];
-      const b: number[] = [];
-      for (let i = 0; i < fanOut; i++) {
-        b.push(this.nnWeights.get(`${key}_b${layerIdx}_${i}`) ?? 0);
-        const row: number[] = [];
-        for (let j = 0; j < fanIn; j++) {
-          row.push(this.nnWeights.get(`${key}_w${layerIdx}_${i}_${j}`) ?? 0);
-        }
-        w.push(row);
-      }
-      out[`w${layerIdx + 1}`] = w;
-      out[`b${layerIdx + 1}`] = b;
-      fanIn = fanOut;
-    });
+    nnBlockWeightMatrices(key, config, this.nnWeights).forEach(
+      ({ w, b }, layerIdx) => {
+        out[`w${layerIdx + 1}`] = w;
+        out[`b${layerIdx + 1}`] = b;
+      },
+    );
     return JSON.stringify(out, null, 2);
+  }
+
+  /**
+   * The `buildMxlpy()` preamble shared by every builder: `declOrder`/
+   * `emitFn`/`argList`/`initialValueSource` machinery, `add_parameter`
+   * emission, and a deferred `emitAssignments()` for `add_derived` emission.
+   * Variable emission is deliberately *not* included here — the Python-side
+   * builders disagree on its shape: `KineticModelBuilder.add_variable(name,
+   * initial)` is separate from any reaction, but `OdeModelBuilder` has no
+   * `add_variable` at all — a diff_eq's `add_diff_eq(name, initial, fn,
+   * args=[...])` declares the variable and its dynamics together
+   * (`_ode_builder.py:1317`). Each builder therefore emits its own variable
+   * line(s) into the returned `body` (using `initialValueSource` for the
+   * shared literal-or-`InitialAssignment` logic), in original declaration
+   * order right after `add_parameter` and before calling `emitAssignments()`
+   * — matching the `parameters, variables, derived, reactions` body order
+   * `KineticModelBuilder.buildMxlpy()`'s existing tests already pin.
+   *
+   * `extraDeclOrderIds` extends the declaration-order index
+   * (`variables`, `parameters`, `assignments`, then these) used to order a
+   * generated function's arguments — `KineticModelBuilder` passes its
+   * reaction ids so a reaction's own args sort after everything declared
+   * before it; `OdeModelBuilder` has no separate id space to add (a diff_eq
+   * is keyed by its variable's own id, already covered) and passes none.
+   */
+  protected buildMxlpyPreamble(extraDeclOrderIds: string[] = []): {
+    defs: string[];
+    body: string[];
+    emitFn: (fnName: string, expr: Base) => string[];
+    argList: (args: string[]) => string;
+    name: (id: string) => string;
+    /** The `InitialAssignment(...)` snippet for an expression-valued `value`, or its plain numeric literal — flips {@link usesInitial} when it emits the former. */
+    initialValueSource: (id: string, value: number | Base) => string;
+    usesInitial: () => boolean;
+    /** Emits every `assignments` entry as `m.add_derived(...)` into `body`, at the call site's position — call once, wherever derived quantities belong in the builder's own declaration order. */
+    emitAssignments: () => void;
+  } {
+    const displayNames = this.getDisplayNames();
+    const name = (id: string) => displayNames.get(id) ?? id;
+
+    // Declaration-order index, used to order generated-function arguments.
+    const declOrder = new Map<string, number>();
+    for (const id of [
+      ...this.variables.keys(),
+      ...this.parameters.keys(),
+      ...this.assignments.keys(),
+      ...extraDeclOrderIds,
+    ]) {
+      declOrder.set(id, declOrder.size);
+    }
+
+    const orderArgs = (expr: Base): string[] => {
+      const symbols = [...expr.getSymbols(new Set<string>())];
+      const known = symbols
+        .filter((s) => s !== "time")
+        .sort(
+          (a, b) =>
+            (declOrder.get(a) ?? Infinity) - (declOrder.get(b) ?? Infinity),
+        );
+      return symbols.includes("time") ? ["time", ...known] : known;
+    };
+
+    const argList = (args: string[]) =>
+      args.map((a) => `"${name(a)}"`).join(", ");
+
+    const defs: string[] = [];
+    // Emit a module-level `def <fnName>(...): return <expr>` and return the
+    // ordered arg ids so the call site can build a matching `args=[...]`.
+    const emitFn = (fnName: string, expr: Base): string[] => {
+      const args = orderArgs(expr);
+      const params = args.map(name).join(", ");
+      defs.push(
+        `def ${fnName}(${params}):\n    return ${expr.toPy(displayNames)}`,
+      );
+      return args;
+    };
+
+    let usesInitial = false;
+    const initialValueSource = (id: string, value: number | Base): string => {
+      if (value instanceof Base) {
+        usesInitial = true;
+        const fnName = `_init_${name(id)}`;
+        const args = emitFn(fnName, value);
+        return `InitialAssignment(${fnName}, args=[${argList(args)}])`;
+      }
+      return `${value}`;
+    };
+
+    const body: string[] = [];
+    for (const [id, p] of this.parameters) {
+      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
+    }
+
+    const emitAssignments = () => {
+      for (const [id, ass] of this.assignments) {
+        const fnName = `_derived_${name(id)}`;
+        const args = emitFn(fnName, ass.fn);
+        body.push(
+          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+        );
+      }
+    };
+
+    return {
+      defs,
+      body,
+      emitFn,
+      argList,
+      name,
+      initialValueSource,
+      usesInitial: () => usesInitial,
+      emitAssignments,
+    };
   }
 
   protected tsSlider(s: SliderArgs): string {

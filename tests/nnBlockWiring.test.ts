@@ -716,13 +716,6 @@ describe("NN block mechanism: multiplyMechanism composes as f * scale*NN (bare p
 });
 
 describe("KineticModelBuilder.buildMxlpy with NN blocks", () => {
-  it("throws rather than silently omitting a block's dynamical contribution", () => {
-    const builder = new KineticModelBuilder()
-      .addVariable("x", { value: 1 })
-      .addNNBlock("corr", makeSmallBlock());
-    expect(() => builder.buildMxlpy()).toThrow(/NN blocks/);
-  });
-
   it("still works normally for a model with no NN blocks", () => {
     const builder = new KineticModelBuilder()
       .addVariable("x", { value: 1 })
@@ -731,6 +724,122 @@ describe("KineticModelBuilder.buildMxlpy with NN blocks", () => {
         stoichiometry: [{ name: "x", value: new Num(-1) }],
       });
     expect(() => builder.buildMxlpy()).not.toThrow();
+  });
+
+  it("emits a get_ude() factory for a whole-state variable-targeted block", () => {
+    // makeSmallBlock's single variable "x" is both its only input and its
+    // only target — exactly the whole-state coverage mxlpy.jax.models.Ude
+    // requires.
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", makeSmallBlock());
+    const out = builder.buildMxlpy();
+    expect(out).toContain("from mxlpy.jax.models import Node, Ode, Ude");
+    expect(out).toContain("def get_ude() -> Ude:");
+    expect(out).toContain("ode = Ode.from_mxlpy(m)");
+    expect(out).toContain('return Ude(ode=ode, nn=nn, op="+")');
+  });
+
+  it("emits a get_flux_ude() factory for a whole-flux reaction-targeted block", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .addReaction("v1", {
+        fn: new Mul([new Name("k"), new Name("x")]),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      })
+      .addNNBlock("corr", {
+        ...makeSmallBlock(),
+        targetKind: "reaction",
+        targets: ["v1"],
+        mechanism: multiplyMechanism(),
+      });
+    const out = builder.buildMxlpy();
+    expect(out).toContain(
+      "from mxlpy.jax.models import FluxNode, FluxOde, FluxUde",
+    );
+    expect(out).toContain("def get_flux_ude() -> FluxUde:");
+    expect(out).toContain("flux_ode = FluxOde.from_mxlpy(m)");
+    expect(out).toContain(
+      'return FluxUde(flux_ode=flux_ode, flux_nn=flux_nn, op="*")',
+    );
+  });
+
+  it("throws when more than one NN block is present", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("a", makeSmallBlock())
+      .addNNBlock("b", makeSmallBlock());
+    expect(() => builder.buildMxlpy()).toThrow(/exactly one neural network/);
+  });
+
+  it("throws when a variable-targeted block doesn't cover every variable", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addVariable("y", { value: 1 })
+      .addNNBlock("corr", makeSmallBlock());
+    expect(() => builder.buildMxlpy()).toThrow(/don't cover every variable/);
+  });
+
+  it("throws when a block's inputs aren't exactly the model's variables", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", { ...makeSmallBlock(), inputs: ["x", "k"] });
+    expect(() => builder.buildMxlpy()).toThrow(/inputs/);
+  });
+
+  it("throws when a hidden layer doesn't use softplus activation", () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addNNBlock("corr", {
+        ...makeSmallBlock(),
+        layers: [
+          { type: "dense", width: 2 },
+          { type: "dense", width: 1 },
+        ],
+      });
+    expect(() => builder.buildMxlpy()).toThrow(/softplus/);
+  });
+
+  it('throws for a reaction-targeted block using relativeMultiply — FluxUde has no "rel" op', () => {
+    const builder = new KineticModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .addReaction("v1", {
+        fn: new Mul([new Name("k"), new Name("x")]),
+        stoichiometry: [{ name: "x", value: new Num(-1) }],
+      })
+      .addNNBlock("corr", {
+        ...makeSmallBlock(),
+        targetKind: "reaction",
+        targets: ["v1"],
+        mechanism: relativeMultiplyMechanism(),
+      });
+    expect(() => builder.buildMxlpy()).toThrow(/FluxUde has no "rel" op/);
+  });
+});
+
+describe("OdeModelBuilder.buildMxlpy", () => {
+  it("works normally for a model with no NN blocks", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]));
+    const out = builder.buildMxlpy();
+    expect(out).toContain("from mxlpy import OdeModelBuilder");
+    expect(out).toContain("m.add_diff_eq(");
+    expect(out).not.toContain("Ude");
+  });
+
+  it("emits a get_ude() factory for a whole-state variable-targeted block", () => {
+    const builder = new OdeModelBuilder()
+      .addVariable("x", { value: 1 })
+      .addParameter("k", { value: 0.5 })
+      .setDifferential("x", new Mul([new Name("k"), new Name("x")]))
+      .addNNBlock("corr", makeSmallBlock());
+    const out = builder.buildMxlpy();
+    expect(out).toContain("def get_ude() -> Ude:");
+    expect(out).toContain('return Ude(ode=ode, nn=nn, op="+")');
   });
 });
 

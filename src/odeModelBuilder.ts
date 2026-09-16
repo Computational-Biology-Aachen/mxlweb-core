@@ -8,7 +8,13 @@ import {
   type MxlEntity,
   type MxlKind,
   type NNBlockConfig,
+  nnBlockWeightMatrices,
 } from "./modelBuilderBase.js";
+import {
+  buildNNBlockMxlpySource,
+  nnBlockMxlpyImportNames,
+  planNNBlockMxlpy,
+} from "./nnBlockMxlpy.js";
 
 /**
  * Direct ODE model builder: dx/dt is written explicitly per variable.
@@ -170,5 +176,80 @@ export class OdeModelBuilder extends ModelBuilderBase {
     return String.raw`\begin{align*}
   ${rhsString}
 \end{align*}`;
+  }
+
+  /**
+   * Generate an [mxlpy](https://github.com/Computational-Biology-Aachen/mxlpy)
+   * `OdeModelBuilder` module as Python source: a `get_model() ->
+   * OdeModelBuilder` factory plus the module-level derived/diff_eq/
+   * initial-assignment functions it references.
+   *
+   * Unlike `KineticModelBuilder.buildMxlpy()`, there is no separate
+   * `add_variable` on the Python side — `OdeModelBuilder.add_diff_eq(name,
+   * initial_value, fn, args=[...])` declares a variable and its dynamics
+   * together (`_ode_builder.py:1317`), so each variable becomes exactly one
+   * `add_diff_eq` call instead of a `add_variable`/`add_reaction` pair.
+   */
+  buildMxlpy(): string {
+    const nnPlan = planNNBlockMxlpy(
+      this.nnBlocks,
+      [...this.variables.keys()],
+      undefined,
+    );
+
+    const {
+      defs,
+      body,
+      emitFn,
+      argList,
+      name,
+      initialValueSource,
+      usesInitial,
+    } = this.buildMxlpyPreamble();
+
+    for (const [id, v] of this.variables) {
+      const fnName = `_diffeq_${name(id)}`;
+      const args = emitFn(fnName, this.differentials.get(id) ?? new Num(0));
+      body.push(
+        `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}])`,
+      );
+    }
+
+    const imports = ["OdeModelBuilder"];
+    if (usesInitial()) imports.push("InitialAssignment");
+    imports.sort();
+
+    const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";
+    const factory = ["m = OdeModelBuilder()", ...body, "return m"]
+      .map((line) => `    ${line}`)
+      .join("\n");
+
+    let jaxImportBlock = "";
+    let nnBlock = "";
+    if (nnPlan) {
+      const matrices = nnBlockWeightMatrices(
+        nnPlan.key,
+        nnPlan.config,
+        this.nnWeights,
+      );
+      jaxImportBlock = `
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+
+from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
+`;
+      nnBlock = `\n\n${buildNNBlockMxlpySource(nnPlan, matrices)}`;
+    }
+
+    return `import math
+
+import numpy as np
+
+from mxlpy import ${imports.join(", ")}
+${jaxImportBlock}
+${defsBlock}def get_model() -> OdeModelBuilder:
+${factory}
+${nnBlock}`;
   }
 }
