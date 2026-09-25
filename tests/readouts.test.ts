@@ -209,3 +209,75 @@ describe("readouts: buildMxlweb round-trip", () => {
     expect(src).toContain('.addReadout("totalSquaredPlusOne"');
   });
 });
+
+describe("readouts: mxlpy export", () => {
+  it("KineticModelBuilder emits add_readout in dependency order after reactions", () => {
+    const b = kineticWithReadouts();
+    // Declared out of order: totalSquaredPlusOne reads totalSquared, so mxlpy
+    // (which evaluates readouts in insertion order) needs it emitted second.
+    b.removeReadout("totalSquared").addReadout("totalSquared", {
+      fn: new Mul([new Name("total"), new Name("total")]),
+      displayName: "total_squared",
+    });
+    expect(b.buildMxlpy()).toBe(`import math
+
+import numpy as np
+
+from mxlpy import Model
+
+def _derived_total(A, B):
+    return A + B
+
+def _rate_r(k, total):
+    return k * total
+
+def _readout_total_squared(total):
+    return total * total
+
+def _readout_totalSquaredPlusOne(total_squared):
+    return total_squared + 1
+
+def get_model() -> Model:
+    m = Model()
+    m.add_parameter("k", 0.3)
+    m.add_variable("A", 5)
+    m.add_variable("B", 1)
+    m.add_derived("total", _derived_total, args=["A", "B"])
+    m.add_reaction(
+        "r",
+        _rate_r,
+        args=["k", "total"],
+        stoichiometry={"A": -1, "B": 1},
+    )
+    m.add_readout("total_squared", _readout_total_squared, args=["total"])
+    m.add_readout("totalSquaredPlusOne", _readout_totalSquaredPlusOne, args=["total_squared"])
+    return m
+`);
+  });
+
+  it("OdeModelBuilder emits its assignments and readouts", () => {
+    expect(odeWithReadouts().buildMxlpy()).toBe(`import math
+
+import numpy as np
+
+from mxlpy import OdeModelBuilder
+
+def _diffeq_A(A, k):
+    return -1 * k * A
+
+def _derived_doubled(A):
+    return 2 * A
+
+def _readout_doubledPlusOne(doubled):
+    return doubled + 1
+
+def get_model() -> OdeModelBuilder:
+    m = OdeModelBuilder()
+    m.add_parameter("k", 0.3)
+    m.add_diff_eq("A", 5, _diffeq_A, args=["A", "k"])
+    m.add_derived("doubled", _derived_doubled, args=["A"])
+    m.add_readout("doubledPlusOne", _readout_doubledPlusOne, args=["doubled"])
+    return m
+`);
+  });
+});

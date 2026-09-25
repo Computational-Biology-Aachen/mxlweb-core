@@ -205,6 +205,8 @@ export class OdeModelBuilder extends ModelBuilderBase {
       name,
       initialValueSource,
       usesInitial,
+      emitAssignments,
+      emitReadouts,
     } = this.buildMxlpyPreamble();
 
     for (const [id, v] of this.variables) {
@@ -214,6 +216,9 @@ export class OdeModelBuilder extends ModelBuilderBase {
         `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}])`,
       );
     }
+
+    emitAssignments();
+    emitReadouts();
 
     const imports = ["OdeModelBuilder"];
     if (usesInitial()) imports.push("InitialAssignment");

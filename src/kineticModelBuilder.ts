@@ -446,6 +446,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       initialValueSource,
       usesInitial,
       emitAssignments,
+      emitReadouts,
     } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
@@ -486,6 +487,8 @@ export class KineticModelBuilder extends ModelBuilderBase {
         ].join("\n"),
       );
     }
+
+    emitReadouts();
 
     const imports = ["Model"];
     if (usesDerived) imports.push("Derived");

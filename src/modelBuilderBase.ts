@@ -1216,7 +1216,7 @@ ${chains.join("\n")};
   /**
    * The `buildMxlpy()` preamble shared by every builder: `declOrder`/
    * `emitFn`/`argList`/`initialValueSource` machinery, `add_parameter`
-   * emission, and a deferred `emitAssignments()` for `add_derived` emission.
+   * emission, and deferred `emitAssignments()` / `emitReadouts()` for `add_derived` / `add_readout` emission.
    * Variable emission is deliberately *not* included here — the Python-side
    * builders disagree on its shape: `KineticModelBuilder.add_variable(name,
    * initial)` is separate from any reaction, but `OdeModelBuilder` has no
@@ -1230,7 +1230,7 @@ ${chains.join("\n")};
    * `KineticModelBuilder.buildMxlpy()`'s existing tests already pin.
    *
    * `extraDeclOrderIds` extends the declaration-order index
-   * (`variables`, `parameters`, `assignments`, then these) used to order a
+   * (`variables`, `parameters`, `assignments`, then these, then readouts) used to order a
    * generated function's arguments — `KineticModelBuilder` passes its
    * reaction ids so a reaction's own args sort after everything declared
    * before it; `OdeModelBuilder` has no separate id space to add (a diff_eq
@@ -1247,6 +1247,8 @@ ${chains.join("\n")};
     usesInitial: () => boolean;
     /** Emits every `assignments` entry as `m.add_derived(...)` into `body`, at the call site's position — call once, wherever derived quantities belong in the builder's own declaration order. */
     emitAssignments: () => void;
+    /** Emits every readout as `m.add_readout(...)` into `body`, in dependency order (mxlpy evaluates readouts in insertion order) — call after everything a readout may read has been declared. */
+    emitReadouts: () => void;
   } {
     const displayNames = this.getDisplayNames();
     const name = (id: string) => displayNames.get(id) ?? id;
@@ -1258,6 +1260,7 @@ ${chains.join("\n")};
       ...this.parameters.keys(),
       ...this.assignments.keys(),
       ...extraDeclOrderIds,
+      ...this.extraReadouts().keys(),
     ]) {
       declOrder.set(id, declOrder.size);
     }
@@ -1314,6 +1317,17 @@ ${chains.join("\n")};
       }
     };
 
+    const emitReadouts = () => {
+      const readouts = this.extraReadouts();
+      for (const id of this.sortReadoutDependencies()) {
+        const fnName = `_readout_${name(id)}`;
+        const args = emitFn(fnName, readouts.get(id)!.fn);
+        body.push(
+          `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+        );
+      }
+    };
+
     return {
       defs,
       body,
@@ -1323,6 +1337,7 @@ ${chains.join("\n")};
       initialValueSource,
       usesInitial: () => usesInitial,
       emitAssignments,
+      emitReadouts,
     };
   }
 
