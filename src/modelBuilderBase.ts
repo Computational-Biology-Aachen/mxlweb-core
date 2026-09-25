@@ -1247,7 +1247,7 @@ ${chains.join("\n")};
     usesInitial: () => boolean;
     /** Emits every `assignments` entry as `m.add_derived(...)` into `body`, at the call site's position — call once, wherever derived quantities belong in the builder's own declaration order. */
     emitAssignments: () => void;
-    /** Emits every readout as `m.add_readout(...)` into `body`, in dependency order (mxlpy evaluates readouts in insertion order) — call after everything a readout may read has been declared. */
+    /** Emits every readout as `m.add_readout(...)` into `body`, in dependency order (`sortReadoutDependencies`), matching mxlpy's own readout sort and keeping the module readable top to bottom — call after everything a readout may read has been declared. */
     emitReadouts: () => void;
   } {
     const displayNames = this.getDisplayNames();

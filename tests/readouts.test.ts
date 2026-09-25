@@ -213,8 +213,8 @@ describe("readouts: buildMxlweb round-trip", () => {
 describe("readouts: mxlpy export", () => {
   it("KineticModelBuilder emits add_readout in dependency order after reactions", () => {
     const b = kineticWithReadouts();
-    // Declared out of order: totalSquaredPlusOne reads totalSquared, so mxlpy
-    // (which evaluates readouts in insertion order) needs it emitted second.
+    // Declared out of order: totalSquaredPlusOne reads totalSquared, so it is
+    // emitted second, in the same dependency order mxlpy sorts readouts into.
     b.removeReadout("totalSquared").addReadout("totalSquared", {
       fn: new Mul([new Name("total"), new Name("total")]),
       displayName: "total_squared",
