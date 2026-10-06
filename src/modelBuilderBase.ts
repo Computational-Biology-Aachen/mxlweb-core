@@ -22,18 +22,21 @@ export type SliderArgs = {
 
 export type Variable = {
   value: number | Base;
+  unit?: string;
   displayName?: string;
   texName?: string;
   slider?: SliderArgs;
 };
 export type Parameter = {
   value: number;
+  unit?: string;
   displayName?: string;
   texName?: string;
   slider?: SliderArgs;
 };
 export type Assign = {
   fn: Base;
+  unit?: string;
   displayName?: string;
   texName?: string;
 };
@@ -247,6 +250,7 @@ function mxlNNLayer(layer: NNBlockLayer): MxlNNLayer {
 /** One entity (variable/parameter/derived/reaction/nn_block) in the `.mxl.json` model section. */
 export type MxlEntity = {
   value?: JsonNode;
+  unit?: string;
   fn?: JsonNode;
   stoichiometry?: Record<string, JsonNode>;
   displayName?: string;
@@ -1077,10 +1081,12 @@ ${chains.join("\n")};
   /** Attach the optional presentation fields (display/LaTeX names, slider) to an entity. */
   protected mxlApplyMeta(
     entry: MxlEntity,
+    unit: string | undefined,
     displayName: string | undefined,
     texName: string | undefined,
     slider?: SliderArgs,
   ): void {
+    if (unit !== undefined) entry.unit = unit;
     if (displayName !== undefined) entry.displayName = displayName;
     if (texName !== undefined) entry.texName = texName;
     if (slider !== undefined) {
@@ -1101,7 +1107,7 @@ ${chains.join("\n")};
     for (const [id, v] of this.variables) {
       const entry: MxlEntity = { value: this.mxlValueNode(v.value) };
       if (extra !== undefined) Object.assign(entry, extra(id, v));
-      this.mxlApplyMeta(entry, v.displayName, v.texName, v.slider);
+      this.mxlApplyMeta(entry, v.unit, v.displayName, v.texName, v.slider);
       out[id] = entry;
     }
     return out;
@@ -1112,7 +1118,7 @@ ${chains.join("\n")};
     const out: Record<string, MxlEntity> = {};
     for (const [id, p] of this.parameters) {
       const entry: MxlEntity = { value: { type: "Num", value: p.value } };
-      this.mxlApplyMeta(entry, p.displayName, p.texName, p.slider);
+      this.mxlApplyMeta(entry, p.unit, p.displayName, p.texName, p.slider);
       out[id] = entry;
     }
     return out;
@@ -1125,7 +1131,7 @@ ${chains.join("\n")};
     const out: Record<string, MxlEntity> = {};
     for (const [id, def] of defs) {
       const entry: MxlEntity = { fn: def.fn.toJson() };
-      this.mxlApplyMeta(entry, def.displayName, def.texName);
+      this.mxlApplyMeta(entry, undefined, def.displayName, def.texName);
       out[id] = entry;
     }
     return out;
@@ -1304,15 +1310,17 @@ ${chains.join("\n")};
 
     const body: string[] = [];
     for (const [id, p] of this.parameters) {
-      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
+      const unit = p.unit === undefined ? "" : `, unit="${p.unit}"`;
+      body.push(`m.add_parameter("${name(id)}", ${p.value}${unit})`);
     }
 
     const emitAssignments = () => {
       for (const [id, ass] of this.assignments) {
         const fnName = `_derived_${name(id)}`;
         const args = emitFn(fnName, ass.fn);
+        const unit = ass.unit === undefined ? "" : `, unit="${ass.unit}"`;
         body.push(
-          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${unit})`,
         );
       }
     };
@@ -1361,6 +1369,7 @@ ${chains.join("\n")};
   private tsParameter(p: Parameter): string {
     return this.tsFields([
       ["value", `${p.value}`],
+      ["unit", `${p.unit}`],
       ["displayName", this.tsString(p.displayName)],
       ["texName", this.tsString(p.texName)],
       ["slider", p.slider !== undefined ? this.tsSlider(p.slider) : undefined],

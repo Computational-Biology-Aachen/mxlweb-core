@@ -222,10 +222,11 @@ describe("Base.toJson", () => {
 describe("buildMxlJson", () => {
   it("kinetic model: envelope, reactions, stoichiometry and metadata", () => {
     const m = new KineticModelBuilder()
-      .addVariable("A", { value: 1, displayName: "Species A", texName: "A" })
+      .addVariable("A", { value: 1, displayName: "Species A", texName: "A", unit: "unit_var" })
       .addVariable("B", { value: 0 })
       .addParameter("k", {
         value: 0.5,
+        unit: "unit_param",
         slider: { min: "0", max: "1", step: "0.01", desc: "rate" },
       })
       .addReaction("v1", {
@@ -262,6 +263,7 @@ describe("buildMxlJson", () => {
       value: { type: "Num", value: 1 },
       displayName: "Species A",
       texName: "A",
+      unit: "unit_var",
     });
     expect(doc.model.parameters.k.slider).toEqual({
       min: "0",
