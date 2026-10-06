@@ -48,6 +48,7 @@ export type Stoichiometry = Array<Stoich>;
 export type Reaction = {
   fn: Base;
   stoichiometry: Stoichiometry;
+  unit?: string;
   displayName?: string;
   texName?: string;
 };
@@ -336,7 +337,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
         stoichiometry[name] = value.toJson();
       }
       const entry: MxlEntity = { fn: rxn.fn.toJson(), stoichiometry };
-      this.mxlApplyMeta(entry, rxn.displayName, rxn.texName);
+      this.mxlApplyMeta(entry, rxn.unit, rxn.displayName, rxn.texName);
       out[id] = entry;
     }
     return out;
@@ -450,8 +451,9 @@ export class KineticModelBuilder extends ModelBuilderBase {
     } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
+      const unit = v.unit === undefined ? "" : `, unit="${v.unit}"`;
       body.push(
-        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)})`,
+        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${unit})`,
       );
     }
     emitAssignments();
@@ -460,6 +462,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
     for (const [id, rxn] of this.reactions) {
       const fnName = `_rate_${name(id)}`;
       const args = emitFn(fnName, rxn.fn);
+      const unit = rxn.unit === undefined ? "" : `        unit="${rxn.unit}"`;
 
       const stoich: string[] = [];
       for (const { name: species, value } of rxn.stoichiometry) {
@@ -483,8 +486,9 @@ export class KineticModelBuilder extends ModelBuilderBase {
           `        ${fnName},`,
           `        args=[${argList(args)}],`,
           `        stoichiometry={${stoich.join(", ")}},`,
+          unit,
           `    )`,
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       );
     }
 

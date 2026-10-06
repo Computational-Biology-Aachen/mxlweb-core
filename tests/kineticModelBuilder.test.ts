@@ -198,4 +198,52 @@ def get_model() -> Model:
     return m
 `);
   });
+
+  it("emits every unit: parameters, variables, assignments, reactions", () => {
+    const m = new KineticModelBuilder();
+    m.addParameter("k", { value: 0.5, unit: "unit_param" });
+    m.addVariable("S", { value: 10, unit: "unit_var" });
+    // Expression-valued initial condition -> InitialAssignment.
+    m.addVariable("P", { value: new Minus([new Name("k")]), unit: "unit_var" });
+    m.addAssignment("total", { fn: new Add([new Name("S"), new Name("P")]), unit: "unit_derived" });
+    m.addReaction("v", {
+      fn: new Mul([new Name("k"), new Name("S")]),
+      stoichiometry: [
+        { name: "S", value: new Num(-1) },
+        { name: "P", value: new Num(1) },
+      ],
+      unit: "unit_react",
+    });
+
+    expect(m.buildMxlpy()).toBe(`import math
+
+import numpy as np
+
+from mxlpy import InitialAssignment, Model
+
+def _init_P(k):
+    return - k
+
+def _derived_total(S, P):
+    return S + P
+
+def _rate_v(S, k):
+    return k * S
+
+def get_model() -> Model:
+    m = Model()
+    m.add_parameter("k", 0.5, unit="unit_param")
+    m.add_variable("S", 10, unit="unit_var")
+    m.add_variable("P", InitialAssignment(_init_P, args=["k"]), unit="unit_var")
+    m.add_derived("total", _derived_total, args=["S", "P"], unit="unit_derived")
+    m.add_reaction(
+        "v",
+        _rate_v,
+        args=["S", "k"],
+        stoichiometry={"S": -1, "P": 1},
+        unit="unit_react"
+    )
+    return m
+`);
+  });
 });
