@@ -488,7 +488,9 @@ export class KineticModelBuilder extends ModelBuilderBase {
           `        stoichiometry={${stoich.join(", ")}},`,
           unit,
           `    )`,
-        ].filter(Boolean).join("\n"),
+        ]
+          .filter(Boolean)
+          .join("\n"),
       );
     }
 

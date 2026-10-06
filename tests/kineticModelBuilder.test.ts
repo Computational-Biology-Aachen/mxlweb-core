@@ -205,7 +205,10 @@ def get_model() -> Model:
     m.addVariable("S", { value: 10, unit: "unit_var" });
     // Expression-valued initial condition -> InitialAssignment.
     m.addVariable("P", { value: new Minus([new Name("k")]), unit: "unit_var" });
-    m.addAssignment("total", { fn: new Add([new Name("S"), new Name("P")]), unit: "unit_derived" });
+    m.addAssignment("total", {
+      fn: new Add([new Name("S"), new Name("P")]),
+      unit: "unit_derived",
+    });
     m.addReaction("v", {
       fn: new Mul([new Name("k"), new Name("S")]),
       stoichiometry: [

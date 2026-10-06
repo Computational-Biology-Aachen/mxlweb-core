@@ -222,7 +222,12 @@ describe("Base.toJson", () => {
 describe("buildMxlJson", () => {
   it("kinetic model: envelope, reactions, stoichiometry and metadata", () => {
     const m = new KineticModelBuilder()
-      .addVariable("A", { value: 1, displayName: "Species A", texName: "A", unit: "unit_var" })
+      .addVariable("A", {
+        value: 1,
+        displayName: "Species A",
+        texName: "A",
+        unit: "unit_var",
+      })
       .addVariable("B", { value: 0 })
       .addParameter("k", {
         value: 0.5,
