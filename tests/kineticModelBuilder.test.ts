@@ -193,7 +193,7 @@ def get_model() -> Model:
         "v",
         _rate_v,
         args=["A"],
-        stoichiometry={"A": Derived(_stoich_v_A, args=["n"])},
+        stoichiometry={"A": Derived(fn=_stoich_v_A, args=["n"])},
     )
     return m
 `);
