@@ -474,7 +474,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
           const sFn = `_stoich_${name(id)}_${name(species)}`;
           const sArgs = emitFn(sFn, value);
           stoich.push(
-            `"${name(species)}": Derived(${sFn}, args=[${argList(sArgs)}])`,
+            `"${name(species)}": Derived(fn=${sFn}, args=[${argList(sArgs)}])`,
           );
         }
       }
