@@ -47,6 +47,14 @@ describe("SteadyStateModelBuilder", () => {
     expect(tex).not.toContain("\\frac{d");
   });
 
+  it("buildMxlpy imports the SteadyStateModelBuilder it instantiates", () => {
+    const py = mmModel().buildMxlpy();
+    expect(py).toContain("from mxlpy import SteadyStateModelBuilder\n");
+    expect(py).toContain("def get_model() -> SteadyStateModelBuilder:");
+    expect(py).toContain("    m = SteadyStateModelBuilder()");
+    expect(py).not.toMatch(/\bModel\b/);
+  });
+
   it("exports a pure Python function of all parameters", () => {
     const py = mmModel().buildPython();
     expect(py).toContain("def model(");

@@ -15,6 +15,7 @@ export * from "./modelBuilderBase.js";
 export * from "./modelIr.js";
 export * from "./kineticModelBuilder.js";
 export * from "./nnBlock.js";
+export * from "./pyIdentifier.js";
 export * from "./odeModelBuilder.js";
 export * from "./steadyStateModelBuilder.js";
 export * from "./backends/js/integrators/index.js";

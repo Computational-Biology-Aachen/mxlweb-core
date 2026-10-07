@@ -24,6 +24,7 @@ import {
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
+import { pyString } from "./pyIdentifier.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -451,7 +452,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
     } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
-      const unit = v.unit === undefined ? "" : `, unit="${v.unit}"`;
+      const unit = v.unit === undefined ? "" : `, unit=${pyString(v.unit)}`;
       body.push(
         `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${unit})`,
       );
@@ -462,7 +463,8 @@ export class KineticModelBuilder extends ModelBuilderBase {
     for (const [id, rxn] of this.reactions) {
       const fnName = `_rate_${name(id)}`;
       const args = emitFn(fnName, rxn.fn);
-      const unit = rxn.unit === undefined ? "" : `        unit="${rxn.unit}"`;
+      const unit =
+        rxn.unit === undefined ? "" : `        unit=${pyString(rxn.unit)}`;
 
       const stoich: string[] = [];
       for (const { name: species, value } of rxn.stoichiometry) {

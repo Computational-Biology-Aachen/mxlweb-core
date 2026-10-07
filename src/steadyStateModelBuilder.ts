@@ -84,7 +84,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     selectedDerived?: string[],
   ): string {
     const ir = this.lower();
-    const displayNames = ir.displayNames;
+    const displayNames = this.getPyNames();
     const Name = (x: string) => displayNames.get(x) ?? x;
 
     const order = ir.intermediates.map((m) => m.name);
@@ -155,7 +155,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
    * argument placed first.
    */
   buildMxlpy(): string {
-    const displayNames = this.getDisplayNames();
+    const displayNames = this.getPyNames();
     const name = (id: string) => displayNames.get(id) ?? id;
 
     // Declaration-order index, used to order generated-function arguments.
@@ -219,7 +219,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
       );
     }
 
-    const imports = ["Model"];
+    const imports = ["SteadyStateModelBuilder"];
     if (usesDerived) imports.push("Derived");
     if (usesInitial) imports.push("InitialAssignment");
     imports.sort();

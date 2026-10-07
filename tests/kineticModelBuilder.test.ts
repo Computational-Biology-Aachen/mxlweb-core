@@ -249,4 +249,28 @@ def get_model() -> Model:
     return m
 `);
   });
+
+  it.each([
+    ['mol/l"', '"mol/l\\""'],
+    ["back\\slash", '"back\\\\slash"'],
+    ["line\nbreak", '"line\\nbreak"'],
+    ["µmol·s⁻¹", '"µmol·s⁻¹"'],
+  ])("escapes unit %j as a Python string literal %s", (unit, literal) => {
+    const m = new KineticModelBuilder()
+      .addParameter("k", { value: 0.5, unit })
+      .addVariable("S", { value: 10, unit })
+      .addAssignment("total", { fn: new Name("S"), unit })
+      .addReaction("v", {
+        fn: new Mul([new Name("k"), new Name("S")]),
+        stoichiometry: [{ name: "S", value: new Num(-1) }],
+        unit,
+      });
+    const src = m.buildMxlpy();
+    expect(src).toContain(`m.add_parameter("k", 0.5, unit=${literal})`);
+    expect(src).toContain(`m.add_variable("S", 10, unit=${literal})`);
+    expect(src).toContain(`args=["S"], unit=${literal})`);
+    expect(src).toContain(`        unit=${literal}\n`);
+    // Every line is a complete statement: no raw newline leaked from a unit.
+    expect(src).not.toContain("line\nbreak");
+  });
 });

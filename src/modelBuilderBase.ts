@@ -12,6 +12,7 @@ import {
   type ModelIR,
 } from "./modelIr.js";
 import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
+import { pyIdentifierMap, pyString } from "./pyIdentifier.js";
 
 export type SliderArgs = {
   min: string;
@@ -874,6 +875,19 @@ export abstract class ModelBuilderBase {
     return names;
   }
 
+  /**
+   * {@link getDisplayNames} (plus every NN weight, which `buildPython`
+   * references by id) mapped to unique, valid Python identifiers — what the
+   * Python exports (`buildMxlpy`, `buildPython`) emit instead of the raw
+   * display names, which are free-form prose.
+   */
+  protected getPyNames(): Map<string, string> {
+    return pyIdentifierMap([
+      ...this.getDisplayNames(),
+      ...[...this.nnWeights.keys()].map((k): [string, string] => [k, k]),
+    ]);
+  }
+
   getParameterNames(): string[] {
     return [...this.parameters.keys()];
   }
@@ -941,7 +955,11 @@ export abstract class ModelBuilderBase {
   }
 
   buildPython(userParameters: string[], selectedDerived?: string[]): string {
-    return irToPython(this.lower(), userParameters, selectedDerived);
+    return irToPython(
+      { ...this.lower(), displayNames: this.getPyNames() },
+      userParameters,
+      selectedDerived,
+    );
   }
 
   buildWat(): string {
@@ -1241,6 +1259,9 @@ ${chains.join("\n")};
    * reaction ids so a reaction's own args sort after everything declared
    * before it; `OdeModelBuilder` has no separate id space to add (a diff_eq
    * is keyed by its variable's own id, already covered) and passes none.
+   *
+   * Every emitted name goes through {@link getPyNames}, so prose display
+   * names become valid, unique Python identifiers.
    */
   protected buildMxlpyPreamble(extraDeclOrderIds: string[] = []): {
     defs: string[];
@@ -1256,7 +1277,7 @@ ${chains.join("\n")};
     /** Emits every readout as `m.add_readout(...)` into `body`, in dependency order (`sortReadoutDependencies`), matching mxlpy's own readout sort and keeping the module readable top to bottom — call after everything a readout may read has been declared. */
     emitReadouts: () => void;
   } {
-    const displayNames = this.getDisplayNames();
+    const displayNames = this.getPyNames();
     const name = (id: string) => displayNames.get(id) ?? id;
 
     // Declaration-order index, used to order generated-function arguments.
@@ -1310,7 +1331,7 @@ ${chains.join("\n")};
 
     const body: string[] = [];
     for (const [id, p] of this.parameters) {
-      const unit = p.unit === undefined ? "" : `, unit="${p.unit}"`;
+      const unit = p.unit === undefined ? "" : `, unit=${pyString(p.unit)}`;
       body.push(`m.add_parameter("${name(id)}", ${p.value}${unit})`);
     }
 
@@ -1318,7 +1339,8 @@ ${chains.join("\n")};
       for (const [id, ass] of this.assignments) {
         const fnName = `_derived_${name(id)}`;
         const args = emitFn(fnName, ass.fn);
-        const unit = ass.unit === undefined ? "" : `, unit="${ass.unit}"`;
+        const unit =
+          ass.unit === undefined ? "" : `, unit=${pyString(ass.unit)}`;
         body.push(
           `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${unit})`,
         );

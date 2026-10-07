@@ -4,6 +4,7 @@ import {
   buildModelWat,
 } from "./backends/wasm/wat-codegen.js";
 import { Add, Base, type GradMap, Mul, Name, Num } from "./mathml/index.js";
+import { PY_RESERVED, uniqueName } from "./pyIdentifier.js";
 
 /**
  * Intermediate representation shared by every model builder.
@@ -481,8 +482,27 @@ export function irToPython(
     .map(([name, value]) => `${Name(name)} = ${value}`)
     .join("\n    ");
 
-  const variables = ir.varNames.map(Name).join(", ");
-  const dxdt = ir.varNames.map((name) => `d${Name(name)}dt`).join(", ");
+  // Python unpacking: `x, = variables` for one variable (a bare `x =` would
+  // bind the whole list), `[] = variables` for none.
+  const variables =
+    ir.varNames.length === 0
+      ? "[]"
+      : ir.varNames.length === 1
+        ? `${Name(ir.varNames[0])},`
+        : ir.varNames.map(Name).join(", ");
+  // `d<x>dt` locals must not shadow a model name (e.g. a parameter `dxdt`).
+  const taken = new Set(
+    [
+      ...ir.varNames,
+      ...ir.paramValues.keys(),
+      ...allIntermediates.map((m) => m.name),
+    ].map((id) => Name(id).normalize("NFKC")),
+  );
+  for (const r of PY_RESERVED) taken.add(r);
+  const dName = new Map(
+    ir.varNames.map((name) => [name, uniqueName(`d${Name(name)}dt`, taken)]),
+  );
+  const dxdt = ir.varNames.map((name) => dName.get(name)!).join(", ");
 
   const fns = ir.intermediates
     .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
@@ -511,10 +531,14 @@ export function irToPython(
     : null;
 
   const rhsString = ir.varNames
-    .map((name) => `d${Name(name)}dt = ${rhsOf(ir, name).toPy(displayNames)}`)
+    .map(
+      (name) => `${dName.get(name)!} = ${rhsOf(ir, name).toPy(displayNames)}`,
+    )
     .join("\n    ");
 
-  const extraArgs = userParameters.map((i) => `${i}: float`).join(",\n    ");
+  const extraArgs = userParameters
+    .map((i) => `${Name(i)}: float`)
+    .join(",\n    ");
 
   const y0 = ir.varNames
     .map((name) => {
