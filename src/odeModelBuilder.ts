@@ -9,6 +9,8 @@ import {
   type MxlKind,
   type NNBlockConfig,
   nnBlockWeightMatrices,
+  pyUnitArg,
+  type WithUnitInput,
 } from "./modelBuilderBase.js";
 import {
   buildNNBlockMxlpySource,
@@ -44,17 +46,18 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
   // Readouts
-  addReadout(key: string, readout: Assign) {
+  addReadout(key: string, readout: WithUnitInput<Assign>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.readouts.set(key, readout);
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
-  updateReadout(key: string, readout: Assign) {
-    this.readouts.set(key, readout);
+  updateReadout(key: string, readout: WithUnitInput<Assign>) {
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
   removeReadout(key: string) {
@@ -66,7 +69,12 @@ export class OdeModelBuilder extends ModelBuilderBase {
     return new Map(
       [...this.readouts.entries()].map(([key, ro]) => [
         key,
-        { fn: ro.fn, displayName: ro.displayName, texName: ro.texName },
+        {
+          fn: ro.fn,
+          unit: ro.unit,
+          displayName: ro.displayName,
+          texName: ro.texName,
+        },
       ]),
     );
   }
@@ -213,7 +221,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
       const fnName = `_diffeq_${name(id)}`;
       const args = emitFn(fnName, this.differentials.get(id) ?? new Num(0));
       body.push(
-        `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}])`,
+        `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}]${pyUnitArg(v.unit)})`,
       );
     }
 
@@ -250,7 +258,7 @@ from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 ${jaxImportBlock}
 ${defsBlock}def get_model() -> OdeModelBuilder:

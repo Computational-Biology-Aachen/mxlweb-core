@@ -17,14 +17,16 @@ import {
   type MxlKind,
   nnBlockWeightMatrices,
   type Parameter,
+  pyUnitArg,
   type Variable,
+  type WithUnitInput,
 } from "./modelBuilderBase.js";
 import {
   buildNNBlockMxlpySource,
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
-import { pyString } from "./pyIdentifier.js";
+import type { Unit } from "./units/index.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -49,7 +51,7 @@ export type Stoichiometry = Array<Stoich>;
 export type Reaction = {
   fn: Base;
   stoichiometry: Stoichiometry;
-  unit?: string;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
 };
@@ -220,17 +222,25 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
+  protected *allUnits(): Generator<[string, Unit]> {
+    yield* super.allUnits();
+    for (const [id, rxn] of this.reactions) {
+      if (rxn.unit !== undefined) yield [id, rxn.unit];
+    }
+  }
+
   // Readouts
-  addReadout(key: string, readout: Assign) {
+  addReadout(key: string, readout: WithUnitInput<Assign>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.readouts.set(key, readout);
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
-  updateReadout(key: string, readout: Assign) {
-    this.readouts.set(key, readout);
+  updateReadout(key: string, readout: WithUnitInput<Assign>) {
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
   removeReadout(key: string) {
@@ -242,7 +252,12 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return new Map(
       [...this.readouts.entries()].map(([key, ro]) => [
         key,
-        { fn: ro.fn, displayName: ro.displayName, texName: ro.texName },
+        {
+          fn: ro.fn,
+          unit: ro.unit,
+          displayName: ro.displayName,
+          texName: ro.texName,
+        },
       ]),
     );
   }
@@ -252,13 +267,13 @@ export class KineticModelBuilder extends ModelBuilderBase {
   // ordinary reaction here (a multiplicative block can't be one).
 
   // Reactions
-  addReaction(key: string, reaction: Reaction) {
+  addReaction(key: string, reaction: WithUnitInput<Reaction>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.reactions.set(key, reaction);
+    this.reactions.set(key, this.withUnit(reaction));
     return this;
   }
-  updateReaction(key: string, reaction: Reaction) {
-    this.reactions.set(key, reaction);
+  updateReaction(key: string, reaction: WithUnitInput<Reaction>) {
+    this.reactions.set(key, this.withUnit(reaction));
     return this;
   }
   removeReaction(key: string) {
@@ -280,6 +295,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       const opts = this.tsFields([
         ["fn", rxn.fn.toTs()],
         ["stoichiometry", `[${stoich.join(", ")}]`],
+        ["unit", rxn.unit?.toTs()],
         ["displayName", this.tsString(rxn.displayName)],
         ["texName", this.tsString(rxn.texName)],
       ]);
@@ -452,9 +468,8 @@ export class KineticModelBuilder extends ModelBuilderBase {
     } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
-      const unit = v.unit === undefined ? "" : `, unit=${pyString(v.unit)}`;
       body.push(
-        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${unit})`,
+        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${pyUnitArg(v.unit)})`,
       );
     }
     emitAssignments();
@@ -464,7 +479,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       const fnName = `_rate_${name(id)}`;
       const args = emitFn(fnName, rxn.fn);
       const unit =
-        rxn.unit === undefined ? "" : `        unit=${pyString(rxn.unit)}`;
+        rxn.unit === undefined ? "" : `        unit=${rxn.unit.toPy()},`;
 
       const stoich: string[] = [];
       for (const { name: species, value } of rxn.stoichiometry) {
@@ -529,7 +544,7 @@ from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 ${jaxImportBlock}
 ${defsBlock}def get_model() -> Model:

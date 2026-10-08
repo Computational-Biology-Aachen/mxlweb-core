@@ -28,8 +28,9 @@ export const kineticSchema: JsonSchema = {
     },
     spec_version: {
       type: "string",
-      description: "Version of the .mxl.json format.",
-      const: "1.0",
+      description:
+        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
+      enum: ["1.0", "1.1"],
     },
     kind: {
       type: "string",
@@ -91,6 +92,17 @@ export const kineticSchema: JsonSchema = {
             "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
+          },
+        },
+        units: {
+          type: "object",
+          description:
+            "Custom unit kinds used by this model's units, keyed by id. Ids must not collide with registry kinds in units.json.",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          },
+          additionalProperties: {
+            $ref: "#/$defs/customUnit",
           },
         },
       },
@@ -255,6 +267,10 @@ export const kineticSchema: JsonSchema = {
           description:
             "Initial value: a constant (Num node) or an initial-assignment expression.",
         },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
+        },
         displayName: {
           type: "string",
           description: "Human-readable label for UI and code generation.",
@@ -278,6 +294,10 @@ export const kineticSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description:
             "Value: a constant (Num node) or an initial-assignment expression.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -303,6 +323,10 @@ export const kineticSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description: "Expression computing the derived value.",
         },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
+        },
         displayName: {
           type: "string",
           description: "Human-readable label for UI and code generation.",
@@ -323,6 +347,10 @@ export const kineticSchema: JsonSchema = {
         fn: {
           $ref: "#/$defs/node",
           description: "Expression computing the readout value.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -352,6 +380,10 @@ export const kineticSchema: JsonSchema = {
           additionalProperties: {
             $ref: "#/$defs/node",
           },
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -648,6 +680,91 @@ export const kineticSchema: JsonSchema = {
         },
       ],
     },
+    unit: {
+      type: "object",
+      description:
+        "Physical unit as a product of factors (the SBML unitDefinition model): multiplier * prod((10^prefix.scale * kind)^exponent). An empty `factors` list means dimensionless. See units.json for the shared kind/prefix vocabulary.",
+      required: ["factors"],
+      additionalProperties: false,
+      properties: {
+        factors: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/unitFactor",
+          },
+        },
+        multiplier: {
+          type: "number",
+          exclusiveMinimum: 0,
+          default: 1,
+          description:
+            "Scale not expressible by prefixes. Applied once to the whole unit.",
+        },
+      },
+    },
+    unitFactor: {
+      type: "object",
+      required: ["kind", "exponent"],
+      additionalProperties: false,
+      properties: {
+        kind: {
+          type: "string",
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          description:
+            "A kind id from units.json, or the id of a custom unit declared in model.units.",
+        },
+        prefix: {
+          enum: [
+            "yotta",
+            "zetta",
+            "exa",
+            "peta",
+            "tera",
+            "giga",
+            "mega",
+            "kilo",
+            "hecto",
+            "deca",
+            "deci",
+            "centi",
+            "milli",
+            "micro",
+            "nano",
+            "pico",
+            "femto",
+            "atto",
+            "zepto",
+            "yocto",
+          ],
+          description: "SI prefix applied to the kind before exponentiation.",
+        },
+        exponent: {
+          type: "integer",
+          not: {
+            const: 0,
+          },
+        },
+      },
+    },
+    customUnit: {
+      type: "object",
+      description:
+        "A model-specific unit kind with no entry in the shared registry (e.g. OD600, cells). Treated as an opaque base dimension.",
+      additionalProperties: false,
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Plain-text symbol; defaults to the id.",
+        },
+        tex: {
+          type: "string",
+          description: "LaTeX rendering; defaults to \\mathrm{<id>}.",
+        },
+        description: {
+          type: "string",
+        },
+      },
+    },
   },
 };
 
@@ -666,8 +783,9 @@ export const odeSchema: JsonSchema = {
     },
     spec_version: {
       type: "string",
-      description: "Version of the .mxl.json format.",
-      const: "1.0",
+      description:
+        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
+      enum: ["1.0", "1.1"],
     },
     kind: {
       type: "string",
@@ -722,6 +840,17 @@ export const odeSchema: JsonSchema = {
             "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
+          },
+        },
+        units: {
+          type: "object",
+          description:
+            "Custom unit kinds used by this model's units, keyed by id. Ids must not collide with registry kinds in units.json.",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          },
+          additionalProperties: {
+            $ref: "#/$defs/customUnit",
           },
         },
       },
@@ -890,6 +1019,10 @@ export const odeSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description: "Time derivative dx/dt of the variable.",
         },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
+        },
         displayName: {
           type: "string",
           description: "Human-readable label for UI and code generation.",
@@ -913,6 +1046,10 @@ export const odeSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description:
             "Value: a constant (Num node) or an initial-assignment expression.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -938,6 +1075,10 @@ export const odeSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description: "Expression computing the derived value.",
         },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
+        },
         displayName: {
           type: "string",
           description: "Human-readable label for UI and code generation.",
@@ -958,6 +1099,10 @@ export const odeSchema: JsonSchema = {
         fn: {
           $ref: "#/$defs/node",
           description: "Expression computing the readout value.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -1254,6 +1399,91 @@ export const odeSchema: JsonSchema = {
         },
       ],
     },
+    unit: {
+      type: "object",
+      description:
+        "Physical unit as a product of factors (the SBML unitDefinition model): multiplier * prod((10^prefix.scale * kind)^exponent). An empty `factors` list means dimensionless. See units.json for the shared kind/prefix vocabulary.",
+      required: ["factors"],
+      additionalProperties: false,
+      properties: {
+        factors: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/unitFactor",
+          },
+        },
+        multiplier: {
+          type: "number",
+          exclusiveMinimum: 0,
+          default: 1,
+          description:
+            "Scale not expressible by prefixes. Applied once to the whole unit.",
+        },
+      },
+    },
+    unitFactor: {
+      type: "object",
+      required: ["kind", "exponent"],
+      additionalProperties: false,
+      properties: {
+        kind: {
+          type: "string",
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          description:
+            "A kind id from units.json, or the id of a custom unit declared in model.units.",
+        },
+        prefix: {
+          enum: [
+            "yotta",
+            "zetta",
+            "exa",
+            "peta",
+            "tera",
+            "giga",
+            "mega",
+            "kilo",
+            "hecto",
+            "deca",
+            "deci",
+            "centi",
+            "milli",
+            "micro",
+            "nano",
+            "pico",
+            "femto",
+            "atto",
+            "zepto",
+            "yocto",
+          ],
+          description: "SI prefix applied to the kind before exponentiation.",
+        },
+        exponent: {
+          type: "integer",
+          not: {
+            const: 0,
+          },
+        },
+      },
+    },
+    customUnit: {
+      type: "object",
+      description:
+        "A model-specific unit kind with no entry in the shared registry (e.g. OD600, cells). Treated as an opaque base dimension.",
+      additionalProperties: false,
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Plain-text symbol; defaults to the id.",
+        },
+        tex: {
+          type: "string",
+          description: "LaTeX rendering; defaults to \\mathrm{<id>}.",
+        },
+        description: {
+          type: "string",
+        },
+      },
+    },
   },
 };
 
@@ -1272,8 +1502,9 @@ export const steadyStateSchema: JsonSchema = {
     },
     spec_version: {
       type: "string",
-      description: "Version of the .mxl.json format.",
-      const: "1.0",
+      description:
+        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
+      enum: ["1.0", "1.1"],
     },
     kind: {
       type: "string",
@@ -1310,6 +1541,17 @@ export const steadyStateSchema: JsonSchema = {
             $ref: "#/$defs/derived",
           },
         },
+        units: {
+          type: "object",
+          description:
+            "Custom unit kinds used by this model's units, keyed by id. Ids must not collide with registry kinds in units.json.",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          },
+          additionalProperties: {
+            $ref: "#/$defs/customUnit",
+          },
+        },
       },
     },
   },
@@ -1324,6 +1566,10 @@ export const steadyStateSchema: JsonSchema = {
           $ref: "#/$defs/node",
           description:
             "Value: a constant (Num node) or an initial-assignment expression.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -1348,6 +1594,10 @@ export const steadyStateSchema: JsonSchema = {
         fn: {
           $ref: "#/$defs/node",
           description: "Expression computing the derived value.",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the entity.",
         },
         displayName: {
           type: "string",
@@ -1469,6 +1719,91 @@ export const steadyStateSchema: JsonSchema = {
           },
         },
       ],
+    },
+    unit: {
+      type: "object",
+      description:
+        "Physical unit as a product of factors (the SBML unitDefinition model): multiplier * prod((10^prefix.scale * kind)^exponent). An empty `factors` list means dimensionless. See units.json for the shared kind/prefix vocabulary.",
+      required: ["factors"],
+      additionalProperties: false,
+      properties: {
+        factors: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/unitFactor",
+          },
+        },
+        multiplier: {
+          type: "number",
+          exclusiveMinimum: 0,
+          default: 1,
+          description:
+            "Scale not expressible by prefixes. Applied once to the whole unit.",
+        },
+      },
+    },
+    unitFactor: {
+      type: "object",
+      required: ["kind", "exponent"],
+      additionalProperties: false,
+      properties: {
+        kind: {
+          type: "string",
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          description:
+            "A kind id from units.json, or the id of a custom unit declared in model.units.",
+        },
+        prefix: {
+          enum: [
+            "yotta",
+            "zetta",
+            "exa",
+            "peta",
+            "tera",
+            "giga",
+            "mega",
+            "kilo",
+            "hecto",
+            "deca",
+            "deci",
+            "centi",
+            "milli",
+            "micro",
+            "nano",
+            "pico",
+            "femto",
+            "atto",
+            "zepto",
+            "yocto",
+          ],
+          description: "SI prefix applied to the kind before exponentiation.",
+        },
+        exponent: {
+          type: "integer",
+          not: {
+            const: 0,
+          },
+        },
+      },
+    },
+    customUnit: {
+      type: "object",
+      description:
+        "A model-specific unit kind with no entry in the shared registry (e.g. OD600, cells). Treated as an opaque base dimension.",
+      additionalProperties: false,
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Plain-text symbol; defaults to the id.",
+        },
+        tex: {
+          type: "string",
+          description: "LaTeX rendering; defaults to \\mathrm{<id>}.",
+        },
+        description: {
+          type: "string",
+        },
+      },
     },
   },
 };

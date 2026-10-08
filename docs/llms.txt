@@ -11,14 +11,16 @@ Targets Node.js ≥20. Part of a tool family with [MxlPy](https://github.com/Com
 - **Code generation pipeline.** From IR, generate pure-JS functions, WASM (via WAT codegen), Python source, or LaTeX. The pipeline is `Builder → IR → backend code`.
 - **MathML AST.** Expressions are represented as a tree of typed nodes (`Num`, `Name`, `Add`, `Mul`, `Pow`, `Fn`, etc.) with `toJs()`, `toPy()`, and `toTex()` codegen methods.
 - **SBML L3V1.** Full read/write roundtrip through `sbml.ts`. Models can be imported from SBML, manipulated with the builder API, and exported back.
+- **Units.** Entity `unit`s are structured `Unit` values (flat `{kind, prefix?, exponent}` factors, the SBML unitDefinition model) over the closed vocabulary shared with mxlpy (mxl-schemas `v1/units.json`), plus per-model custom kinds via `addCustomUnit()`. `add*` methods also accept unit text, parsed by `parseUnit()` and rejected if unknown. Exported as sympy expressions to mxlpy, `unit` JSON to `.mxl.json`, `<unitDefinition>`s to SBML.
 - **PAM fluorometry.** Protocol building and fluorescence analysis: `expandProtocol`, `findFoFmPeaks`, `calculateFvFm`, `calculateNPQ`.
-- **Subpath exports.** Each module is independently importable: `.`, `./mathml`, `./sbml`, `./pam`, `./backends/js`, `./backends/py`, `./backends/wasm`.
+- **Subpath exports.** Each module is independently importable: `.`, `./mathml`, `./sbml`, `./mxl`, `./units`, `./pam`, `./backends/js`, `./backends/py`, `./backends/wasm`.
 
 ## Reference map
 
 - **Model building** — `ModelBuilderBase` (abstract), `KineticModelBuilder` (reactions + stoichiometry), `OdeModelBuilder` (direct derivatives)
 - **IR & codegen** — `ModelIR`, `irToJs`, `irToJsDerived`, `irToWat`, `irToPython`, `evalInitialAssignment`
 - **SBML** — `sbml.ts`: `readSBML`, `writeSBML`
+- **Units** — `units/`: `Unit`, `parseUnit`, `unitRegistry`
 - **PAM** — `pam.ts`: `expandProtocol`, `findFoFmPeaks`, `calculateFvFm`, `calculateNPQ`
 - **MathML** — `mathml/`: `Num`, `Name`, `Add`, `Mul`, `Pow`, `Div`, `Sub`, `Neg`, `Fn` and more
 - **Compute backends** — `backends/js/` (Euler, RK2, RK45, BOSH3, Tsit5, backward Euler, Kvaerno45), `backends/wasm/` (Radau5, DOP853, DOPRI5 via C→WASM), `backends/py/` (Pyodide worker)
