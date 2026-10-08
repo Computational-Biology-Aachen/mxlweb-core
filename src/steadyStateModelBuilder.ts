@@ -7,6 +7,7 @@ import {
   type MxlEntity,
   type MxlKind,
   type NNBlockConfig,
+  pyUnitArg,
 } from "./modelBuilderBase.js";
 
 /**
@@ -36,6 +37,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     cl.parameters = new SvelteMap(this.parameters);
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
@@ -195,7 +197,9 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     const body: string[] = [];
 
     for (const [id, p] of this.parameters) {
-      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
+      body.push(
+        `m.add_parameter("${name(id)}", ${p.value}${pyUnitArg(p.unit)})`,
+      );
     }
 
     for (const [id, v] of this.variables) {
@@ -204,10 +208,12 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
         const fnName = `_init_${name(id)}`;
         const args = emitFn(fnName, v.value);
         body.push(
-          `m.add_variable("${name(id)}", InitialAssignment(${fnName}, args=[${argList(args)}]))`,
+          `m.add_variable("${name(id)}", InitialAssignment(${fnName}, args=[${argList(args)}])${pyUnitArg(v.unit)})`,
         );
       } else {
-        body.push(`m.add_variable("${name(id)}", ${v.value})`);
+        body.push(
+          `m.add_variable("${name(id)}", ${v.value}${pyUnitArg(v.unit)})`,
+        );
       }
     }
 
@@ -215,7 +221,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
       const fnName = `_derived_${name(id)}`;
       const args = emitFn(fnName, ass.fn);
       body.push(
-        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${pyUnitArg(ass.unit)})`,
       );
     }
 
@@ -232,7 +238,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 
 ${defsBlock}def get_model() -> SteadyStateModelBuilder:

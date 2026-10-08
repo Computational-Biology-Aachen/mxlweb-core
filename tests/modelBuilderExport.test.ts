@@ -226,12 +226,12 @@ describe("buildMxlJson", () => {
         value: 1,
         displayName: "Species A",
         texName: "A",
-        unit: "unit_var",
+        unit: "mmol",
       })
       .addVariable("B", { value: 0 })
       .addParameter("k", {
         value: 0.5,
-        unit: "unit_param",
+        unit: "1/s",
         slider: { min: "0", max: "1", step: "0.01", desc: "rate" },
       })
       .addReaction("v1", {
@@ -248,7 +248,7 @@ describe("buildMxlJson", () => {
 
     const doc = JSON.parse(m.buildMxlJson("kinetic_demo", "a demo"));
 
-    expect(doc.spec_version).toBe("1.0");
+    expect(doc.spec_version).toBe("1.1");
     expect(doc.kind).toBe("kinetic");
     expect(doc.model_id).toBe("kinetic_demo");
     expect(doc.description).toBe("a demo");
@@ -268,8 +268,12 @@ describe("buildMxlJson", () => {
       value: { type: "Num", value: 1 },
       displayName: "Species A",
       texName: "A",
-      unit: "unit_var",
+      unit: { factors: [{ kind: "mole", prefix: "milli", exponent: 1 }] },
     });
+    expect(doc.model.parameters.k.unit).toEqual({
+      factors: [{ kind: "second", exponent: -1 }],
+    });
+    expect(doc.model.units).toBeUndefined();
     expect(doc.model.parameters.k.slider).toEqual({
       min: "0",
       max: "1",
