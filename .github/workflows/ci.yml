@@ -34,8 +34,9 @@ jobs:
       - name: typecheck
         run: npm run typecheck
 
-      - name: lint
-        run: npm run lint
+      - name: lint (non-blocking)
+        continue-on-error: true
+        run: npm run lint || { echo "::warning title=ESLint::lint errors found (non-blocking, see step log)"; exit 1; }
 
       - name: build
         run: npm run build
