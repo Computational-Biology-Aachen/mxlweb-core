@@ -12,7 +12,15 @@ import {
   type ModelIR,
 } from "./modelIr.js";
 import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
-import { pyIdentifierMap, pyString } from "./pyIdentifier.js";
+import { pyIdentifierMap } from "./pyIdentifier.js";
+import {
+  type CustomUnit,
+  parseUnit,
+  Unit,
+  type UnitJson,
+  unitKind,
+  unitsPyImports,
+} from "./units/index.js";
 
 export type SliderArgs = {
   min: string;
@@ -23,23 +31,33 @@ export type SliderArgs = {
 
 export type Variable = {
   value: number | Base;
-  unit?: string;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
   slider?: SliderArgs;
 };
 export type Parameter = {
   value: number;
-  unit?: string;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
   slider?: SliderArgs;
 };
 export type Assign = {
   fn: Base;
-  unit?: string;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
+};
+
+/**
+ * `T` as accepted by the `add*`/`update*` methods: `unit` may also be authored
+ * text, which is parsed via {@link parseUnit} (against the builder's custom
+ * units) before it is stored — so an unrepresentable unit fails right there,
+ * never at export time.
+ */
+export type WithUnitInput<T extends { unit?: Unit }> = Omit<T, "unit"> & {
+  unit?: Unit | string;
 };
 
 /**
@@ -216,9 +234,15 @@ export function defaultTexName(name: string): string {
   return `\\text{${texEscape(name)}}`;
 }
 
+/** The `, unit=<sympy expr>` keyword argument of an mxlpy `add_*` call, or `""` without a unit. */
+export function pyUnitArg(unit: Unit | undefined): string {
+  return unit === undefined ? "" : `, unit=${unit.toPy()}`;
+}
+
 /** A derived computation that becomes a named local during code generation. */
 export type IntermediateDef = {
   fn: Base;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
 };
@@ -248,10 +272,10 @@ function mxlNNLayer(layer: NNBlockLayer): MxlNNLayer {
   };
 }
 
-/** One entity (variable/parameter/derived/reaction/nn_block) in the `.mxl.json` model section. */
+/** One entity (variable/parameter/derived/reaction/nn_block/custom unit) in the `.mxl.json` model section. */
 export type MxlEntity = {
   value?: JsonNode;
-  unit?: string;
+  unit?: UnitJson;
   fn?: JsonNode;
   stoichiometry?: Record<string, JsonNode>;
   displayName?: string;
@@ -267,12 +291,16 @@ export type MxlEntity = {
   weights_ref?: string;
   scale?: number;
   mechanism?: JsonNode;
+  /** `units` (custom unit) entries only — see {@link CustomUnit}. */
+  symbol?: string;
+  tex?: string;
+  description?: string;
 };
 
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
 export type MxlJsonDocument = {
   $schema: string;
-  spec_version: "1.0";
+  spec_version: "1.0" | "1.1";
   kind: MxlKind;
   model_id: string;
   description?: string;
@@ -317,6 +345,12 @@ export abstract class ModelBuilderBase {
    * resolve every `Name` against that merged, flat array).
    */
   nnWeights: SvelteMap<string, number> = new SvelteMap();
+  /**
+   * Model-specific unit kinds with no entry in the shared registry (e.g.
+   * `OD600`), serialised as `.mxl.json` `model.units`. Declare one before any
+   * unit uses it — unit validation rejects undeclared kinds.
+   */
+  customUnits: SvelteMap<string, CustomUnit> = new SvelteMap();
 
   /**
    * Builder-specific intermediate computations, beyond assignments, that must
@@ -383,14 +417,67 @@ export abstract class ModelBuilderBase {
   /** Build the formulation-specific `model` section of the `.mxl.json` document. */
   protected abstract mxlModel(): Record<string, Record<string, MxlEntity>>;
 
-  // Variables
-  addVariable(key: string, value: Variable) {
-    if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.variables.set(key, value);
+  // Custom units
+  /**
+   * Declare a custom unit kind usable in any unit of this model. Its id must
+   * be a valid identifier and must not shadow a registry kind.
+   */
+  addCustomUnit(id: string, unit: CustomUnit = {}) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+      throw new Error(`invalid custom unit id "${id}"`);
+    }
+    if (unitKind(id) !== undefined) {
+      throw new Error(
+        `custom unit "${id}" would shadow the registry unit of the same id`,
+      );
+    }
+    this.customUnits.set(id, unit);
     return this;
   }
-  updateVariable(key: string, value: Variable) {
-    this.variables.set(key, value);
+  /** Remove a custom unit kind; throws while any unit in the model still uses it. */
+  removeCustomUnit(id: string) {
+    for (const [owner, unit] of this.allUnits()) {
+      if (unit.kinds().has(id)) {
+        throw new Error(
+          `custom unit "${id}" is still used by the unit of "${owner}"`,
+        );
+      }
+    }
+    this.customUnits.delete(id);
+    return this;
+  }
+
+  /** Every `[ownerId, unit]` set anywhere in the model. Subclasses add their own entity kinds. */
+  protected *allUnits(): Generator<[string, Unit]> {
+    for (const map of [this.variables, this.parameters, this.assignments]) {
+      for (const [id, e] of map) {
+        if (e.unit !== undefined) yield [id, e.unit];
+      }
+    }
+    for (const [id, def] of this.extraReadouts()) {
+      if (def.unit !== undefined) yield [id, def.unit];
+    }
+  }
+
+  /** Normalise an `add*`/`update*` argument: parse a string unit, validate a `Unit` against the registry and {@link customUnits}. */
+  protected withUnit<T extends { unit?: Unit }>(value: WithUnitInput<T>): T {
+    const { unit, ...rest } = value;
+    if (unit === undefined) return rest as unknown as T;
+    const resolved =
+      typeof unit === "string"
+        ? parseUnit(unit, this.customUnits)
+        : unit.validate(this.customUnits);
+    return { ...rest, unit: resolved } as unknown as T;
+  }
+
+  // Variables
+  addVariable(key: string, value: WithUnitInput<Variable>) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
+    this.variables.set(key, this.withUnit(value));
+    return this;
+  }
+  updateVariable(key: string, value: WithUnitInput<Variable>) {
+    this.variables.set(key, this.withUnit(value));
     return this;
   }
   removeVariable(key: string) {
@@ -399,13 +486,13 @@ export abstract class ModelBuilderBase {
   }
 
   // Parameters
-  addParameter(key: string, value: Parameter) {
+  addParameter(key: string, value: WithUnitInput<Parameter>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.parameters.set(key, value);
+    this.parameters.set(key, this.withUnit(value));
     return this;
   }
-  updateParameter(key: string, value: Parameter) {
-    this.parameters.set(key, value);
+  updateParameter(key: string, value: WithUnitInput<Parameter>) {
+    this.parameters.set(key, this.withUnit(value));
     return this;
   }
   removeParameter(key: string) {
@@ -414,13 +501,13 @@ export abstract class ModelBuilderBase {
   }
 
   // Assignments
-  addAssignment(key: string, assignment: Assign) {
+  addAssignment(key: string, assignment: WithUnitInput<Assign>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.assignments.set(key, assignment);
+    this.assignments.set(key, this.withUnit(assignment));
     return this;
   }
-  updateAssignment(key: string, assignment: Assign) {
-    this.assignments.set(key, assignment);
+  updateAssignment(key: string, assignment: WithUnitInput<Assign>) {
+    this.assignments.set(key, this.withUnit(assignment));
     return this;
   }
   removeAssignment(key: string) {
@@ -1005,6 +1092,12 @@ export abstract class ModelBuilderBase {
     };
 
     const chains: string[] = [];
+    // Custom units before anything whose unit may reference them.
+    for (const [id, u] of this.customUnits) {
+      chains.push(
+        `    .addCustomUnit(${JSON.stringify(id)}, ${JSON.stringify(u)})`,
+      );
+    }
     // NN blocks first, deliberately: addNNBlock always Glorot-reinitializes
     // its weights fresh from `seed` unless given an explicit trained-weights
     // map — passed here from `this.nnWeights`' *current* live values, so a
@@ -1041,6 +1134,8 @@ export abstract class ModelBuilderBase {
     chains.push(...this.extraMxlwebChains(collect));
 
     const className = this.builderType;
+    const coreNames =
+      [...this.allUnits()].length > 0 ? `${className}, Unit` : className;
     const mathmlNames = [...ctors].sort();
     const mathmlImport =
       mathmlNames.length > 0
@@ -1051,7 +1146,7 @@ export abstract class ModelBuilderBase {
             )}\n} from "@computational-biology-aachen/mxlweb-core/mathml";\n`
         : "";
 
-    return `import { ${className} } from "@computational-biology-aachen/mxlweb-core";
+    return `import { ${coreNames} } from "@computational-biology-aachen/mxlweb-core";
 ${mathmlImport}
 export function initModel(): ${className} {
   return new ${className}()
@@ -1080,13 +1175,19 @@ ${chains.join("\n")};
    */
   buildMxlJson(modelId: string, description?: string): string {
     const kind = this.mxlKind();
+    const model = this.mxlModel();
+    if (this.customUnits.size > 0) {
+      model.units = Object.fromEntries(
+        [...this.customUnits].map(([id, u]) => [id, { ...u }]),
+      );
+    }
     const doc: MxlJsonDocument = {
       $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/${kind}-model.schema.json`,
-      spec_version: "1.0",
+      spec_version: "1.1",
       kind,
       model_id: modelId,
       ...(description !== undefined ? { description } : {}),
-      model: this.mxlModel(),
+      model,
     };
     return JSON.stringify(doc, null, 2);
   }
@@ -1099,12 +1200,12 @@ ${chains.join("\n")};
   /** Attach the optional presentation fields (display/LaTeX names, slider) to an entity. */
   protected mxlApplyMeta(
     entry: MxlEntity,
-    unit: string | undefined,
+    unit: Unit | undefined,
     displayName: string | undefined,
     texName: string | undefined,
     slider?: SliderArgs,
   ): void {
-    if (unit !== undefined) entry.unit = unit;
+    if (unit !== undefined) entry.unit = unit.toJson();
     if (displayName !== undefined) entry.displayName = displayName;
     if (texName !== undefined) entry.texName = texName;
     if (slider !== undefined) {
@@ -1149,7 +1250,7 @@ ${chains.join("\n")};
     const out: Record<string, MxlEntity> = {};
     for (const [id, def] of defs) {
       const entry: MxlEntity = { fn: def.fn.toJson() };
-      this.mxlApplyMeta(entry, undefined, def.displayName, def.texName);
+      this.mxlApplyMeta(entry, def.unit, def.displayName, def.texName);
       out[id] = entry;
     }
     return out;
@@ -1331,18 +1432,17 @@ ${chains.join("\n")};
 
     const body: string[] = [];
     for (const [id, p] of this.parameters) {
-      const unit = p.unit === undefined ? "" : `, unit=${pyString(p.unit)}`;
-      body.push(`m.add_parameter("${name(id)}", ${p.value}${unit})`);
+      body.push(
+        `m.add_parameter("${name(id)}", ${p.value}${pyUnitArg(p.unit)})`,
+      );
     }
 
     const emitAssignments = () => {
       for (const [id, ass] of this.assignments) {
         const fnName = `_derived_${name(id)}`;
         const args = emitFn(fnName, ass.fn);
-        const unit =
-          ass.unit === undefined ? "" : `, unit=${pyString(ass.unit)}`;
         body.push(
-          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${unit})`,
+          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${pyUnitArg(ass.unit)})`,
         );
       }
     };
@@ -1351,9 +1451,10 @@ ${chains.join("\n")};
       const readouts = this.extraReadouts();
       for (const id of this.sortReadoutDependencies()) {
         const fnName = `_readout_${name(id)}`;
-        const args = emitFn(fnName, readouts.get(id)!.fn);
+        const { fn, unit } = readouts.get(id)!;
+        const args = emitFn(fnName, fn);
         body.push(
-          `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+          `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}]${pyUnitArg(unit)})`,
         );
       }
     };
@@ -1369,6 +1470,12 @@ ${chains.join("\n")};
       emitAssignments,
       emitReadouts,
     };
+  }
+
+  /** Import lines the `unit=` arguments of {@link buildMxlpy} need, joined with a trailing newline (empty without units). */
+  protected pyUnitImportBlock(): string {
+    const lines = unitsPyImports([...this.allUnits()].map(([, u]) => u));
+    return lines.length > 0 ? `${lines.join("\n")}\n` : "";
   }
 
   protected tsSlider(s: SliderArgs): string {
@@ -1391,7 +1498,7 @@ ${chains.join("\n")};
   private tsParameter(p: Parameter): string {
     return this.tsFields([
       ["value", `${p.value}`],
-      ["unit", `${p.unit}`],
+      ["unit", p.unit?.toTs()],
       ["displayName", this.tsString(p.displayName)],
       ["texName", this.tsString(p.texName)],
       ["slider", p.slider !== undefined ? this.tsSlider(p.slider) : undefined],
@@ -1401,6 +1508,7 @@ ${chains.join("\n")};
   private tsVariable(v: Variable): string {
     return this.tsFields([
       ["value", v.value instanceof Base ? v.value.toTs() : `${v.value}`],
+      ["unit", v.unit?.toTs()],
       ["displayName", this.tsString(v.displayName)],
       ["texName", this.tsString(v.texName)],
       ["slider", v.slider !== undefined ? this.tsSlider(v.slider) : undefined],
@@ -1410,6 +1518,7 @@ ${chains.join("\n")};
   protected tsAssign(a: Assign): string {
     return this.tsFields([
       ["fn", a.fn.toTs()],
+      ["unit", a.unit?.toTs()],
       ["displayName", this.tsString(a.displayName)],
       ["texName", this.tsString(a.texName)],
     ]);

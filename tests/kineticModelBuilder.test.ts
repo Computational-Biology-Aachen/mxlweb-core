@@ -199,15 +199,15 @@ def get_model() -> Model:
 `);
   });
 
-  it("emits every unit: parameters, variables, assignments, reactions", () => {
+  it("emits every unit as a sympy expression: parameters, variables, assignments, reactions", () => {
     const m = new KineticModelBuilder();
-    m.addParameter("k", { value: 0.5, unit: "unit_param" });
-    m.addVariable("S", { value: 10, unit: "unit_var" });
+    m.addParameter("k", { value: 0.5, unit: "1/s" });
+    m.addVariable("S", { value: 10, unit: "mmol" });
     // Expression-valued initial condition -> InitialAssignment.
-    m.addVariable("P", { value: new Minus([new Name("k")]), unit: "unit_var" });
+    m.addVariable("P", { value: new Minus([new Name("k")]), unit: "mmol" });
     m.addAssignment("total", {
       fn: new Add([new Name("S"), new Name("P")]),
-      unit: "unit_derived",
+      unit: "mmol",
     });
     m.addReaction("v", {
       fn: new Mul([new Name("k"), new Name("S")]),
@@ -215,12 +215,13 @@ def get_model() -> Model:
         { name: "S", value: new Num(-1) },
         { name: "P", value: new Num(1) },
       ],
-      unit: "unit_react",
+      unit: "mmol/s",
     });
 
     expect(m.buildMxlpy()).toBe(`import math
 
 import numpy as np
+import sympy.physics.units as su
 
 from mxlpy import InitialAssignment, Model
 
@@ -235,42 +236,66 @@ def _rate_v(S, k):
 
 def get_model() -> Model:
     m = Model()
-    m.add_parameter("k", 0.5, unit="unit_param")
-    m.add_variable("S", 10, unit="unit_var")
-    m.add_variable("P", InitialAssignment(_init_P, args=["k"]), unit="unit_var")
-    m.add_derived("total", _derived_total, args=["S", "P"], unit="unit_derived")
+    m.add_parameter("k", 0.5, unit=1/su.second)
+    m.add_variable("S", 10, unit=su.mol*su.milli)
+    m.add_variable("P", InitialAssignment(_init_P, args=["k"]), unit=su.mol*su.milli)
+    m.add_derived("total", _derived_total, args=["S", "P"], unit=su.mol*su.milli)
     m.add_reaction(
         "v",
         _rate_v,
         args=["S", "k"],
         stoichiometry={"S": -1, "P": 1},
-        unit="unit_react"
+        unit=su.mol*su.milli/su.second,
     )
     return m
 `);
   });
 
-  it.each([
-    ['mol/l"', '"mol/l\\""'],
-    ["back\\slash", '"back\\\\slash"'],
-    ["line\nbreak", '"line\\nbreak"'],
-    ["µmol·s⁻¹", '"µmol·s⁻¹"'],
-  ])("escapes unit %j as a Python string literal %s", (unit, literal) => {
+  it("emits custom and non-sympy units as Quantity objects", () => {
     const m = new KineticModelBuilder()
-      .addParameter("k", { value: 0.5, unit })
-      .addVariable("S", { value: 10, unit })
-      .addAssignment("total", { fn: new Name("S"), unit })
-      .addReaction("v", {
-        fn: new Mul([new Name("k"), new Name("S")]),
+      .addCustomUnit("OD600", { description: "optical density" })
+      .addParameter("k", { value: 0.5, unit: "OD600/h" })
+      .addVariable("S", { value: 1, unit: "mmol/mol_chl" });
+    const src = m.buildMxlpy();
+    expect(src).toContain(
+      "import sympy.physics.units as su\nfrom sympy.physics.units.quantities import Quantity\n",
+    );
+    expect(src).toContain(
+      'm.add_parameter("k", 0.5, unit=Quantity("OD600", abbrev="OD600")/su.hour)',
+    );
+    expect(src).toContain(
+      'm.add_variable("S", 1, unit=su.mol*su.milli/Quantity("mol_chl", abbrev="mol_chl"))',
+    );
+  });
+
+  it("omits unit imports for a model without units", () => {
+    const src = new KineticModelBuilder()
+      .addParameter("k", { value: 1 })
+      .buildMxlpy();
+    expect(src).not.toContain("sympy");
+    expect(src).toContain("import numpy as np\n\nfrom mxlpy import Model");
+  });
+
+  it.each([
+    ['mol/l"', /unexpected/],
+    ["back\\slash", /unexpected/],
+    ["OD600", /unknown unit symbol "OD600"/],
+    ["a.u.", /unexpected/],
+    ["mg Chl", /unknown unit symbol "Chl"/],
+  ])("rejects unit text %j when it is added, not at export", (unit, error) => {
+    const m = new KineticModelBuilder();
+    expect(() => m.addParameter("k", { value: 0.5, unit })).toThrow(error);
+    expect(() => m.addVariable("S", { value: 10, unit })).toThrow(error);
+    expect(() => m.addAssignment("total", { fn: new Name("S"), unit })).toThrow(
+      error,
+    );
+    expect(() =>
+      m.addReaction("v", {
+        fn: new Name("S"),
         stoichiometry: [{ name: "S", value: new Num(-1) }],
         unit,
-      });
-    const src = m.buildMxlpy();
-    expect(src).toContain(`m.add_parameter("k", 0.5, unit=${literal})`);
-    expect(src).toContain(`m.add_variable("S", 10, unit=${literal})`);
-    expect(src).toContain(`args=["S"], unit=${literal})`);
-    expect(src).toContain(`        unit=${literal}\n`);
-    // Every line is a complete statement: no raw newline leaked from a unit.
-    expect(src).not.toContain("line\nbreak");
+      }),
+    ).toThrow(error);
+    expect(m.parameters.size + m.variables.size).toBe(0);
   });
 });

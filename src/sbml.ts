@@ -62,6 +62,13 @@ import {
 } from "./mathml/index.js";
 import type { Stoichiometry } from "./kineticModelBuilder.js";
 import { KineticModelBuilder } from "./kineticModelBuilder.js";
+import {
+  Unit,
+  type UnitFactor,
+  unitKind,
+  unitKindIds,
+  unitPrefixByScale,
+} from "./units/index.js";
 
 /**
  * SBML (Systems Biology Markup Language) interop for the kinetic model builder.
@@ -74,6 +81,11 @@ import { KineticModelBuilder } from "./kineticModelBuilder.js";
  * - {@link sbmlToModel} parses an SBML document back into a builder, handling
  *   compartments, boundary species, initial/assignment/rate rules and reaction
  *   stoichiometry.
+ *
+ * Parameter units travel as `<unitDefinition>`s (see {@link Unit.toSBML} and
+ * {@link sbmlUnitDefinitionToUnit}). Species units are neither exported nor
+ * imported: SBML derives them from substance units and compartment size,
+ * which this flat single-compartment mapping doesn't model.
  *
  * @module
  */
@@ -100,6 +112,116 @@ function parseFloatAttr(el: Element, attr: string): number {
   if (val === null) return NaN;
   const n = parseFloat(val);
   return isNaN(n) ? NaN : n;
+}
+
+// ─── Units ──────────────────────────────────────────────────────────────────
+
+/** Registry kind for an SBML UnitKind with the given per-unit multiplier (`second`×60 → `minute`). */
+function registryKindForSbml(
+  kind: string,
+  multiplier: number,
+): string | undefined {
+  return unitKindIds().find((id) => {
+    const sbml = unitKind(id)?.sbml;
+    return sbml?.kind === kind && sbml.multiplier === multiplier;
+  });
+}
+
+/** Level 1/2 spellings and kinds outside the registry's SBML mapping. */
+const SBML_KIND_ALIASES: Record<string, { kind: string; scale: number }> = {
+  kilogram: { kind: "gram", scale: 3 },
+  meter: { kind: "metre", scale: 0 },
+  liter: { kind: "litre", scale: 0 },
+  celsius: { kind: "celsius", scale: 0 },
+};
+
+type SbmlUnit = {
+  kind: string;
+  exponent: number;
+  scale: number;
+  multiplier: number;
+};
+
+/**
+ * Convert SBML units (`∏ (multiplier · 10^scale · kind)^exponent`) into a
+ * {@link Unit}. Returns `undefined`, with a warning, for anything the shared
+ * registry can't represent (`avogadro`, non-integer exponents, unknown kinds)
+ * — the unit is dropped rather than guessed.
+ */
+function sbmlUnitsToUnit(id: string, units: SbmlUnit[]): Unit | undefined {
+  const drop = (why: string) => {
+    console.warn(`SBML unit "${id}": ${why}, dropping the unit`);
+    return undefined;
+  };
+  const factors: UnitFactor[] = [];
+  let multiplier = 1;
+  for (const u of units) {
+    let { scale, multiplier: m } = u;
+    const e = u.exponent;
+    if (!Number.isInteger(e) || !Number.isInteger(scale)) {
+      return drop("non-integer exponent/scale isn't representable");
+    }
+    if (u.kind === "dimensionless") {
+      multiplier *= (m * 10 ** scale) ** e;
+      continue;
+    }
+    let kind = registryKindForSbml(u.kind, m);
+    if (kind !== undefined) {
+      m = 1;
+    } else {
+      const alias = SBML_KIND_ALIASES[u.kind];
+      kind = alias?.kind ?? registryKindForSbml(u.kind, 1);
+      scale += alias?.scale ?? 0;
+    }
+    if (kind === undefined) {
+      return drop(`kind "${u.kind}" has no equivalent in the unit registry`);
+    }
+    multiplier *= m ** e;
+    const prefix = scale === 0 ? undefined : unitPrefixByScale(scale)?.id;
+    if (scale !== 0 && prefix === undefined) multiplier *= 10 ** (scale * e);
+    factors.push(
+      prefix === undefined
+        ? { kind, exponent: e }
+        : { kind, prefix, exponent: e },
+    );
+  }
+  try {
+    return new Unit(factors, multiplier);
+  } catch (err) {
+    return drop((err as Error).message);
+  }
+}
+
+/** {@link sbmlUnitsToUnit} for one `<unitDefinition>` element. */
+export function sbmlUnitDefinitionToUnit(def: Element): Unit | undefined {
+  const attr = (el: Element, name: string, fallback: number) => {
+    const v = parseFloatAttr(el, name);
+    return isNaN(v) ? fallback : v;
+  };
+  return sbmlUnitsToUnit(
+    def.getAttribute("id") ?? "?",
+    [...def.querySelectorAll("listOfUnits > unit")].map((u) => ({
+      kind: u.getAttribute("kind") ?? "",
+      exponent: attr(u, "exponent", 1),
+      scale: attr(u, "scale", 0),
+      multiplier: attr(u, "multiplier", 1),
+    })),
+  );
+}
+
+/**
+ * Resolve a `units="..."` attribute: a `<unitDefinition>` id from `defs`, or
+ * a bare SBML base unit kind (`second`, `mole`, …).
+ */
+function resolveSbmlUnits(
+  ref: string | null,
+  defs: Map<string, Unit | undefined>,
+): Unit | undefined {
+  if (ref === null) return undefined;
+  if (defs.has(ref)) return defs.get(ref);
+  return sbmlUnitsToUnit(ref, [
+    { kind: ref, exponent: 1, scale: 0, multiplier: 1 },
+  ]);
 }
 
 // ─── MathML → AST ───────────────────────────────────────────────────────────
@@ -333,6 +455,18 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
   }
   const modelId = name.replace(/[^A-Za-z0-9_]/g, "_") || "model";
 
+  // One <unitDefinition> per distinct parameter unit, in first-use order.
+  const unitDefs: Array<{ id: string; unit: Unit }> = [];
+  const unitRef = (unit: Unit | undefined): string => {
+    if (unit === undefined) return "";
+    let def = unitDefs.find((d) => d.unit.equals(unit));
+    if (def === undefined) {
+      def = { id: `unit_${unitDefs.length + 1}`, unit };
+      unitDefs.push(def);
+    }
+    return ` units="${def.id}"`;
+  };
+
   const compartmentXml = `<listOfCompartments>
       <compartment id="default" size="1" constant="true"/>
     </listOfCompartments>`;
@@ -353,7 +487,7 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
     const items = [...model.parameters.entries()]
       .map(([id, p]) => {
         const displayName = p.displayName ?? id;
-        return `<parameter id="${escapeXml(id)}" name="${escapeXml(displayName)}" value="${p.value}" constant="true"/>`;
+        return `<parameter id="${escapeXml(id)}" name="${escapeXml(displayName)}" value="${p.value}"${unitRef(p.unit)} constant="true"/>`;
       })
       .join("\n      ");
     parametersXml = `<listOfParameters>\n      ${items}\n    </listOfParameters>`;
@@ -414,7 +548,15 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
     reactionsXml = `<listOfReactions>\n      ${items}\n    </listOfReactions>`;
   }
 
+  const unitDefsXml =
+    unitDefs.length > 0
+      ? `<listOfUnitDefinitions>\n      ${unitDefs
+          .map(({ id, unit }) => unit.toSBML(id))
+          .join("\n      ")}\n    </listOfUnitDefinitions>`
+      : "";
+
   const sections = [
+    unitDefsXml,
     compartmentXml,
     speciesXml,
     parametersXml,
@@ -512,15 +654,24 @@ export function sbmlToModel(xmlString: string): KineticModelBuilder {
     }
   }
 
-  // 3. Global parameters
+  // 3. Global parameters (with units, when representable)
+  const unitDefs = new Map<string, Unit | undefined>();
+  for (const def of doc.querySelectorAll(
+    "listOfUnitDefinitions > unitDefinition",
+  )) {
+    const id = def.getAttribute("id");
+    if (id) unitDefs.set(id, sbmlUnitDefinitionToUnit(def));
+  }
   for (const param of doc.querySelectorAll("listOfParameters > parameter")) {
     const id = param.getAttribute("id");
     if (!id) continue;
     const value = parseFloatAttr(param, "value");
     const displayName = param.getAttribute("name");
+    const unit = resolveSbmlUnits(param.getAttribute("units"), unitDefs);
     builder.addParameter(id, {
       value: isNaN(value) ? 0 : value,
       displayName: displayName && displayName !== id ? displayName : undefined,
+      ...(unit !== undefined && !unit.isDimensionless ? { unit } : {}),
     });
   }
 

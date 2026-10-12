@@ -12,6 +12,7 @@
  */
 
 export * from "./modelBuilderBase.js";
+export * from "./units/index.js";
 export * from "./modelIr.js";
 export * from "./kineticModelBuilder.js";
 export * from "./nnBlock.js";
