@@ -1324,7 +1324,7 @@ ${chains.join("\n")};
         usesInitial = true;
         const fnName = `_init_${name(id)}`;
         const args = emitFn(fnName, value);
-        return `InitialAssignment(${fnName}, args=[${argList(args)}])`;
+        return `InitialAssignment(fn=${fnName}, args=[${argList(args)}])`;
       }
       return `${value}`;
     };

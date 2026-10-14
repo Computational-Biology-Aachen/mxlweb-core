@@ -204,7 +204,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
         const fnName = `_init_${name(id)}`;
         const args = emitFn(fnName, v.value);
         body.push(
-          `m.add_variable("${name(id)}", InitialAssignment(${fnName}, args=[${argList(args)}]))`,
+          `m.add_variable("${name(id)}", InitialAssignment(fn=${fnName}, args=[${argList(args)}]))`,
         );
       } else {
         body.push(`m.add_variable("${name(id)}", ${v.value})`);

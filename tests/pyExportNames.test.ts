@@ -269,7 +269,7 @@ def get_model() -> Model:
     m = Model()
     m.add_parameter("_1st_param", 0.5)
     m.add_variable("Species_A", 10)
-    m.add_variable("B_form", InitialAssignment(_init_B_form, args=["_1st_param"]))
+    m.add_variable("B_form", InitialAssignment(fn=_init_B_form, args=["_1st_param"]))
     m.add_derived("lambda_", _derived_lambda_, args=["Species_A", "B_form"])
     m.add_reaction(
         "first_reaction",

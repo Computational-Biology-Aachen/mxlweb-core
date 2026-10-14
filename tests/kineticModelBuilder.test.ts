@@ -134,7 +134,7 @@ def get_model() -> Model:
     m = Model()
     m.add_parameter("k", 0.5)
     m.add_variable("S", 10)
-    m.add_variable("P", InitialAssignment(_init_P, args=["k"]))
+    m.add_variable("P", InitialAssignment(fn=_init_P, args=["k"]))
     m.add_derived("total", _derived_total, args=["S", "P"])
     m.add_reaction(
         "v",
@@ -237,7 +237,7 @@ def get_model() -> Model:
     m = Model()
     m.add_parameter("k", 0.5, unit="unit_param")
     m.add_variable("S", 10, unit="unit_var")
-    m.add_variable("P", InitialAssignment(_init_P, args=["k"]), unit="unit_var")
+    m.add_variable("P", InitialAssignment(fn=_init_P, args=["k"]), unit="unit_var")
     m.add_derived("total", _derived_total, args=["S", "P"], unit="unit_derived")
     m.add_reaction(
         "v",
