@@ -31,6 +31,15 @@
       "types": "./src/pam.ts",
       "default": "./dist/pam.js"
     },
+    "./workers": {
+      "svelte": "./src/workers/index.ts",
+      "types": "./src/workers/index.ts",
+      "default": "./dist/workers/index.js"
+    },
+    "./fit": {
+      "svelte": "./src/fit/index.ts",
+      "types": "./src/fit/index.ts"
+    },
     "./backends/js": {
       "svelte": "./src/backends/js/index.ts",
       "types": "./src/backends/js/index.ts",
@@ -98,20 +107,42 @@
   "dependencies": {
     "ajv": "^8.17.1"
   },
+  "peerDependencies": {
+    "@computational-biology-aachen/design": "*",
+    "chart.js": ">=4.5.0",
+    "papaparse": "^5.7.0",
+    "svelte": ">=5.57.2"
+  },
+  "peerDependenciesMeta": {
+    "@computational-biology-aachen/design": {
+      "optional": true
+    },
+    "chart.js": {
+      "optional": true
+    },
+    "papaparse": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@eslint/compat": ">=2.1.1",
     "@eslint/js": ">=10.0.0",
+    "@types/node": "^26.6.4",
+    "@types/papaparse": "^5.5.2",
     "eslint": ">=10.12.0",
     "eslint-config-prettier": ">=10.1.8",
     "globals": ">=17.13.0",
+    "papaparse": "^5.7.0",
     "prettier": ">=3.9.9",
-    "typescript-eslint": ">=8.71.1",
-    "@types/node": "^26.6.4",
-    "tsx": "^4.23.15",
     "pyodide": "^314.0.7",
     "svelte": ">=5.57.2",
     "svelte-check": ">=4.7.4",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
+    "typescript-eslint": ">=8.71.1",
     "vitest": "^4.1.11",
     "wat-compiler": "^1.1.1"
   }
