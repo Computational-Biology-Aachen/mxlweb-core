@@ -418,7 +418,7 @@ export class Name extends Nullary {
     if (pi !== undefined) {
       return `(f64.load (i32.add (local.get 4) (i32.const ${pi * 8})))`;
     }
-    return `(f64.const 0)`;
+    throw new Error(`Unknown symbol "${this.name}" in WAT codegen`);
   }
   getSymbols(symbols: Set<string>): Set<string> {
     symbols.add(this.name);

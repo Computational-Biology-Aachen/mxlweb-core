@@ -129,7 +129,7 @@ export function mathMLToAst(el: Element): Base {
   // Stand-alone csymbol (e.g., time, avogadro)
   if (tag === "csymbol") {
     const defUrl = el.getAttribute("definitionURL") ?? "";
-    if (defUrl.endsWith("time")) return new Name("t");
+    if (defUrl.endsWith("time")) return new Name("time");
     if (defUrl.endsWith("avogadro")) return new Num(6.02214076e23);
     return new Name(el.textContent!.trim());
   }
@@ -272,7 +272,7 @@ export function mathMLToAst(el: Element): Base {
         const defUrl = op.getAttribute("definitionURL") ?? "";
         const sym = op.textContent!.trim();
         if (defUrl.endsWith("rateOf")) return new RateOf(mathMLToAst(args[0]));
-        if (defUrl.endsWith("time")) return new Name("t");
+        if (defUrl.endsWith("time")) return new Name("time");
         if (defUrl.endsWith("avogadro")) return new Num(6.02214076e23);
         return new Name(sym);
       }

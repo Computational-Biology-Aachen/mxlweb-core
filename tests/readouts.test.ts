@@ -97,9 +97,9 @@ describe("readouts: CRUD and structural exclusion from dynamics", () => {
       .addVariable("A", { value: 1 })
       .addReadout("ro", { fn: new Num(1) })
       .addAssignment("bad", { fn: new Name("ro") });
-    // "bad" can never resolve — sortDependencies gives up on it instead of
-    // silently pulling "ro" into the dynamics-feeding order.
-    expect(b.sortDependencies()).not.toContain("bad");
+    // "bad" can never resolve — sortDependencies throws instead of silently
+    // pulling "ro" into the dynamics-feeding order (or dropping "bad").
+    expect(() => b.sortDependencies()).toThrow(/bad \(needs ro\)/);
   });
 });
 

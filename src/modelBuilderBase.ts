@@ -770,50 +770,51 @@ export abstract class ModelBuilderBase {
   }
 
   /**
-   * Shared worklist topological sort: repeatedly pop the next element off
-   * `toSort` and settle it once its `args` are all already in `available`
-   * (adding its own name to `available` in turn); an element that isn't
-   * resolvable yet goes back on the end of the queue. Gives up (settling the
-   * stuck element anyway) once the same element comes up twice in a row with
-   * nothing resolved in between, since that means nothing left in `toSort`
-   * can ever become resolvable. `available` is mutated in place — callers
-   * that need it afterward (none currently do) get the fully-settled set.
+   * Shared worklist topological sort: sweep `toSort` repeatedly, settling
+   * each element once its `args` are all already in `available` (adding its
+   * own name to `available` in turn). Throws if a sweep settles nothing while
+   * elements remain — an unknown symbol or a dependency cycle — rather than
+   * dropping them, since every backend would otherwise silently miscompute
+   * (WAT has no runtime check for an undefined symbol). `available` is
+   * mutated in place.
    */
   private static topoSort(
     available: Set<string>,
     toSort: Array<{ k: string; args: Set<string> }>,
   ): string[] {
     const order: string[] = [];
-    const remaining = [...toSort];
-    const maxIters = remaining.length * remaining.length;
-
-    let lastName = "";
-    for (let i = 0; i < maxIters; i++) {
-      const el = remaining.shift();
-
-      if (el === undefined) {
-        break;
-      }
-      const { k, args } = el;
-      if (args.isSubsetOf(available)) {
-        available.add(k);
-        order.push(k);
-      } else {
-        if (lastName === k) {
-          order.push(lastName);
-          break;
+    let remaining = toSort;
+    while (remaining.length > 0) {
+      const stuck: typeof remaining = [];
+      for (const el of remaining) {
+        if (el.args.isSubsetOf(available)) {
+          available.add(el.k);
+          order.push(el.k);
+        } else {
+          stuck.push(el);
         }
-        remaining.push(el);
-        lastName = k;
       }
+      if (stuck.length === remaining.length) {
+        const details = stuck
+          .map(({ k, args }) => {
+            const missing = [...args].filter((a) => !available.has(a));
+            return `${k} (needs ${missing.join(", ")})`;
+          })
+          .join("; ");
+        throw new Error(
+          `Unresolvable dependencies (unknown symbol or cycle): ${details}`,
+        );
+      }
+      remaining = stuck;
     }
     return order;
   }
 
   // Topologically order the intermediates so each only depends on already
-  // available symbols (parameters, variables, earlier intermediates).
+  // available symbols (time, parameters, variables, earlier intermediates).
   sortDependencies(): string[] {
     const available: Set<string> = new Set([
+      "time",
       ...this.parameters.keys(),
       ...this.variables.keys(),
       // A reaction-mode NN block's mechanism is composed onto its
@@ -821,9 +822,8 @@ export abstract class ModelBuilderBase {
       // extraIntermediates), so that reaction's dependency set can
       // legitimately include generated weight/bias names — addressable via
       // nnWeights (NNBlockConfig.targetKind's doc comment), never ordinary
-      // `parameters`, so they'd otherwise never resolve and the reaction
-      // would silently fall out of `order` (topoSort's give-up branch settles
-      // a permanently-unresolvable element without ever adding it here).
+      // `parameters`, so they'd otherwise never resolve and topoSort would
+      // throw.
       ...this.nnWeights.keys(),
     ]);
     const toSort = [...this.intermediateDefs().entries()].map(([key, val]) => ({
@@ -843,6 +843,7 @@ export abstract class ModelBuilderBase {
    */
   sortReadoutDependencies(): string[] {
     const available: Set<string> = new Set([
+      "time",
       ...this.parameters.keys(),
       ...this.variables.keys(),
       ...this.intermediateDefs().keys(),
