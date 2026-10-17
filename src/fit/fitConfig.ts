@@ -53,6 +53,8 @@ export type FitConfig = {
   backend?: FitBackend;
   adjointWat?: string;
   jacobianWat?: string;
+  /** Gradient backends with derived targets only (FitInitRequest's doc). */
+  derivedGradWat?: string;
   /** The user-facing selection this config was built from — kept around
    * purely for display (the "this fit uses the X backend" note), since
    * the wire-level `backend` field alone can't distinguish "lm" from
@@ -137,14 +139,6 @@ export function buildFitConfig(params: {
       error: "Upload a data file and map at least one column first.",
     };
   }
-  // Only fit_wrapper.c's finite-difference path integrates protocols and
-  // steady states (FitInitRequest.experiments' doc comment).
-  if (dataKind !== "timeCourse" && backendChoice !== "lm") {
-    return {
-      ok: false,
-      error: `${isSteadyState ? "Steady-state" : "Protocol"} fits require the "Levenberg-Marquardt" backend.`,
-    };
-  }
   const { fitIdx, ok } = fitTargets(model, fitParameters);
   if (!ok && !hasTrainedNNBlock) {
     return {
@@ -221,17 +215,12 @@ export function buildFitConfig(params: {
     const error = validateProtocol(protocol, sortedT, parNames);
     if (error) return { ok: false, error };
   }
-  // A non-numeric target cell is a missing observation (fit_wrapper.c
-  // skips NaN residuals) — except under "adjoint"/"lm-jacobian", whose C
-  // drivers don't, and a column with no observations at all is surely a
-  // mis-mapping.
-  const allowMissing = backendChoice === "lm";
+  // A non-numeric target cell is a missing observation (every C driver
+  // skips NaN residuals), but a column with no observations at all is
+  // surely a mis-mapping.
   for (const t of targets) {
     const values = order.map((i) => columns[t.column][i]);
-    if (
-      values.every((v) => Number.isNaN(v)) ||
-      (!allowMissing && values.some((v) => Number.isNaN(v)))
-    ) {
+    if (values.every((v) => Number.isNaN(v))) {
       return {
         ok: false,
         error: `Column "${t.column}" has a non-numeric value.`,
@@ -241,21 +230,6 @@ export function buildFitConfig(params: {
 
   const derivedTargets = targets.filter((t) => t.kind === "derived");
   const derivedKeys = derivedTargets.map((t) => t.key);
-
-  // "adjoint" and "lm-jacobian" both only support state-variable targets
-  // v1 (see FitInitRequest.adjointWat's/jacobianWat's doc comments) —
-  // reject up front rather than let fit_init fail deep in the WASM
-  // boundary. Independent of whether an NN block is even involved: both
-  // backends work over any fit-parameter set, mechanistic included.
-  if (
-    (backendChoice === "adjoint" || backendChoice === "lm-jacobian") &&
-    derivedTargets.length > 0
-  ) {
-    return {
-      ok: false,
-      error: `The ${backendChoice === "adjoint" ? "adjoint" : "analytic-Jacobian LM"} backend requires every fit target to be a state variable, not a derived quantity — pick "Levenberg-Marquardt" instead, or remap the derived-quantity target.`,
-    };
-  }
 
   let derivedWat: string | undefined;
   try {
@@ -306,6 +280,21 @@ export function buildFitConfig(params: {
   const nnBlockFitIdx = nnBlockParamNames.map((name) => parNames.indexOf(name));
   const combinedFitIdx = [...fitIdx, ...nnBlockFitIdx];
 
+  // The gradient backends differentiate the RHS with respect to each fitted
+  // parameter's *trial* value, which a protocol/condition override replaces
+  // (ADR 0009) — reject up front rather than let the C init fail (-4).
+  if (backendChoice !== "lm") {
+    const fitted = new Set(combinedFitIdx.map((i) => parNames[i]));
+    const overridden = overriddenParameters(dataKind, protocol, conditions);
+    const clash = overridden.filter((name) => fitted.has(name));
+    if (clash.length > 0) {
+      return {
+        ok: false,
+        error: `${clash.join(", ")} ${clash.length === 1 ? "is" : "are"} both fitted and set by the ${isSteadyState ? "conditions" : "protocol"} — the ${backendChoice === "adjoint" ? "adjoint" : "analytic-Jacobian LM"} backend can't differentiate through that. Stop fitting ${clash.length === 1 ? "it" : "them"}, or pick "Levenberg-Marquardt".`,
+      };
+    }
+  }
+
   const logFlags = [
     ...fitIdx.map(
       (i) => fitParameters.find((p) => p.id === parNames[i])?.logSpace ?? true,
@@ -321,6 +310,23 @@ export function buildFitConfig(params: {
     backendChoice === "adjoint" ? "adjoint" : undefined;
   let adjointWat: string | undefined;
   let jacobianWat: string | undefined;
+  let derivedGradWat: string | undefined;
+  if (backendChoice !== "lm" && derivedKeys.length > 0) {
+    try {
+      derivedGradWat = model.buildWatDerivedGrad(
+        derivedKeys,
+        combinedFitIdx.map((i) => parNames[i]),
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        error:
+          e instanceof Error
+            ? e.message
+            : "Failed to build the derived-target gradients.",
+      };
+    }
+  }
   if (backendChoice === "adjoint") {
     try {
       adjointWat = model.buildAdjointWat(
@@ -371,6 +377,7 @@ export function buildFitConfig(params: {
       backend,
       adjointWat,
       jacobianWat,
+      derivedGradWat,
       backendChoice,
       nnBlockOwner,
       nnBlockConfigs,
@@ -441,6 +448,23 @@ function experimentsOf(config: FitConfig): FitExperiment[] {
   ];
 }
 
+/** Parameters a protocol or the steady-state conditions set (ADR 0009). */
+export function overriddenParameters(
+  dataKind: FitDataKind,
+  protocol: ProtocolStep[] | undefined,
+  conditions: Record<string, number>[] | undefined,
+): string[] {
+  const names = new Set<string>();
+  if (dataKind === "protocol") {
+    for (const step of protocol ?? [])
+      for (const key of Object.keys(step)) if (key !== "t_end") names.add(key);
+  } else if (dataKind === "steadyState") {
+    for (const c of conditions ?? [])
+      for (const key of Object.keys(c)) names.add(key);
+  }
+  return [...names];
+}
+
 /** Reshapes `FitProgress.predictions` (laid out per experiment, see
  * {@link experimentsOf}) to one array per target, aligned with that
  * target's `values` (possibly a curriculum stage's truncated prefix). */
@@ -488,6 +512,7 @@ export function fitInitPayload(
     backend: config.backend,
     adjointWat: config.adjointWat,
     jacobianWat: config.jacobianWat,
+    derivedGradWat: config.derivedGradWat,
     progressUpdateInterval: settings.progressUpdateInterval,
   };
 }

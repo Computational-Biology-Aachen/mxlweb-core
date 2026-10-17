@@ -309,6 +309,7 @@ spells out the full derivation rather than just asserting the result.
 target's jump would need `d(derived)/dy`, which needs a _second_ generated adjoint
 graph (over the derived-quantity expression tree, not `dxdt`'s) that doesn't exist yet.
 Not a fundamental limit, just unbuilt — the `"lm"` backend keeps supporting both.
+_(Since built: ADR 0009 §2.4 — `derivedGradWat`, for both gradient backends.)_
 
 #### 2.3.5 New C entry points, not an extension of `fit_init`/`fit_chunk`
 
@@ -363,9 +364,8 @@ disagreement with that recommendation.
 - Whether local Hermite interpolation's accuracy (§2.3.1, option B) is ever actually a
   problem in practice — revisit toward Hairer's true dense output (option A) only if
   measured, not preemptively.
-- v1's state-targets-only restriction (§2.3.4) is unbuilt, not fundamental — extending
-  to derived-quantity targets needs a second generated adjoint graph over the derived
-  expression tree.
+- v1's state-targets-only restriction (§2.3.4) has since been lifted by ADR 0009 §2.4's
+  derived-gradient graph.
 - Don't reuse the word "checkpoint" from this ADR to justify skipping real
   Griewank-Walther-style checkpointing if forward-trajectory memory ever becomes a
   measured problem (§2.3.1) — see that subsection for why they're unrelated.

@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  flattenExperiments,
-  plainTimeCourse,
-} from "../../src/backends/wasm/fitExperiments";
+import { flattenExperiments } from "../../src/backends/wasm/fitExperiments";
 import type { FitInitRequest } from "../../src/index";
 
 function request(
@@ -70,35 +67,5 @@ describe("flattenExperiments", () => {
         request([{ kind: "steadyState", overrides: { nope: 1 }, dataY: [1] }]),
       ),
     ).toMatch(/nope/);
-  });
-});
-
-describe("plainTimeCourse", () => {
-  it("accepts exactly one protocol-free time course", () => {
-    expect(
-      plainTimeCourse(
-        request([{ kind: "timeCourse", dataT: [0, 3], dataY: [1, 2] }]),
-      ),
-    ).toEqual({ dataT: [0, 3], dataY: [1, 2], tEnd: 3 });
-  });
-
-  it("rejects protocols and steady states", () => {
-    expect(
-      typeof plainTimeCourse(
-        request([
-          {
-            kind: "timeCourse",
-            dataT: [0],
-            dataY: [1],
-            protocol: [{ t_end: 1, u: 1 }],
-          },
-        ]),
-      ),
-    ).toBe("string");
-    expect(
-      typeof plainTimeCourse(
-        request([{ kind: "steadyState", overrides: {}, dataY: [1] }]),
-      ),
-    ).toBe("string");
   });
 });

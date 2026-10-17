@@ -3,6 +3,7 @@ import { Base, substituteName, type JsonNode } from "./mathml/index.js";
 import {
   evalInitialAssignment,
   irToAdjointWat,
+  irToDerivedGradWat,
   irToJacobianWat,
   irToJs,
   irToJsDerived,
@@ -985,6 +986,16 @@ export abstract class ModelBuilderBase {
    */
   buildJacobianWat(thetaNames: string[]): string {
     return irToJacobianWat(this.lower(), thetaNames);
+  }
+
+  /**
+   * WAT module computing the gradients of the derived fit targets
+   * `selectedDerived` with respect to the state and to `thetaNames`
+   * (`modelIr.ts`'s `buildDerivedGradGraph`) — for derived targets under
+   * the `"adjoint"`/`"lm-jacobian"` fit backends (ADR 0009).
+   */
+  buildWatDerivedGrad(selectedDerived: string[], thetaNames: string[]): string {
+    return irToDerivedGradWat(this.lower(), selectedDerived, thetaNames);
   }
 
   /** WAT module computing `selectedDerived` (see ADR 0004 in the mxlweb repo). */

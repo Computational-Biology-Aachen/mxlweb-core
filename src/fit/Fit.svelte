@@ -224,8 +224,6 @@
 
   function setDataKind(kind: FitDataKind) {
     dataKind = kind;
-    // Only "lm" integrates protocols and steady states (buildFitConfig).
-    if (kind !== "timeCourse") backendChoice = "lm";
     trajectory = { time: [], values: [] };
     predictions = null;
     autoMapColumns();
@@ -1792,17 +1790,10 @@
             <td>
               <select bind:value={backendChoice}>
                 <option value="lm">Levenberg-Marquardt</option>
-                <!-- Only finite-difference LM integrates protocols and
-                     steady states (FitInitRequest.experiments). -->
-                <option
-                  value="lm-jacobian"
-                  disabled={dataKind !== "timeCourse"}
+                <option value="lm-jacobian"
                   >Levenberg-Marquardt (analytic Jacobian)</option
                 >
-                <option
-                  value="adjoint"
-                  disabled={dataKind !== "timeCourse"}>Adjoint</option
-                >
+                <option value="adjoint">Adjoint</option>
               </select>
             </td>
           </tr>
@@ -2273,8 +2264,10 @@
       {overriddenFitParams.join(", ")}
       {overriddenFitParams.length === 1 ? "is" : "are"} also set by the {isSteadyState
         ? "conditions"
-        : "protocol"}, which overrides the fitted value — so the fit can't
-      change {overriddenFitParams.length === 1 ? "it" : "them"}.
+        : "protocol"}, which overrides the fitted value — {backendChoice ===
+      "lm"
+        ? `so the fit can't change ${overriddenFitParams.length === 1 ? "it" : "them"}.`
+        : `which the ${backendChoice === "adjoint" ? "adjoint" : "analytic-Jacobian"} backend can't differentiate through. Stop fitting ${overriddenFitParams.length === 1 ? "it" : "them"}, or pick Levenberg-Marquardt.`}
     </p>
   {/if}
 

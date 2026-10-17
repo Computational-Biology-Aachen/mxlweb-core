@@ -12,26 +12,6 @@ const EXP_STEADY_STATE = 1;
 export const DEFAULT_SS_TOL = 1e-6;
 export const DEFAULT_SS_T_MAX = 1e6;
 
-/** The single plain time course `"adjoint"`/`"lm-jacobian"` are restricted
- * to (`FitInitRequest.experiments`' doc comment), or an error message. */
-export function plainTimeCourse(
-  req: FitInitRequest,
-): { dataT: number[]; dataY: number[]; tEnd: number } | string {
-  const [exp] = req.experiments;
-  if (
-    req.experiments.length !== 1 ||
-    exp.kind !== "timeCourse" ||
-    (exp.protocol?.length ?? 0) > 0
-  ) {
-    return 'This fit backend only supports a single time course without a protocol — use the finite-difference "lm" backend for protocols and steady states.';
-  }
-  return {
-    dataT: exp.dataT,
-    dataY: exp.dataY,
-    tEnd: exp.dataT[exp.dataT.length - 1] ?? 0,
-  };
-}
-
 /** Flattens `req.experiments` into fit_init's experiment arrays (see
  * fit_wrapper.c's fit_init doc comment for the layout), or returns an
  * error message. */

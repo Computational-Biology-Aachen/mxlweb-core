@@ -23,8 +23,7 @@
  *     here the augmented RHS is a single WAT-compiled forward function
  *     (`modelIr.ts`'s `buildJacobianGraph`/`irToJacobianWat`), not a
  *     separately-signed backward one, so it needs no lambda_ptr-style
- *     special calling convention either: `set_model_fn_ptr` + the ordinary
- *     `ModelFn` shape is enough.
+ *     special calling convention either.
  *
  *   - Two forward RHS functions are registered, not one: `g_plain_fn`
  *     (rhsWat, n_y outputs — cheap) for lmder's iflag==1 residual-only
@@ -33,15 +32,21 @@
  *     fit_wrapper.c's finite differences: one augmented solve per Jacobian
  *     evaluation, not n_theta+1 perturbed forward solves.
  *
- *   - Sensitivities start at zero (`s_j(0) = 0` for every j): none of this
- *     driver's fit parameters are ever an initial condition, so y(0) never
- *     depends on theta.
+ *   - Experiments (ADR 0009) work exactly as in fit_wrapper.c — the
+ *     residual is fit_experiments.c's exp_residuals — and the augmented
+ *     system walks the same experiments (exp_walk):
+ *       - sensitivities start at zero (`s_j(0) = 0`): no fit parameter is
+ *         ever an initial condition;
+ *       - across a protocol boundary the augmented state simply carries
+ *         over (fixed boundary times, continuous state);
+ *       - a steady state integrates the augmented system to convergence,
+ *         where s_j is the steady-state sensitivity — conserved moieties
+ *         stay consistent since s_j(0) = 0;
+ *       - a fitted parameter must not also be overridden (init returns -4):
+ *         the augmented RHS would still differentiate the overridden value.
  *
- *   - v1 restricts fit targets to raw state variables, not derived
- *     quantities — same restriction and same reason as adjoint_wrapper.c's
- *     own doc comment: a derived target's sensitivity needs a *second*
- *     generated Jacobian graph (over the derived_fn's own expression tree,
- *     not dxdt's) that doesn't exist yet.
+ *   - Derived targets use `g_derived_grad_fn` (fit_experiments.h): their
+ *     Jacobian row is ∂d/∂y · s + ∂d/∂θ.
  *
  *   - lmder's own MINPACK `info` codes (0-8) mean exactly what lmdif's do
  *     (same underlying convergence tests) — fitWorker.ts's existing
@@ -50,30 +55,12 @@
  *     sentinel value fit_wrapper.c defines, for the same reason.
  */
 
+#include "fit_experiments.h"
 #include "minpack/cminpack.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ------------------------------------------------------------------ */
-/* Exported from radau5_wrapper.c — called directly, in-process.      */
-/* ------------------------------------------------------------------ */
-typedef void (*ModelFn)(int, double, double *, double *, double *);
-extern void set_model_fn_ptr(ModelFn fn);
-extern void init_output(int capacity, int dim);
-extern void free_output(void);
-extern int get_out_n(void);
-extern double *get_out_t(void);
-extern double *get_out_y(void);
-extern int run_radau5(int n, double t_start, double t_end, double *y, double *rpar,
-                       double rtol, double atol, double h_init, int nmax);
-extern int run_dop853(int n, double t_start, double t_end, double *y, double *rpar,
-                       double rtol, double atol, double h_init, int nmax);
-extern int run_dopri5(int n, double t_start, double t_end, double *y, double *rpar,
-                       double rtol, double atol, double h_init, int nmax);
-
-enum { SOLVER_RADAU5 = 0, SOLVER_DOP853 = 1, SOLVER_DOPRI5 = 2 };
 
 /* buildModelWat's ordinary "fcn" export, same shape for both — the
  * augmented function just has more state variables/outputs, no different
@@ -104,8 +91,7 @@ void jacobian_set_progress_fn(int table_idx) {
 #define FIT_TARGET_REACHED (-2)
 
 typedef struct {
-  int n_y;
-  double *y0; /* length n_y, fixed initial conditions */
+  ExpProblem P; /* y0, targets, experiments, solver settings */
 
   int n_pars;
   double *pars; /* length n_pars, full vector (fixed values stay put) */
@@ -113,18 +99,6 @@ typedef struct {
   int n_theta;
   int *theta_idx;   /* length n_theta, indices into pars[] */
   int *log_flags;   /* length n_theta, 1 = fit in log-space */
-
-  int n_targets;
-  int *target_index; /* length n_targets, index into y[] — state only (file doc comment) */
-  double *target_scale;
-
-  int n_points;
-  double *data_t; /* length n_points, ascending */
-  double *data_y; /* length n_targets * n_points, target-major */
-
-  double t_end;
-  int solver_id;
-  double rtol, atol;
 
   double target_residual_norm; /* negative disables, same convention as fit_wrapper.c */
 
@@ -144,14 +118,10 @@ static JacobianSession *g_jac = NULL;
 
 static void jacobian_session_free(JacobianSession *s) {
   if (!s) return;
-  free(s->y0);
+  exp_problem_free(&s->P);
   free(s->pars);
   free(s->theta_idx);
   free(s->log_flags);
-  free(s->target_index);
-  free(s->target_scale);
-  free(s->data_t);
-  free(s->data_y);
   free(s->x);
   free(s);
 }
@@ -161,63 +131,9 @@ void jacobian_free(void) {
   g_jac = NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/* Linear interpolation of dense integrator output — verbatim copy of */
-/* fit_wrapper.c's interp_at (file-scoped static there too).          */
-/* ------------------------------------------------------------------ */
-static void interp_at(int n_y, int out_n, const double *out_t, const double *out_y,
-                       double t_query, double *y_out) {
-  if (out_n <= 0) {
-    memset(y_out, 0, (size_t)n_y * sizeof(double));
-    return;
-  }
-  if (out_n == 1 || t_query <= out_t[0]) {
-    memcpy(y_out, out_y, (size_t)n_y * sizeof(double));
-    return;
-  }
-  if (t_query >= out_t[out_n - 1]) {
-    memcpy(y_out, out_y + (size_t)(out_n - 1) * n_y, (size_t)n_y * sizeof(double));
-    return;
-  }
-  int lo = 0, hi = out_n - 1;
-  while (hi - lo > 1) {
-    int mid = (lo + hi) >> 1;
-    if (out_t[mid] <= t_query)
-      lo = mid;
-    else
-      hi = mid;
-  }
-  double t_lo = out_t[lo], t_hi = out_t[hi];
-  double alpha = (t_hi > t_lo) ? (t_query - t_lo) / (t_hi - t_lo) : 0.0;
-  const double *y_lo = out_y + (size_t)lo * n_y;
-  const double *y_hi = out_y + (size_t)hi * n_y;
-  for (int i = 0; i < n_y; i++) {
-    y_out[i] = y_lo[i] + alpha * (y_hi[i] - y_lo[i]);
-  }
-}
-
-/* Runs one forward solve of `n` state variables (n_y for the plain model,
- * n_y*(1+n_theta) for the augmented one) from y_work(0)=y0_full, writing the
- * dense trajectory into the shared out_t/out_y buffer (init_output/
- * get_out_*). Returns the solver's idid (>=0 success). */
-static int run_forward(ModelFn fn, int n, double *y_work, double *pars_full,
-                        int solver_id, double t_end, double rtol, double atol) {
-  set_model_fn_ptr(fn);
-  const int out_cap = 2000;
-  init_output(out_cap, n);
-  switch (solver_id) {
-    case SOLVER_DOP853:
-      return run_dop853(n, 0.0, t_end, y_work, pars_full, rtol, atol, 0.0, 500000);
-    case SOLVER_DOPRI5:
-      return run_dopri5(n, 0.0, t_end, y_work, pars_full, rtol, atol, 0.0, 500000);
-    default:
-      return run_radau5(n, 0.0, t_end, y_work, pars_full, rtol, atol, 0.0, 500000);
-  }
-}
-
 /* Builds the full parameter vector for trial x: fixed values from s->pars,
  * fitted values from x (undoing the log-space transform) — same as
- * fit_wrapper.c's fit_fcn. */
+ * fit_wrapper.c's compute_residuals. */
 static void build_pars_full(JacobianSession *s, const double *x, double *pars_full) {
   memcpy(pars_full, s->pars, (size_t)s->n_pars * sizeof(double));
   for (int i = 0; i < s->n_theta; i++) {
@@ -227,18 +143,107 @@ static void build_pars_full(JacobianSession *s, const double *x, double *pars_fu
 }
 
 /* ------------------------------------------------------------------ */
+/* Jacobian rows from one augmented walk over an experiment.           */
+/* ------------------------------------------------------------------ */
+typedef struct {
+  const JacobianSession *s;
+  const double *pars_full;
+  double *fjac;
+  int ldfjac;
+  double *grad_out; /* n_derived * (n_y + n_theta), derived targets only */
+} JacRowCtx;
+
+static void jacobian_point(void *vctx, int e, int seg, int j, double t, const double *y_aug,
+                           const double *pars_seg) {
+  (void)seg;
+  JacRowCtx *c = (JacRowCtx *)vctx;
+  const JacobianSession *s = c->s;
+  const ExpProblem *P = &s->P;
+  const int n_y = P->n_y, n_theta = s->n_theta;
+  const double *sens = y_aug + n_y; /* sens[col * n_y + state] = ∂y_state/∂θ_col */
+  if (P->n_derived > 0) {
+    g_derived_grad_fn(n_y, t, (double *)y_aug, c->grad_out, (double *)pars_seg);
+  }
+  for (int k = 0; k < P->n_targets; k++) {
+    const size_t row = exp_index(P, e, k, j);
+    if (isnan(P->data_y[row])) continue; /* missing: residual 0, row stays 0 */
+    const int derived = P->target_kind[k] == TARGET_DERIVED;
+    const double *grad =
+        derived ? c->grad_out + (size_t)P->target_index[k] * (size_t)(n_y + n_theta) : NULL;
+    for (int col = 0; col < n_theta; col++) {
+      double d;
+      if (!derived) {
+        d = sens[(size_t)col * n_y + P->target_index[k]];
+      } else {
+        d = grad[n_y + col];
+        for (int m = 0; m < n_y; m++) d += grad[m] * sens[(size_t)col * n_y + m];
+      }
+      d /= P->target_scale[k];
+      /* Chain rule for a log-space fit parameter: theta = exp(x), so
+       * d(residual)/dx = d(residual)/dtheta * theta. */
+      if (s->log_flags[col]) d *= c->pars_full[s->theta_idx[col]];
+      /* Column-major, ldfjac = m — same layout lmdif/fdjac2 already use. */
+      c->fjac[row + (size_t)col * (size_t)c->ldfjac] = d;
+    }
+  }
+}
+
+/* Fills fjac (m x n_theta, column-major) at pars_full. Returns 0, or -1 on
+ * allocation failure. */
+static int compute_jacobian(const JacobianSession *s, const double *pars_full, double *fjac,
+                            int ldfjac) {
+  const ExpProblem *P = &s->P;
+  const int n_aug = P->n_y * (1 + s->n_theta);
+  memset(fjac, 0, (size_t)ldfjac * (size_t)s->n_theta * sizeof(double));
+
+  JacRowCtx c = {s, pars_full, fjac, ldfjac, NULL};
+  double *y_aug = (double *)malloc((size_t)n_aug * sizeof(double));
+  if (P->n_derived > 0) {
+    c.grad_out = (double *)malloc((size_t)P->n_derived * (size_t)(P->n_y + s->n_theta) *
+                                  sizeof(double));
+  }
+  if (!y_aug || (P->n_derived > 0 && !c.grad_out)) {
+    free(y_aug);
+    free(c.grad_out);
+    return -1;
+  }
+  int rc = 0;
+  for (int e = 0; e < P->n_exp; e++) {
+    memset(y_aug, 0, (size_t)n_aug * sizeof(double)); /* s_j(0) = 0 */
+    memcpy(y_aug, P->y0, (size_t)P->n_y * sizeof(double));
+    int ok = exp_walk(P, e, g_aug_fn, n_aug, y_aug, pars_full, jacobian_point, NULL, &c, NULL);
+    if (ok == EXP_NO_MEMORY) {
+      rc = -1;
+      break;
+    }
+    if (ok < 0) {
+      /* A trial that made it past iflag==1 but fails (or never settles) on
+       * the larger augmented system — zero this experiment's rows rather
+       * than abort; lmder treats a zero Jacobian as "no useful direction
+       * here" and its trust region backs off. */
+      for (int k = 0; k < P->n_targets; k++) {
+        for (int j = 0; j < P->exp_n_points[e]; j++) {
+          size_t row = exp_index(P, e, k, j);
+          for (int col = 0; col < s->n_theta; col++) fjac[row + (size_t)col * ldfjac] = 0.0;
+        }
+      }
+    }
+  }
+  free(y_aug);
+  free(c.grad_out);
+  return rc;
+}
+
+/* ------------------------------------------------------------------ */
 /* jacobian_fcn — the lmder residual+Jacobian callback (cminpack        */
 /* cminpack_func_der signature). iflag==1: fill fvec, don't touch fjac. */
 /* iflag==2: fill fjac (at the x set by the preceding iflag==1 call),    */
 /* don't touch fvec.                                                     */
 /* ------------------------------------------------------------------ */
 /* Mid-chunk progress — see g_progress_fn's own doc comment and
- * fit_wrapper.c's identical helper for the full rationale. Called on both
- * iflag==1 and iflag==2's *successful* paths (skipped on idid<0 penalty/
- * zero-jacobian paths, whose fvec/residual isn't a meaningful trial point)
- * — fvec is valid either way: freshly computed for iflag==1, or still
- * holding the last iflag==1 call's value for iflag==2 (that branch never
- * touches fvec, this file's own doc comment). */
+ * fit_wrapper.c's identical helper for the full rationale. fvec is valid on
+ * both iflags: freshly computed for iflag==1, or still holding the last
+ * iflag==1 call's value for iflag==2 (that branch never touches fvec). */
 static void report_jacobian_progress(JacobianSession *s, int m, const double *fvec) {
   if (s->progress_interval <= 0 || !g_progress_fn) return;
   if (s->chunk_nfev % s->progress_interval != 0) return;
@@ -254,109 +259,37 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
   JacobianSession *s = g_jac;
   s->chunk_nfev++;
 
-  double *pars_full = (double *)malloc((size_t)s->n_pars * sizeof(double));
+  double *pars_full = (double *)malloc((size_t)(s->n_pars > 0 ? s->n_pars : 1) * sizeof(double));
   if (!pars_full) return -1;
   build_pars_full(s, x, pars_full);
 
   if (iflag == 1) {
-    double *y_work = (double *)malloc((size_t)s->n_y * sizeof(double));
-    double *y_interp = (double *)malloc((size_t)s->n_y * sizeof(double));
-    if (!y_work || !y_interp) {
-      free(pars_full); free(y_work); free(y_interp);
+    if (exp_residuals(&s->P, g_plain_fn, pars_full, fvec, NULL) < 0) {
+      free(pars_full);
       return -1;
     }
-    memcpy(y_work, s->y0, (size_t)s->n_y * sizeof(double));
-    int idid = run_forward(g_plain_fn, s->n_y, y_work, pars_full, s->solver_id,
-                            s->t_end, s->rtol, s->atol);
-    if (idid < 0) {
-      /* Integration failed for this trial — penalize, don't abort (same
-       * reasoning as fit_wrapper.c's fit_fcn). */
-      const double PENALTY = 1.0e3;
-      for (int k = 0; k < m; k++) fvec[k] = PENALTY;
-      free_output();
-      free(pars_full); free(y_work); free(y_interp);
-      return 1;
-    }
-    const int out_n = get_out_n();
-    const double *out_t = get_out_t();
-    const double *out_y = get_out_y();
-    for (int j = 0; j < s->n_points; j++) {
-      interp_at(s->n_y, out_n, out_t, out_y, s->data_t[j], y_interp);
-      for (int k = 0; k < s->n_targets; k++) {
-        double model_v = y_interp[s->target_index[k]];
-        double data_v = s->data_y[(size_t)k * s->n_points + j];
-        fvec[(size_t)k * s->n_points + j] = (model_v - data_v) / s->target_scale[k];
-      }
-    }
-    free_output();
-    free(y_work);
-    free(y_interp);
-
+    free(pars_full);
     report_jacobian_progress(s, m, fvec);
 
     /* Same target-reached short-circuit as fit_wrapper.c's fit_fcn, checked
-     * only on the real trial-point evaluation (iflag==1), not perturbed/
-     * secondary calls. */
+     * only on the real trial-point evaluation (iflag==1). */
     if (s->target_residual_norm >= 0.0) {
       double ss = 0.0;
       for (int k = 0; k < m; k++) ss += fvec[k] * fvec[k];
       if (sqrt(ss) <= s->target_residual_norm) {
         memcpy(s->x, x, (size_t)s->n_theta * sizeof(double));
         s->last_residual_norm = sqrt(ss);
-        free(pars_full);
         return FIT_TARGET_REACHED;
       }
     }
-    free(pars_full);
     return 1;
   }
 
   /* iflag == 2: analytic Jacobian via one augmented (forward-sensitivity)
-   * solve — see this file's own doc comment. */
-  const int n_aug = s->n_y * (1 + s->n_theta);
-  double *y_aug = (double *)calloc((size_t)n_aug, sizeof(double)); /* s_j(0) = 0 */
-  double *y_interp_aug = (double *)malloc((size_t)n_aug * sizeof(double));
-  if (!y_aug || !y_interp_aug) {
-    free(pars_full); free(y_aug); free(y_interp_aug);
-    return -1;
-  }
-  memcpy(y_aug, s->y0, (size_t)s->n_y * sizeof(double));
-  int idid = run_forward(g_aug_fn, n_aug, y_aug, pars_full, s->solver_id,
-                          s->t_end, s->rtol, s->atol);
-  if (idid < 0) {
-    /* A trial that made it past iflag==1 (else lmder wouldn't ask for a
-     * Jacobian there) but fails on the larger augmented system — zero the
-     * Jacobian rather than abort; lmder treats a singular/zero Jacobian as
-     * "no useful direction here" and its trust region backs off. */
-    memset(fjac, 0, (size_t)m * (size_t)ldfjac * sizeof(double));
-    free_output();
-    free(pars_full); free(y_aug); free(y_interp_aug);
-    return 1;
-  }
-  const int out_n = get_out_n();
-  const double *out_t = get_out_t();
-  const double *out_y = get_out_y();
-  for (int j = 0; j < s->n_points; j++) {
-    interp_at(n_aug, out_n, out_t, out_y, s->data_t[j], y_interp_aug);
-    for (int k = 0; k < s->n_targets; k++) {
-      const int row = k * s->n_points + j;
-      const int state_idx = s->target_index[k];
-      for (int c = 0; c < s->n_theta; c++) {
-        double raw = y_interp_aug[s->n_y + c * s->n_y + state_idx];
-        double d = raw / s->target_scale[k];
-        /* Chain rule for a log-space fit parameter: theta = exp(x), so
-         * d(residual)/dx = d(residual)/dtheta * theta. */
-        if (s->log_flags[c]) d *= pars_full[s->theta_idx[c]];
-        /* Column-major, ldfjac = m — same layout lmdif/fdjac2 already use. */
-        fjac[(size_t)row + (size_t)c * (size_t)ldfjac] = d;
-      }
-    }
-  }
-  free_output();
+   * walk per experiment — see this file's own doc comment. */
+  int rc = compute_jacobian(s, pars_full, fjac, ldfjac);
   free(pars_full);
-  free(y_aug);
-  free(y_interp_aug);
-
+  if (rc < 0) return -1;
   report_jacobian_progress(s, m, fvec);
   return 1;
 }
@@ -367,61 +300,59 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
 
 /*
  * jacobian_init — one-time setup for an analytic-Jacobian fit session. Call
- * jacobian_set_plain_fn()/jacobian_set_augmented_fn() before this. data_t
- * must be ascending; target_index is state-variable indices only (this
- * file's own doc comment).
- *
- * progress_interval: see fit_init's identical parameter — fires the
- * registered progress callback (jacobian_set_progress_fn) every this many
- * evaluations within a chunk. <=0 disables.
+ * jacobian_set_plain_fn()/jacobian_set_augmented_fn() (and, with derived
+ * targets, set_derived_fn()/set_derived_grad_fn()) before this. Takes
+ * exactly fit_init's arguments — see its doc comment for the experiment
+ * layout — with theta_idx in place of fit_idx.
  *
  * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
- * parameter's initial value is <= 0.
+ * parameter's initial value is <= 0, -3 if the experiment layout is
+ * inconsistent, -4 if a fitted parameter is also a protocol/condition
+ * override, -5 if derived targets lack set_derived_fn/set_derived_grad_fn.
  */
 int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
-                   int *theta_idx, int *log_flags, int n_targets, int *target_index,
-                   double *target_scale, int n_points, double *data_t, double *data_y,
-                   double t_end, int solver_id, double rtol, double atol,
-                   double target_residual_norm, int progress_interval) {
+                  int *theta_idx, int *log_flags, int n_targets, int *target_kind,
+                  int *target_index, double *target_scale, int n_ovr, int *ovr_idx,
+                  int n_exp, int *exp_kind, int *exp_n_seg, int *exp_n_points,
+                  int n_seg_total, double *seg_t_end, double *seg_ovr, int n_points,
+                  double *data_t, double *data_y, int n_derived, int solver_id, double rtol,
+                  double atol, double ss_tol, double ss_t_max, double target_residual_norm,
+                  int progress_interval) {
   jacobian_free();
+
+  if (n_derived > 0 && (!g_derived_fn || !g_derived_grad_fn)) return -5;
 
   JacobianSession *s = (JacobianSession *)calloc(1, sizeof(JacobianSession));
   if (!s) return -1;
 
-  s->n_y = n_y;
-  s->y0 = (double *)malloc((size_t)n_y * sizeof(double));
-  s->n_pars = n_pars;
-  s->pars = (double *)malloc((size_t)n_pars * sizeof(double));
-  s->n_theta = n_theta;
-  s->theta_idx = (int *)malloc((size_t)n_theta * sizeof(int));
-  s->log_flags = (int *)malloc((size_t)n_theta * sizeof(int));
-  s->n_targets = n_targets;
-  s->target_index = (int *)malloc((size_t)n_targets * sizeof(int));
-  s->target_scale = (double *)malloc((size_t)n_targets * sizeof(double));
-  s->n_points = n_points;
-  s->data_t = (double *)malloc((size_t)n_points * sizeof(double));
-  s->data_y = (double *)malloc((size_t)n_targets * (size_t)n_points * sizeof(double));
-  s->x = (double *)malloc((size_t)n_theta * sizeof(double));
+  int rc = exp_problem_init(&s->P, n_y, y0, n_pars, n_targets, target_kind, target_index,
+                            target_scale, n_derived, n_ovr, ovr_idx, n_exp, exp_kind,
+                            exp_n_seg, exp_n_points, n_seg_total, seg_t_end, seg_ovr,
+                            n_points, data_t, data_y, solver_id, rtol, atol, ss_tol,
+                            ss_t_max);
+  if (rc != 0) {
+    free(s);
+    return rc;
+  }
+  if (exp_overrides_fitted(&s->P, n_theta, theta_idx)) {
+    jacobian_session_free(s);
+    return -4;
+  }
 
-  if (!s->y0 || !s->pars || !s->theta_idx || !s->log_flags || !s->target_index ||
-      !s->target_scale || !s->data_t || !s->data_y || !s->x) {
+  s->n_pars = n_pars;
+  s->n_theta = n_theta;
+  s->pars = (double *)malloc((size_t)(n_pars > 0 ? n_pars : 1) * sizeof(double));
+  s->theta_idx = (int *)malloc((size_t)(n_theta > 0 ? n_theta : 1) * sizeof(int));
+  s->log_flags = (int *)malloc((size_t)(n_theta > 0 ? n_theta : 1) * sizeof(int));
+  s->x = (double *)malloc((size_t)(n_theta > 0 ? n_theta : 1) * sizeof(double));
+  if (!s->pars || !s->theta_idx || !s->log_flags || !s->x) {
     jacobian_session_free(s);
     return -1;
   }
-
-  memcpy(s->y0, y0, (size_t)n_y * sizeof(double));
   memcpy(s->pars, pars, (size_t)n_pars * sizeof(double));
   memcpy(s->theta_idx, theta_idx, (size_t)n_theta * sizeof(int));
   memcpy(s->log_flags, log_flags, (size_t)n_theta * sizeof(int));
-  memcpy(s->target_index, target_index, (size_t)n_targets * sizeof(int));
-  memcpy(s->target_scale, target_scale, (size_t)n_targets * sizeof(double));
-  memcpy(s->data_t, data_t, (size_t)n_points * sizeof(double));
-  memcpy(s->data_y, data_y, (size_t)n_targets * (size_t)n_points * sizeof(double));
 
-  s->t_end = t_end;
-  s->solver_id = solver_id;
-  s->rtol = rtol;
-  s->atol = atol;
   s->target_residual_norm = target_residual_norm;
   s->total_nfev = 0;
   s->progress_interval = progress_interval;
@@ -447,8 +378,8 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
   /* Evaluate the initial residual so the caller has a real "before
    * optimization" data point, nfev=0 like fit_wrapper.c's fit_init. */
   {
-    int m = n_targets * n_points;
-    double *fvec0 = (double *)malloc((size_t)m * sizeof(double));
+    int m = exp_m(&s->P);
+    double *fvec0 = (double *)malloc((size_t)(m > 0 ? m : 1) * sizeof(double));
     if (fvec0) {
       jacobian_fcn(NULL, m, n_theta, s->x, fvec0, NULL, m, 1);
       double ss = 0.0;
@@ -485,7 +416,7 @@ int jacobian_chunk(int maxfev) {
   s->chunk_nfev = 0;
 
   const int n = s->n_theta;
-  const int m = s->n_targets * s->n_points;
+  const int m = exp_m(&s->P);
 
   double *fvec = (double *)malloc((size_t)m * sizeof(double));
   double *fjac = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
@@ -595,4 +526,38 @@ double jacobian_get_residual_norm(void) { return g_jac ? g_jac->last_residual_no
 void jacobian_get_params(double *out) {
   if (!g_jac) return;
   build_pars_full(g_jac, g_jac->x, out);
+}
+
+/* Writes the analytic Jacobian of the residual at the current estimate
+ * (m x n_theta, column-major, in x's possibly-log space) into out — mainly
+ * for tests/debugging, like adjoint_get_grad. Returns 0, or -1 without a
+ * session / on allocation failure. */
+int jacobian_get_jacobian(double *out) {
+  JacobianSession *s = g_jac;
+  if (!s) return -1;
+  double *pars_full = (double *)malloc((size_t)(s->n_pars > 0 ? s->n_pars : 1) * sizeof(double));
+  if (!pars_full) return -1;
+  build_pars_full(s, s->x, pars_full);
+  int rc = compute_jacobian(s, pars_full, out, exp_m(&s->P));
+  free(pars_full);
+  return rc;
+}
+
+/* Same as fit_wrapper.c's fit_get_predictions: the raw model value behind
+ * every residual entry at the current estimate (NaN for a failed
+ * experiment). Returns 0, or -1 without a session / on allocation failure. */
+int jacobian_get_predictions(double *out) {
+  JacobianSession *s = g_jac;
+  if (!s) return -1;
+  size_t m = (size_t)exp_m(&s->P);
+  double *fvec = (double *)malloc((m > 0 ? m : 1) * sizeof(double));
+  double *pars_full = (double *)malloc((size_t)(s->n_pars > 0 ? s->n_pars : 1) * sizeof(double));
+  int rc = -1;
+  if (fvec && pars_full) {
+    build_pars_full(s, s->x, pars_full);
+    rc = exp_residuals(&s->P, g_plain_fn, pars_full, fvec, out);
+  }
+  free(fvec);
+  free(pars_full);
+  return rc;
 }

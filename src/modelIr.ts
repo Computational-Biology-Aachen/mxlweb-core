@@ -3,7 +3,20 @@ import {
   buildDerivedWat,
   buildModelWat,
 } from "./backends/wasm/wat-codegen.js";
-import { Add, Base, type GradMap, Mul, Name, Num } from "./mathml/index.js";
+import {
+  Add,
+  Base,
+  Binary,
+  type GradMap,
+  Log,
+  Mul,
+  Name,
+  Nary,
+  Nullary,
+  Num,
+  Sqrt,
+  Unary,
+} from "./mathml/index.js";
 import { PY_RESERVED, uniqueName } from "./pyIdentifier.js";
 
 /**
@@ -172,6 +185,77 @@ export function irToWatDerived(ir: ModelIR, selectedDerived: string[]): string {
 }
 
 /**
+ * Reverse-mode gradients of the derived fit targets `selectedDerived` — the
+ * `derivedGradWat` the gradient fit backends need for derived targets (ADR
+ * 0009): for each key, `∂d/∂y_m` for every state variable then `∂d/∂θ_j`
+ * for every fitted parameter, in that order. One reverse pass per key,
+ * seeded with 1 on the key itself and walking its (pruned) dependencies in
+ * reverse topological order with per-key accumulator locals — the same
+ * pattern {@link buildJacobianGraph} uses per equation.
+ */
+export function buildDerivedGradGraph(
+  modelIr: ModelIR,
+  selectedDerived: string[],
+  thetaNames: string[],
+): { outputs: ModelIntermediate[]; intermediates: ModelIntermediate[] } {
+  const ir = liftSubexpressions(modelIr);
+  const allIntermediates = [...ir.intermediates, ...ir.readouts];
+  const known = new Set(allIntermediates.map((m) => m.name));
+  for (const key of selectedDerived) {
+    if (!known.has(key)) {
+      throw new Error(`buildDerivedGradGraph: unknown derived key "${key}"`);
+    }
+  }
+  const needed = transitiveDerivedDeps(allIntermediates, selectedDerived);
+  const deps = allIntermediates.filter((m) => needed.has(m.name));
+
+  const accum: ModelIntermediate[] = [];
+  const outputs: ModelIntermediate[] = [];
+  selectedDerived.forEach((key, k) => {
+    const grads: GradMap = new Map();
+    new Name(key).pushGradient(new Num(1), grads);
+    for (let i = deps.length - 1; i >= 0; i--) {
+      const { name, expr } = deps[i];
+      const contributions = grads.get(name);
+      if (!contributions || contributions.length === 0) continue;
+      const accumName = `__dgrad_${k}_accum_${name}`;
+      accum.push({ name: accumName, expr: sumContributions(contributions) });
+      expr.pushGradient(new Name(accumName), grads);
+    }
+    ir.varNames.forEach((name, m) =>
+      outputs.push({
+        name: `__dgrad_${k}_y_${m}`,
+        expr: sumContributions(grads.get(name)),
+      }),
+    );
+    thetaNames.forEach((name, j) =>
+      outputs.push({
+        name: `__dgrad_${k}_theta_${j}`,
+        expr: sumContributions(grads.get(name)),
+      }),
+    );
+  });
+  return { outputs, intermediates: [...deps, ...accum] };
+}
+
+/** irToDerivedGradWat — {@link buildDerivedGradGraph} as a derived-shaped
+ * WAT module (`buildDerivedWat`, registered via `set_derived_grad_fn`). */
+export function irToDerivedGradWat(
+  ir: ModelIR,
+  selectedDerived: string[],
+  thetaNames: string[],
+): string {
+  const graph = buildDerivedGradGraph(ir, selectedDerived, thetaNames);
+  return buildDerivedWat(
+    graph.outputs,
+    ir.varNames,
+    ir.parNames,
+    "time",
+    graph.intermediates,
+  );
+}
+
+/**
  * Symbolic name for the adjoint variable λ_i (ADR 0005 §2.3) as a *runtime
  * input* — resolved via `WatContext.lambdaIndex`, not a leaf the forward
  * model owns. Double-underscore prefixed so it can't collide with a real
@@ -189,6 +273,93 @@ function adjointAccumName(intermediateName: string): string {
 function sumContributions(contributions: Base[] | undefined): Base {
   if (!contributions || contributions.length === 0) return new Num(0);
   return contributions.length === 1 ? contributions[0] : new Add(contributions);
+}
+
+/** Rebuilds `expr` with every child mapped through `f` (children only, not
+ * `expr` itself); leaves and unknown node types come back unchanged. */
+function mapChildren(expr: Base, f: (child: Base) => Base): Base {
+  if (expr instanceof Unary) {
+    const Ctor = expr.constructor as new (child: Base) => Base;
+    return new Ctor(f(expr.child));
+  }
+  if (expr instanceof Binary) {
+    const Ctor = expr.constructor as new (left: Base, right: Base) => Base;
+    return new Ctor(f(expr.left), f(expr.right));
+  }
+  if (expr instanceof Nary) {
+    const Ctor = expr.constructor as new (children: Base[]) => Base;
+    return new Ctor(expr.children.map(f));
+  }
+  if (expr instanceof Log || expr instanceof Sqrt) {
+    const Ctor = expr.constructor as new (child: Base, base: Base) => Base;
+    return new Ctor(f(expr.child), f(expr.base));
+  }
+  return expr;
+}
+
+const BOOLEAN_NODES = new Set([
+  "And",
+  "Or",
+  "Xor",
+  "Not",
+  "Implies",
+  "Eq",
+  "NotEqual",
+  "GreaterThan",
+  "GreaterEqual",
+  "LessThan",
+  "LessEqual",
+]);
+
+/**
+ * The same model with every non-leaf numeric subexpression bound to its own named
+ * intermediate (A-normal form) — for the gradient graphs only. A reverse
+ * pass over one big inline expression copies the forward subtree below
+ * each node into that node's local derivative (`Exp(x)` into the gradient
+ * of `x`, the denominator into a quotient's, ...), so nested expressions
+ * blow up super-linearly: the NPQ model's 15 KB RHS gave a ~700 KB
+ * Jacobian module, beyond what `wat-compiler` can encode. With every node
+ * named, each local derivative only references names, and the graph stays
+ * linear in the model's size. Lifted temporaries of `intermediates`/`dxdt`
+ * join `intermediates` and those of `readouts` join `readouts`, each right
+ * before its first user, preserving topological order. Evaluating a lifted
+ * `Piecewise` branch eagerly is harmless: f64 arithmetic never traps, and
+ * an untaken branch's value is never selected.
+ */
+function liftSubexpressions(ir: ModelIR): ModelIR {
+  let counter = 0;
+  const lifter = (out: ModelIntermediate[], seen: Map<Base, Name>) => {
+    const lift = (child: Base): Base => {
+      if (child instanceof Nullary) return child;
+      // Conditions compile to i32 in WAT, never to an f64 local — keep them
+      // inline, lifting only their (numeric) operands.
+      if (BOOLEAN_NODES.has(child.nodeType)) return mapChildren(child, lift);
+      const known = seen.get(child);
+      if (known) return known;
+      const rebuilt = mapChildren(child, lift);
+      const name = new Name(`__lift_${counter++}`);
+      out.push({ name: name.name, expr: rebuilt });
+      seen.set(child, name);
+      return name;
+    };
+    return (expr: Base) => mapChildren(expr, lift);
+  };
+
+  const intermediates: ModelIntermediate[] = [];
+  const seen = new Map<Base, Name>();
+  const liftForward = lifter(intermediates, seen);
+  for (const m of ir.intermediates) {
+    intermediates.push({ name: m.name, expr: liftForward(m.expr) });
+  }
+  const dxdt = new Map<string, Base>();
+  for (const [name, expr] of ir.dxdt) dxdt.set(name, liftForward(expr));
+
+  const readouts: ModelIntermediate[] = [];
+  const liftReadout = lifter(readouts, new Map(seen));
+  for (const m of ir.readouts) {
+    readouts.push({ name: m.name, expr: liftReadout(m.expr) });
+  }
+  return { ...ir, intermediates, dxdt, readouts };
 }
 
 /** Output of {@link buildAdjointGraph} — see `buildAdjointWat`'s doc comment for how the two halves of `intermediates` are told apart. */
@@ -216,9 +387,10 @@ export interface AdjointGraph {
  * for the forward pass, not a new mechanism.
  */
 export function buildAdjointGraph(
-  ir: ModelIR,
+  modelIr: ModelIR,
   thetaNames: string[],
 ): AdjointGraph {
+  const ir = liftSubexpressions(modelIr);
   const lambdaNames = ir.varNames.map((_, i) => adjointLambdaName(i));
   const lTerms = ir.varNames.map(
     (name, i) => new Mul([new Name(lambdaNames[i]), rhsOf(ir, name)]),
@@ -329,9 +501,10 @@ export interface JacobianGraph {
  * ordinary case.
  */
 export function buildJacobianGraph(
-  ir: ModelIR,
+  modelIr: ModelIR,
   thetaNames: string[],
 ): JacobianGraph {
+  const ir = liftSubexpressions(modelIr);
   const nY = ir.varNames.length;
   const nTheta = thetaNames.length;
 

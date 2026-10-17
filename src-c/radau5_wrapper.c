@@ -53,6 +53,13 @@ void set_model_fn_ptr(ModelFn fn) {
     g_model_fn = fn;
 }
 
+/* The currently registered model function — fit_wrapper.c captures the one
+ * JS registered via set_model_fn at fit_init, since the fit drivers swap
+ * g_model_fn between several RHS functions (fit_experiments.c's exp_walk). */
+ModelFn get_model_fn(void) {
+    return g_model_fn;
+}
+
 /* ------------------------------------------------------------------ */
 /* FCN dispatcher (registered with RADAU5 as the RHS callback)        */
 /* ------------------------------------------------------------------ */

@@ -189,10 +189,8 @@ export interface FitInitRequest {
    * buildAdjointWat`) — required iff `backend === "adjoint"`, generated
    * lazily by the caller only when actually requesting that backend
    * (mirrors `derivedWat`'s own optional/on-demand pattern). Ignored under
-   * `"lm"`, which has no use for analytic derivatives at all. The
-   * `"adjoint"` backend is v1-restricted to state-variable targets only
-   * (no `kind: "derived"` in `targets`) — see `adjoint_wrapper.c`'s own
-   * doc comment for why.
+   * `"lm"`, which has no use for analytic derivatives at all. Derived
+   * targets additionally need `derivedGradWat`.
    */
   adjointWat?: string;
   /**
@@ -207,10 +205,16 @@ export interface FitInitRequest {
    * Reported to the caller as an ordinary `"lm"` result either way (`ADR
    * 0005 §2.4`'s "the audience should never need to know an optimizer
    * choice exists" — this is one more such choice, not a new backend).
-   * Same v1 state-variable-only target restriction as `adjointWat`, for the
-   * same reason (`jacobian_wrapper.c`'s own doc comment).
+   * Derived targets additionally need `derivedGradWat`.
    */
   jacobianWat?: string;
+  /**
+   * Gradients of the derived targets with respect to the state and to the
+   * fitted parameters (`ModelBuilderBase.buildWatDerivedGrad`, in `fitIdx`
+   * order) — required iff `adjointWat` or `jacobianWat` is used with a
+   * `kind: "derived"` target. Ignored by the finite-difference path.
+   */
+  derivedGradWat?: string;
   y0: number[];
   /** Full parameter vector — fixed values stay put; fitted values (selected
    * by `fitIdx`) are the initial guess. */
@@ -221,9 +225,9 @@ export interface FitInitRequest {
    * — guarantees positivity without a bounded solver; see ADR 0004 §2.4). */
   logFlags: boolean[];
   targets: FitTarget[];
-  /** The data to fit. `"adjoint"` and the `jacobianWat` path accept exactly
-   * one `timeCourse` experiment without a protocol; only `"lm"`'s
-   * finite-difference path handles protocols and steady states. */
+  /** The data to fit (ADR 0009) — every backend handles every experiment
+   * kind, but `"adjoint"` and the `jacobianWat` path reject a fitted
+   * parameter that a protocol/condition also overrides. */
   experiments: FitExperiment[];
   /** Names matching `pars`, used to resolve protocol/condition override
    * keys to indices. Required iff any experiment overrides a parameter. */

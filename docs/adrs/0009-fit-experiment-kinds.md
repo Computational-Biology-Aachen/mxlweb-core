@@ -1,8 +1,9 @@
 # ADR 0009: Fit Experiments — Time Courses, Protocols, Steady States
 
 **Status:** Implemented
-**Scope:** `src-c/fit_wrapper.c` (`fit_init`, `compute_residuals`,
-`fit_get_predictions`); `src-c/radau5_wrapper.c` (`record_point`, `eval_rhs`);
+**Scope:** `src-c/fit_experiments.{h,c}`; `src-c/{fit,jacobian,adjoint}_wrapper.c`;
+`src-c/radau5_wrapper.c` (`record_point`, `eval_rhs`); `src/modelIr.ts`
+(`buildDerivedGradGraph`, `liftSubexpressions`);
 `src/index.ts` (`FitExperiment`, `FitInitRequest.experiments`,
 `FitProgress.predictions`); `src/backends/wasm/{fitExperiments,fitWorker}.ts`;
 `src/fit/{fitConfig.ts,Fit.svelte,FitProtocolEditor.svelte}`
@@ -65,13 +66,38 @@ so LM's trust region backs away rather than the fit aborting. Newton on
 singular system for most of these models), and can converge to unstable or
 non-physical roots.
 
-### 2.4 Finite-difference LM only
+### 2.4 Every backend, sensitivities included
 
-Only `fit_wrapper.c`'s `lmdif` path handles the new kinds. The analytic-Jacobian
-(`lm-jacobian`) and adjoint backends would need sensitivities through segment
-boundaries and the implicit-function sensitivity at a steady state; both stay
-restricted to a single plain time course (`plainTimeCourse`), and
-`buildFitConfig`/the UI only offer `"lm"` for the new kinds.
+The experiment layout lives in `src-c/fit_experiments.{h,c}` (`ExpProblem`,
+`exp_walk`, `exp_residuals`), shared by all three drivers. The analytic-Jacobian
+(`lm-jacobian`) and adjoint backends differentiate through it:
+
+- **Protocols.** Segment end times are fixed and the state is continuous, so the
+  forward sensitivities `s = ∂y/∂θ` and the adjoint `λ` carry over a boundary
+  unchanged. Each piece integrates with its segment's own parameters; the adjoint's
+  backward pass also stops at every boundary and Hermite-interpolates only within
+  that segment's checkpoints (`f` jumps there).
+- **Steady states, by integrating to convergence** — the same definition the residual
+  uses. `lm-jacobian` integrates the augmented `[y; s]` system until `‖f_aug‖` settles,
+  where `s` is the steady-state sensitivity; the adjoint treats the condition as a
+  one-point time course at the convergence time `T*`. Both are exact for the
+  integrate-from-`y0` steady state, so conserved moieties need no special handling.
+  The implicit-function-theorem alternative (`J·S = −∂f/∂θ`) was rejected: `J` is
+  singular for these models' conserved moieties. A condition that never settles keeps
+  the penalty residual; `lm-jacobian` gives it zero Jacobian rows, and the adjoint
+  gives it no gradient (Adam has no trust region to back away with).
+- **Derived targets** need a third generated graph, `derivedGradWat`
+  (`buildDerivedGradGraph`): per derived target, `∂d/∂y` and `∂d/∂θ` from one
+  reverse pass. The Jacobian row is `∂d/∂y · s + ∂d/∂θ`; the adjoint jump is
+  `(∂g/∂d)·∂d/∂y`, plus `(∂g/∂d)·∂d/∂θ` straight into the θ-gradient.
+- **No fitted parameter may also be overridden** (`buildFitConfig`, C init `-4`): the
+  generated derivatives would still differentiate the overridden value, whose true
+  derivative is 0.
+- **Gradient graphs are built in A-normal form** (`liftSubexpressions`): every numeric
+  subexpression becomes a named intermediate before the reverse pass. Without it, the
+  pass copies the forward subtree below each node into its local derivative, so nested
+  expressions blow up super-linearly. The NPQ model's 15 KB RHS produced a ~700 KB
+  Jacobian module, which `wat-compiler` cannot encode; with lifting it is ~100 KB.
 
 ### 2.5 Predictions for display
 
@@ -91,9 +117,10 @@ only need the final state (the steady-state windows).
 
 ## 3. Consequences
 
-- Protocol and steady-state fits run entirely in WASM, like time-course fits —
-  e.g. recovering one NPQ-model parameter from a 31-segment, 241-point
-  fluorescence trace takes well under a second.
+- Protocol and steady-state fits run entirely in WASM under every backend. Recovering
+  `k_deprot` from a 2.5× start on the NPQ model's 31-segment, 241-point `Fluo` trace
+  takes ~0.2 s with `lm` and ~0.4 s with `lm-jacobian`. The adjoint takes ~13 s for 400
+  Adam steps, because it updates in linear space at `lr = 1e-4`.
 - Fitting NPQ _values_ directly is out of scope: NPQ is a whole-trace transform
   (`computeNpq` over the Fm′ peaks). Fit the fluorescence trace instead.
 - The C layer already supports several time-course experiments (e.g. replicate

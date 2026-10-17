@@ -53,6 +53,8 @@ export interface EmscriptenModule {
   _get_out_y(): number; // pointer
   /** Fit-only exports (fit_wrapper.c) — unused by the plain simulation worker. */
   _set_derived_fn(tableIdx: number): void;
+  /** Derived-target gradients for the gradient fit backends (ADR 0009). */
+  _set_derived_grad_fn(tableIdx: number): void;
   _fit_init(
     nY: number,
     y0Ptr: number,
@@ -102,6 +104,7 @@ export interface EmscriptenModule {
   /** Adjoint-only exports (adjoint_wrapper.c, ADR 0005 §2.3.3) — unused by "lm" fits and the plain simulation worker. */
   _set_forward_model_fn(tableIdx: number): void;
   _set_adjoint_fn(tableIdx: number): void;
+  /** fit_init's experiment arguments (minus logFlags), then Adam's. */
   _adjoint_init(
     nY: number,
     y0Ptr: number,
@@ -110,15 +113,27 @@ export interface EmscriptenModule {
     nTheta: number,
     thetaIdxPtr: number,
     nTargets: number,
+    targetKindPtr: number,
     targetIndexPtr: number,
     targetScalePtr: number,
+    nOvr: number,
+    ovrIdxPtr: number,
+    nExp: number,
+    expKindPtr: number,
+    expNSegPtr: number,
+    expNPointsPtr: number,
+    nSegTotal: number,
+    segTEndPtr: number,
+    segOvrPtr: number,
     nPoints: number,
     dataTPtr: number,
     dataYPtr: number,
-    tEnd: number,
+    nDerived: number,
     solverId: number,
     rtol: number,
     atol: number,
+    ssTol: number,
+    ssTMax: number,
     lr: number,
     beta1: number,
     beta2: number,
@@ -136,6 +151,9 @@ export interface EmscriptenModule {
   _adjoint_get_grad(outPtr: number): void;
   _adjoint_get_params(outPtr: number): void;
   _adjoint_free(): void;
+  /** Model values behind every residual entry from the last forward pass;
+   * 0 on success. */
+  _adjoint_get_predictions(outPtr: number): number;
   /** See `_fit_set_progress_fn`'s doc comment — same mechanism, one Adam
    * step per unit instead of one evaluation. */
   _adjoint_set_progress_fn(tableIdx: number): void;
@@ -144,6 +162,7 @@ export interface EmscriptenModule {
    * fit_wrapper.c's finite-difference lmdif path. */
   _jacobian_set_plain_fn(tableIdx: number): void;
   _jacobian_set_augmented_fn(tableIdx: number): void;
+  /** Exactly fit_init's arguments (theta = the fitted parameters). */
   _jacobian_init(
     nY: number,
     y0Ptr: number,
@@ -153,15 +172,27 @@ export interface EmscriptenModule {
     thetaIdxPtr: number,
     logFlagsPtr: number,
     nTargets: number,
+    targetKindPtr: number,
     targetIndexPtr: number,
     targetScalePtr: number,
+    nOvr: number,
+    ovrIdxPtr: number,
+    nExp: number,
+    expKindPtr: number,
+    expNSegPtr: number,
+    expNPointsPtr: number,
+    nSegTotal: number,
+    segTEndPtr: number,
+    segOvrPtr: number,
     nPoints: number,
     dataTPtr: number,
     dataYPtr: number,
-    tEnd: number,
+    nDerived: number,
     solverId: number,
     rtol: number,
     atol: number,
+    ssTol: number,
+    ssTMax: number,
     targetResidualNorm: number,
     progressInterval: number,
   ): number;
@@ -170,6 +201,8 @@ export interface EmscriptenModule {
   _jacobian_get_residual_norm(): number;
   _jacobian_get_params(outPtr: number): void;
   _jacobian_free(): void;
+  /** Same as `_fit_get_predictions`. */
+  _jacobian_get_predictions(outPtr: number): number;
   /** See `_fit_set_progress_fn`'s doc comment. */
   _jacobian_set_progress_fn(tableIdx: number): void;
   HEAPF64: Float64Array;

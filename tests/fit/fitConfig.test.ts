@@ -219,21 +219,66 @@ describe("buildFitConfig: protocols", () => {
     expect(build({ dataKind: "protocol" }).ok).toBe(false);
   });
 
-  it("only allows the finite-difference LM backend", () => {
+  it("works with every backend", () => {
     for (const backendChoice of ["lm-jacobian", "adjoint"] as const) {
-      expect(build({ dataKind: "protocol", protocol, backendChoice }).ok).toBe(
-        false,
-      );
-      expect(build({ ...steadyStateArgs, backendChoice }).ok).toBe(false);
+      const result = build({ dataKind: "protocol", protocol, backendChoice });
+      if (!result.ok) throw new Error(result.error);
+      expect(
+        result.config.jacobianWat ?? result.config.adjointWat,
+      ).toBeTruthy();
+      expect(build({ ...steadyStateArgs, backendChoice }).ok).toBe(true);
+    }
+  });
+
+  it("rejects a fitted parameter the protocol/conditions override, except under lm", () => {
+    const fitParameters = [{ id: "u", fit: true, logSpace: true }];
+    expect(build({ dataKind: "protocol", protocol, fitParameters }).ok).toBe(
+      true,
+    );
+    for (const backendChoice of ["lm-jacobian", "adjoint"] as const) {
+      expect(
+        build({ dataKind: "protocol", protocol, fitParameters, backendChoice })
+          .ok,
+      ).toBe(false);
+      expect(
+        build({ ...steadyStateArgs, fitParameters, backendChoice }).ok,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("buildFitConfig: derived targets", () => {
+  const derived = {
+    targets: [{ column: "Y", key: "decay", kind: "derived" as const }],
+    candidateKeys: [{ key: "decay", kind: "derived" as const }],
+  };
+
+  it("builds derived-target gradients only for the gradient backends", () => {
+    const lm = build(derived);
+    if (!lm.ok) throw new Error(lm.error);
+    expect(lm.config.derivedGradWat).toBeUndefined();
+    for (const backendChoice of ["lm-jacobian", "adjoint"] as const) {
+      const result = build({ ...derived, backendChoice });
+      if (!result.ok) throw new Error(result.error);
+      expect(result.config.derivedGradWat).toContain("(func");
+      expect(
+        fitInitPayload(result.config, [0.5, 1], {
+          targetResidualNorm: 0,
+          progressUpdateInterval: 0,
+        }).derivedGradWat,
+      ).toBe(result.config.derivedGradWat);
     }
   });
 });
 
 describe("buildFitConfig: missing time-course observations", () => {
-  it("allows NaN target cells under lm, but not under adjoint", () => {
+  it("allows NaN target cells under every backend, but not an empty column", () => {
     const csv = csvOf({ time: [0, 1, 2], Y: [0, NaN, 0.8] });
     expect(build({ csv }).ok).toBe(true);
-    expect(build({ csv, backendChoice: "adjoint" }).ok).toBe(false);
+    expect(build({ csv, backendChoice: "adjoint" }).ok).toBe(true);
+    expect(build({ csv: csvOf({ time: [0, 1], Y: [NaN, NaN] }) }).ok).toBe(
+      false,
+    );
   });
 });
 
