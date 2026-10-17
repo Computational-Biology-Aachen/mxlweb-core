@@ -1,3 +1,5 @@
+import type { ParsedCsv } from "./csvParse";
+import type { ProtocolPreset } from "./FitProtocolEditor.svelte";
 import type { FitDistribution } from "./random";
 
 export type FitTargetMapping = {
@@ -39,4 +41,17 @@ export type FitDataKind = "timeCourse" | "protocol" | "steadyState";
 export type FitConditionMapping = {
   column: string;
   parameter: string;
+};
+
+/** Data a {@link Fit} popover starts with, as if uploaded — lets a
+ * showcase page ship a ready-to-run fit. Columns are auto-mapped by name,
+ * like an upload. */
+export type FitPreset = {
+  csv: ParsedCsv;
+  /** Defaults to "timeCourse". */
+  dataKind?: FitDataKind;
+  /** Parameter ids ticked for fitting. */
+  fit?: string[];
+  /** `protocol` kind: offered (and selected) first in the protocol editor. */
+  protocol?: ProtocolPreset;
 };

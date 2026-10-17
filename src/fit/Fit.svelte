@@ -55,6 +55,7 @@
     FitConditionMapping,
     FitDataKind,
     FitParameterConfig,
+    FitPreset,
     FitTargetMapping,
   } from "./types";
   import LineChart, { type PhaseRegion } from "./FitLineChart.svelte";
@@ -81,6 +82,7 @@
     popovertarget,
     onApply,
     protocolPresets = [],
+    preset,
   }: {
     model: ModelBuilderBase;
     /** The site's WASM radau5 backend — previews run on its shared pool. */
@@ -97,6 +99,9 @@
      * analysis protocol(s), so fitting a measured NPQ trace needs no
      * protocol re-entry. */
     protocolPresets?: ProtocolPreset[];
+    /** Data to start with already loaded, as if uploaded — for showcase
+     * pages. Applied once, when the popover is created. */
+    preset?: FitPreset;
   } = $props();
 
   // Every field below is this popover's own transient config — fitting is
@@ -479,6 +484,14 @@
       { ...current, ...update },
     ];
   }
+
+  untrack(() => {
+    if (!preset) return;
+    dataKind = preset.dataKind ?? "timeCourse";
+    csv = preset.csv;
+    autoMapColumns();
+    for (const id of preset.fit ?? []) updateParamRow(id, { fit: true });
+  });
 
   // A parameter not selected for fitting keeps a fixed value during the fit
   // — editing it here writes straight into the model (same SvelteMap.set()
@@ -2031,7 +2044,9 @@
         <h3>Protocol</h3>
         <FitProtocolEditor
           parameterNames={parameterNames}
-          presets={protocolPresets}
+          presets={preset?.protocol
+            ? [preset.protocol, ...protocolPresets]
+            : protocolPresets}
           bind:protocol={protocol}
           disabled={running || ensembleRunning}
         />
