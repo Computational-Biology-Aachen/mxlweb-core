@@ -52,6 +52,55 @@ export function expandProtocol(groups: PamGroup[], ppfdKey: string): Protocol {
   return steps;
 }
 
+/** Ready-made light protocols offered by the PAM and fit protocol editors. */
+export interface PredefinedProtocol {
+  name: string;
+  groups: PamGroup[];
+}
+
+export const PREDEFINED_PROTOCOLS: PredefinedProtocol[] = [
+  {
+    name: "NPQ induction & recovery",
+    groups: [
+      { steps: [{ pfd: 10, duration: 30 }], repetitions: 1 },
+      {
+        steps: [
+          { pfd: 5000, duration: 0.72 },
+          { pfd: 200, duration: 29.28 },
+        ],
+        repetitions: 10,
+      },
+      {
+        steps: [
+          { pfd: 5000, duration: 0.72 },
+          { pfd: 10, duration: 29.28 },
+        ],
+        repetitions: 5,
+      },
+    ],
+  },
+  {
+    name: "Rapid light curve (RLC)",
+    groups: [100, 200, 500, 1000, 2000].map((pfd) => ({
+      steps: [
+        { pfd, duration: 9.2 },
+        { pfd: 5000, duration: 0.8 },
+      ],
+      repetitions: 3,
+    })),
+  },
+  {
+    name: "Light curve (LC)",
+    groups: [50, 100, 200, 500, 1000, 2000].map((pfd) => ({
+      steps: [
+        { pfd, duration: 59 },
+        { pfd: 5000, duration: 1 },
+      ],
+      repetitions: 3,
+    })),
+  },
+];
+
 const PULSE_LENGTH = 0.8; // seconds — duration of each saturating pulse
 
 /** A protocol event expressed as the absolute time it should reach. */

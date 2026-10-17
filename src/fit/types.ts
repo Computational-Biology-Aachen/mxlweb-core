@@ -25,3 +25,18 @@ export type FitParameterConfig = {
    * marked "fit" (ADR 0006 §2.9). */
   distribution?: FitDistribution;
 };
+
+/** What kind of data a fit compares against (ADR 0009):
+ * - `timeCourse`: one CSV row per time point, parameters constant.
+ * - `protocol`: the same, under a piecewise-constant parameter protocol
+ *   (e.g. a PAM/NPQ light protocol).
+ * - `steadyState`: one CSV row per condition — some columns set
+ *   parameters, the rest are observed steady-state values. */
+export type FitDataKind = "timeCourse" | "protocol" | "steadyState";
+
+/** Steady-state mode: a CSV column whose per-row values override a model
+ * parameter, defining that row's condition. */
+export type FitConditionMapping = {
+  column: string;
+  parameter: string;
+};

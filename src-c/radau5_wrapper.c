@@ -112,6 +112,34 @@ int    get_out_n(void)    { return out_n; }
 double *get_out_t(void)   { return out_t; }
 double *get_out_y(void)   { return out_y; }
 
+/* Appends one accepted step, doubling the buffer when full rather than
+ * silently dropping steps — a long multi-segment protocol (e.g. an NPQ
+ * light protocol with dozens of saturating pulses) easily exceeds any
+ * fixed capacity. capacity==0 (init_output(0, dim)) disables recording
+ * entirely, for callers that only need the final state. */
+static void record_point(double t, const double *y) {
+    if (out_cap == 0) return;
+    if (out_n == out_cap) {
+        int new_cap = out_cap * 2;
+        double *nt = (double *)realloc(out_t, (size_t)new_cap * sizeof(double));
+        if (!nt) return;
+        out_t = nt;
+        double *ny = (double *)realloc(out_y, (size_t)new_cap * (size_t)out_dim * sizeof(double));
+        if (!ny) return;
+        out_y = ny;
+        out_cap = new_cap;
+    }
+    out_t[out_n] = t;
+    memcpy(out_y + (size_t)out_n * (size_t)out_dim, y, (size_t)out_dim * sizeof(double));
+    out_n++;
+}
+
+/* Evaluates the registered model RHS once, outside any integrator — used
+ * by fit_wrapper.c's steady-state convergence check (||dy/dt||). */
+void eval_rhs(int n, double t, double *y, double *dydt, double *pars) {
+    if (g_model_fn) g_model_fn(n, t, y, dydt, pars);
+}
+
 /* ------------------------------------------------------------------ */
 /* SOLOUT dispatcher                                                   */
 /* ------------------------------------------------------------------ */
@@ -121,12 +149,7 @@ static int solout_dispatch(integer *nr, doublereal *xold, doublereal *x,
                            integer *n, doublereal *rpar, integer *ipar,
                            integer *irtrn) {
     (void)nr; (void)xold; (void)cont; (void)lrc; (void)rpar; (void)ipar;
-    if (out_n < out_cap) {
-        out_t[out_n] = *x;
-        memcpy(out_y + (size_t)out_n * (size_t)out_dim, y,
-               (size_t)out_dim * sizeof(double));
-        out_n++;
-    }
+    record_point(*x, y);
     *irtrn = 1; /* continue */
     return 0;
 }
@@ -226,13 +249,7 @@ static int solout_dop853(integer *nr, doublereal *xold, doublereal *x,
                           integer *irtrn, doublereal *xout) {
     (void)nr; (void)xold; (void)n; (void)con; (void)icomp; (void)nd;
     (void)rpar; (void)ipar; (void)xout;
-    if (out_n < out_cap) {
-        out_t[out_n] = *x;
-        /* f2c passes &y[1]; copy out_dim doubles from that pointer */
-        memcpy(out_y + (size_t)out_n * (size_t)out_dim, y,
-               (size_t)out_dim * sizeof(double));
-        out_n++;
-    }
+    record_point(*x, y);
     *irtrn = 1;
     return 0;
 }
@@ -294,12 +311,7 @@ static int solout_dopri5(integer *nr, doublereal *xold, doublereal *x,
                           integer *irtrn) {
     (void)nr; (void)xold; (void)n; (void)con; (void)icomp; (void)nd;
     (void)rpar; (void)ipar;
-    if (out_n < out_cap) {
-        out_t[out_n] = *x;
-        memcpy(out_y + (size_t)out_n * (size_t)out_dim, y,
-               (size_t)out_dim * sizeof(double));
-        out_n++;
-    }
+    record_point(*x, y);
     *irtrn = 1;
     return 0;
 }

@@ -28,6 +28,11 @@ projections), arrived at independently in TypeScript:
 → [ADR 0004 — Three compute backends: JS, WASM, Pyodide (an evolution, not a design)](0004-three-backends-evolution.md)
 → [ADR 0005 — Vendored Hairer Fortran solvers via C/Emscripten, not Rust](0005-vendored-hairer-solvers.md)
 
+## Fitting
+
+→ [ADR 0008 — Neural network blocks and adjoint-based fitting](0008-neural-network-blocks-and-adjoint-fitting.md)
+→ [ADR 0009 — Fit experiments: time courses, protocols, steady states](0009-fit-experiment-kinds.md)
+
 ## Framework Commitment
 
 → [ADR 0007 — Svelte-native core, not framework-agnostic](0007-svelte-native-core.md)

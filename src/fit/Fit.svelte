@@ -10,6 +10,11 @@
  independent, non-interacting FitSessions from randomly-drawn starting
  points — see docs/adrs/0006-ensemble-fitting.md.
 
+ Three kinds of data (ADR 0009, mxlweb-core docs/adrs): a plain time course,
+ a time course under a piecewise-constant parameter protocol (e.g. a PAM/NPQ
+ light protocol — FitProtocolEditor.svelte), and multi-condition steady
+ states (one CSV row per condition; some columns set parameters).
+
  Shared by mxl-web and green-sloth; every ADR referenced here (0004/0005/0006)
  lives in mxl-web's docs/adrs.
 -->
@@ -36,11 +41,22 @@
   import CurriculumStagesEditor from "./CurriculumStagesEditor.svelte";
   import {
     buildFitConfig,
+    predictionsByTarget,
     residualPerPoint,
+    truncateProtocol,
     type BackendChoice,
     type FitConfig,
   } from "./fitConfig";
-  import type { FitParameterConfig, FitTargetMapping } from "./types";
+  import FitProtocolEditor, {
+    type ProtocolPreset,
+  } from "./FitProtocolEditor.svelte";
+  import type { ProtocolStep } from "../pam";
+  import type {
+    FitConditionMapping,
+    FitDataKind,
+    FitParameterConfig,
+    FitTargetMapping,
+  } from "./types";
   import LineChart, { type PhaseRegion } from "./FitLineChart.svelte";
   import {
     mulberry32,
@@ -64,6 +80,7 @@
     createPool,
     popovertarget,
     onApply,
+    protocolPresets = [],
   }: {
     model: ModelBuilderBase;
     /** The site's WASM radau5 backend — previews run on its shared pool. */
@@ -76,6 +93,10 @@
      * fitted parameters", or editing a non-fitted parameter's fixed value —
      * wired by the dashboard to re-run every other analysis box. */
     onApply?: () => void;
+    /** Offered first in the protocol editor — e.g. the model's own PAM
+     * analysis protocol(s), so fitting a measured NPQ trace needs no
+     * protocol re-entry. */
+    protocolPresets?: ProtocolPreset[];
   } = $props();
 
   // Every field below is this popover's own transient config — fitting is
@@ -139,10 +160,26 @@
 
   // ---- Data upload + column mapping --------------------------------------
 
+  let dataKind = $state<FitDataKind>("timeCourse");
+  let isSteadyState = $derived(dataKind === "steadyState");
   let csv = $state<ParsedCsv | null>(null);
   let timeColumn = $state<string | undefined>(undefined);
   let targets = $state<FitTargetMapping[]>([]);
+  // Steady-state mode: columns whose per-row values set a parameter,
+  // defining that row's condition.
+  let conditionColumns = $state<FitConditionMapping[]>([]);
+  // Protocol mode: written by FitProtocolEditor.
+  let protocol = $state<ProtocolStep[] | undefined>(undefined);
   let fitParameters = $state<FitParameterConfig[]>([]);
+  // Steady-state convergence (FitInitRequest.ssTol/ssTMax).
+  let ssTol = $state(1e-6);
+  let ssTMax = $state(1e6);
+
+  let parameterNames = $derived(
+    [...model.parameters.keys()].filter(
+      (id) => !model.nnBlockScaleParameterNames().has(id),
+    ),
+  );
 
   // Candidate fit targets: state variables + derived quantities — the same
   // source TimeCourse.svelte uses for its "select derived" UI.
@@ -155,24 +192,43 @@
 
   function autoMapColumns() {
     if (!csv) return;
-    if (timeColumn === undefined) {
+    if (isSteadyState) {
+      timeColumn = undefined;
+    } else if (timeColumn === undefined) {
       const guess = csv.headers.find((h) => /^t(ime)?$/i.test(h));
       timeColumn = guess ?? csv.headers[0];
     }
     const displayNames = model.getDisplayNames();
+    const matches = (key: string, header: string) =>
+      key.toLowerCase() === header.toLowerCase() ||
+      (displayNames.get(key) ?? "").toLowerCase() === header.toLowerCase();
     const mapped: FitTargetMapping[] = [];
+    const conditions: FitConditionMapping[] = [];
     for (const header of csv.headers) {
       if (header === timeColumn) continue;
-      const match = candidateKeys.find(
-        ({ key }) =>
-          key.toLowerCase() === header.toLowerCase() ||
-          (displayNames.get(key) ?? "").toLowerCase() === header.toLowerCase(),
-      );
+      const match = candidateKeys.find(({ key }) => matches(key, header));
       if (match) {
         mapped.push({ column: header, key: match.key, kind: match.kind });
+        continue;
       }
+      // Only a steady-state row has per-row parameter values; in a time
+      // course a parameter-named column is just unmapped.
+      const parameter = isSteadyState
+        ? parameterNames.find((id) => matches(id, header))
+        : undefined;
+      if (parameter) conditions.push({ column: header, parameter });
     }
     targets = mapped;
+    conditionColumns = conditions;
+  }
+
+  function setDataKind(kind: FitDataKind) {
+    dataKind = kind;
+    // Only "lm" integrates protocols and steady states (buildFitConfig).
+    if (kind !== "timeCourse") backendChoice = "lm";
+    trajectory = { time: [], values: [] };
+    predictions = null;
+    autoMapColumns();
   }
 
   function setTargetColumn(column: string, key: string) {
@@ -183,11 +239,39 @@
     // than silently duplicating a residual row for the same model quantity.
     const rest = targets.filter((t) => t.column !== column && t.key !== key);
     targets = [...rest, { column, key, kind: match.kind }];
+    conditionColumns = conditionColumns.filter((c) => c.column !== column);
+  }
+
+  function setConditionColumn(column: string, parameter: string) {
+    const rest = conditionColumns.filter(
+      (c) => c.column !== column && c.parameter !== parameter,
+    );
+    conditionColumns = [...rest, { column, parameter }];
+    targets = targets.filter((t) => t.column !== column);
   }
 
   function unmapColumn(column: string) {
     targets = targets.filter((t) => t.column !== column);
+    conditionColumns = conditionColumns.filter((c) => c.column !== column);
   }
+
+  // Overrides win over fitted values (FitExperiment's doc comment) — so a
+  // fitted parameter that's also a condition column or protocol key never
+  // actually varies during the fit.
+  let overriddenFitParams = $derived.by(() => {
+    const overridden = new Set<string>(
+      dataKind === "steadyState"
+        ? conditionColumns.map((c) => c.parameter)
+        : dataKind === "protocol"
+          ? (protocol ?? []).flatMap((step) =>
+              Object.keys(step).filter((k) => k !== "t_end"),
+            )
+          : [],
+    );
+    return fitParameters
+      .filter((p) => p.fit && overridden.has(p.id))
+      .map((p) => p.id);
+  });
 
   let fileInput = $state<HTMLInputElement | null>(null);
   let fileError = $state<string | null>(null);
@@ -199,6 +283,8 @@
     csv = null;
     timeColumn = undefined;
     targets = [];
+    conditionColumns = [];
+    predictions = null;
     fileError = null;
     trajectory = { time: [], values: [] };
     trajectoryErr = undefined;
@@ -536,6 +622,11 @@
   // maxFunctionEvaluations itself, so this doesn't need to stay in sync
   // with it.
   let stages = $state<CurriculumStage[]>(defaultCurriculum(1000));
+  // A steady-state fit has no time axis for a curriculum to grow along —
+  // always a single plain stage, whatever the (hidden) editor holds.
+  let runStages = $derived(
+    isSteadyState ? defaultCurriculum(maxFunctionEvaluations) : stages,
+  );
 
   // Consecutive mid-chunk solver failures tolerated — via perturb-and-retry
   // — before giving up on a curriculum stage; see curriculumRunner.ts.
@@ -576,19 +667,19 @@
     // A single stage is a plain (non-curriculum) fit — shading "Stage 1
     // (final)" over the entire chart says nothing and just looks like an
     // unexplained tint.
-    if (stages.length <= 1) return [];
+    if (runStages.length <= 1) return [];
     const regions: PhaseRegion[] = [];
     let cumulative = 0;
-    for (let i = 0; i < stages.length; i++) {
+    for (let i = 0; i < runStages.length; i++) {
       const budget =
-        i < stages.length - 1
-          ? stages[i].maxIterations
-          : finalStageBudget(stages, maxFunctionEvaluations);
+        i < runStages.length - 1
+          ? runStages[i].maxIterations
+          : finalStageBudget(runStages, maxFunctionEvaluations);
       regions.push({
         start: cumulative,
         end: cumulative + budget,
         color: phaseColor(i),
-        label: `Stage ${i + 1}${i === stages.length - 1 ? " (final)" : ""}`,
+        label: `Stage ${i + 1}${i === runStages.length - 1 ? " (final)" : ""}`,
       });
       cumulative += budget;
     }
@@ -603,9 +694,9 @@
   // total budget; the final stage gets whatever's left of it (see
   // ./fit/curriculum.ts's finalStageBudget / ./fit/curriculumRunner.ts).
   let stageBudget = $derived(
-    stageIndex < stages.length - 1
-      ? stages[stageIndex].maxIterations
-      : finalStageBudget(stages, maxFunctionEvaluations),
+    stageIndex < runStages.length - 1
+      ? runStages[stageIndex].maxIterations
+      : finalStageBudget(runStages, maxFunctionEvaluations),
   );
   let progressFraction = $derived(Math.min(nfev / Math.max(stageBudget, 1), 1));
   // True once a run has stopped because it's genuinely finished (converged,
@@ -638,8 +729,40 @@
   });
   let trajectoryErr = $state<SimulationError | undefined>(undefined);
   let previewRequestId: string | null = null;
+  // Model values behind every residual at the current estimate
+  // (FitProgress.predictions), one array per target — the steady-state
+  // chart's model series, which has no trajectory to preview instead.
+  let predictions = $state<number[][] | null>(null);
+  // The config of the run currently being displayed — predictionsByTarget
+  // needs its layout, and the chart its conditions.
+  let shownConfig = $state<FitConfig | null>(null);
+  let shownTargets = $state<FitTargetMapping[]>([]);
 
-  function previewTrajectory(parValues: number[], tEnd: number) {
+  // Simulation-worker fields a preview needs on top of backend.buildRequest:
+  // a plain 0..tEnd run, or the (stage-truncated) fit protocol. Uniform
+  // resampling is per segment under a protocol (wasmWorker.ts), so many
+  // short segments (an NPQ protocol's pulses) get fewer points each.
+  function previewSpan(
+    config: FitConfig,
+    tEnd: number,
+  ): { tEnd: number; nTimePoints: number; protocol?: ProtocolStep[] } {
+    if (config.kind !== "protocol" || !config.protocol) {
+      return { tEnd, nTimePoints: 200 };
+    }
+    const segments = truncateProtocol(config.protocol, tEnd);
+    return {
+      tEnd: 0,
+      protocol: segments,
+      nTimePoints: Math.max(10, Math.ceil(400 / segments.length)),
+    };
+  }
+
+  function previewTrajectory(
+    parValues: number[],
+    tEnd: number,
+    config: FitConfig,
+  ) {
+    if (config.kind === "steadyState") return;
     const requestId = WorkerManager.generateRequestId();
     previewRequestId = requestId;
     const order = [
@@ -661,10 +784,9 @@
       rhsNames: model.getNames(),
       allDerivedNames: order,
       selectDerivedNames: order,
-      tEnd,
+      ...previewSpan(config, tEnd),
       requestId,
       calculateDerived: true,
-      nTimePoints: 200,
     });
   }
 
@@ -681,8 +803,8 @@
     return unsub;
   });
 
-  export function runFit() {
-    const result = buildFitConfig({
+  function buildConfig() {
+    return buildFitConfig({
       model,
       fitParameters,
       csv,
@@ -691,12 +813,24 @@
       candidateKeys,
       backendChoice,
       hasTrainedNNBlock,
+      dataKind,
+      protocol,
+      conditionColumns,
+      ssTol,
+      ssTMax,
     });
+  }
+
+  export function runFit() {
+    const result = buildConfig();
     if (!result.ok) {
       errorMsg = result.error;
       return;
     }
     const config = result.config;
+    shownConfig = config;
+    shownTargets = [...targets];
+    predictions = null;
 
     errorMsg = null;
     running = true;
@@ -707,7 +841,7 @@
     fittedValues = null;
     residualHistory = [];
     stageIndex = 0;
-    stageCount = stages.length;
+    stageCount = runStages.length;
 
     // A per-row "initial guess" override (edited in the param table) starts
     // the fit from a value other than the model's current live parameter —
@@ -731,7 +865,7 @@
     session = runCurriculumFit(
       config,
       pars,
-      stages,
+      runStages,
       // A getter, not a plain object: re-read live on every init/chunk
       // decision inside runCurriculumFit, so editing "Stop once residual
       // norm reaches"/"Maximum total function evaluations" etc. mid-run
@@ -756,6 +890,7 @@
         },
         onStageInit: ({
           initialResidualNorm,
+          initialPredictions,
           stageIndex: i,
           stageCount: n,
           stageCutoffT,
@@ -771,6 +906,9 @@
           stageIndex = i;
           stageCount = n;
           nfev = 0;
+          if (initialPredictions) {
+            predictions = predictionsByTarget(config, initialPredictions);
+          }
           // Anchor the convergence plot at this stage's own start with its
           // pre-chunk residual, rather than starting from wherever the
           // first chunk happens to land.
@@ -814,7 +952,10 @@
               ),
             },
           ];
-          previewTrajectory(progress.params, stageCutoffT);
+          if (progress.predictions) {
+            predictions = predictionsByTarget(config, progress.predictions);
+          }
+          previewTrajectory(progress.params, stageCutoffT, config);
         },
         onRunError: (message) => {
           errorMsg = message;
@@ -885,6 +1026,8 @@
     fittedValues: Record<string, number> | null;
     residualHistory: { nfev: number; residualNorm: number }[];
     trajectory: { time: number[]; values: number[][] };
+    /** See the single-fit `predictions`. */
+    predictions: number[][] | null;
     previewRequestId: string | null;
     done: boolean;
     errored: boolean;
@@ -897,6 +1040,7 @@
       fittedValues: null,
       residualHistory: [],
       trajectory: { time: [], values: [] },
+      predictions: null,
       previewRequestId: null,
       done: false,
       errored: false,
@@ -1036,8 +1180,9 @@
     m: number,
     parValues: number[],
     tEnd: number,
+    config: FitConfig,
   ) {
-    if (!ensemblePreviewPool) return;
+    if (!ensemblePreviewPool || config.kind === "steadyState") return;
     const requestId = WorkerManager.generateRequestId();
     members = members.map((mem, i) =>
       i === m ? { ...mem, previewRequestId: requestId } : mem,
@@ -1057,10 +1202,9 @@
       rhsNames: model.getNames(),
       allDerivedNames: order,
       selectDerivedNames: order,
-      tEnd,
+      ...previewSpan(config, tEnd),
       requestId,
       calculateDerived: true,
-      nTimePoints: 200,
     });
   }
 
@@ -1079,7 +1223,7 @@
     memberSessions[m] = runCurriculumFit(
       config,
       pars,
-      stages,
+      runStages,
       // A getter, not a plain object: re-read live on every init/chunk
       // decision inside runCurriculumFit, so editing "Stop once residual
       // norm reaches"/"Maximum total function evaluations" etc. mid-run
@@ -1102,7 +1246,7 @@
           memberSessions[m] = null;
           checkEnsembleDone();
         },
-        onStageInit: ({ initialResidualNorm }) => {
+        onStageInit: ({ initialResidualNorm, initialPredictions }) => {
           // Every FIT_INIT resets progress.nfev to start counting from 0
           // again for that attempt — a same-stage retry after a solver
           // error (curriculumRunner.ts's perturb-and-retry) included, not
@@ -1114,6 +1258,9 @@
           const member = members[m];
           setMember({
             nfev: 0,
+            predictions: initialPredictions
+              ? predictionsByTarget(config, initialPredictions)
+              : member.predictions,
             residualHistory:
               initialResidualNorm !== undefined
                 ? [
@@ -1142,8 +1289,11 @@
             residualNorm: progress.residualNorm,
             residualHistory: nextHistory,
             fittedValues,
+            predictions: progress.predictions
+              ? predictionsByTarget(config, progress.predictions)
+              : member.predictions,
           });
-          previewEnsembleTrajectory(m, progress.params, stageCutoffT);
+          previewEnsembleTrajectory(m, progress.params, stageCutoffT, config);
         },
         onRunError: () => {
           setMember({ errored: true, done: true });
@@ -1160,21 +1310,14 @@
   }
 
   export function runEnsembleFit() {
-    const result = buildFitConfig({
-      model,
-      fitParameters,
-      csv,
-      timeColumn,
-      targets,
-      candidateKeys,
-      backendChoice,
-      hasTrainedNNBlock,
-    });
+    const result = buildConfig();
     if (!result.ok) {
       ensembleErrorMsg = result.error;
       return;
     }
     const config = result.config;
+    shownConfig = config;
+    shownTargets = [...targets];
 
     teardownEnsembleWorkers();
     ensembleErrorMsg = null;
@@ -1303,6 +1446,121 @@
   }
 
   // ---- Chart -------------------------------------------------------------
+
+  // Steady-state x axis: the condition parameter's value when exactly one
+  // column defines the conditions (a dose-response / light-response curve),
+  // otherwise just the row number.
+  let ssXParameter = $derived(
+    conditionColumns.length === 1 ? conditionColumns[0] : undefined,
+  );
+  let xAxisLabel = $derived(
+    isSteadyState
+      ? ssXParameter
+        ? ssXParameter.parameter
+        : "Condition (row)"
+      : "Time / unit",
+  );
+
+  function ssDataPoints(column: string): { x: number; y: number }[] {
+    if (!csv) return [];
+    return csv.columns[column].map((y, i) => ({
+      x: ssXParameter ? csv!.columns[ssXParameter.column][i] : i + 1,
+      y,
+    }));
+  }
+
+  // One {x, y} series per target from per-condition model values (a single
+  // fit's predictions, or an ensemble statistic), sorted along x so the
+  // line reads as a response curve.
+  function ssModelPoints(values: number[]): { x: number; y: number }[] {
+    const config = shownConfig;
+    if (!config || config.kind !== "steadyState" || !config.conditions)
+      return [];
+    return config.conditions
+      .map((condition, j) => ({
+        x: ssXParameter ? condition[ssXParameter.parameter] : j + 1,
+        y: values[j],
+      }))
+      .sort((a, b) => a.x - b.x);
+  }
+
+  function meanStd(values: number[]): { mean: number; std: number } | null {
+    const finite = values.filter((v) => Number.isFinite(v));
+    if (finite.length === 0) return null;
+    const mean = finite.reduce((a, b) => a + b, 0) / finite.length;
+    const variance =
+      finite.reduce((a, b) => a + (b - mean) ** 2, 0) / finite.length;
+    return { mean, std: Math.sqrt(variance) };
+  }
+
+  let steadyStateLineData = $derived.by(() => {
+    const displayNames = model.getDisplayNames();
+    const label = (key: string) => displayNames.get(key) ?? key;
+    const showModel = shownConfig?.kind === "steadyState";
+    const datasets = targets.flatMap((t, ti) => {
+      const color = paletteColor(ti);
+      // shownConfig.fitTargetsList is in shownTargets' order.
+      const k = shownTargets.findIndex((st) => st.column === t.column);
+      const data = {
+        label: `${label(t.key)} (data)`,
+        data: ssDataPoints(t.column),
+        showLine: false,
+        pointRadius: 4,
+        borderColor: color,
+        backgroundColor: color,
+      };
+      if (!showModel || k < 0) return [data];
+      if (mode === "single") {
+        if (!predictions) return [data];
+        return [
+          {
+            label: `${label(t.key)} (model)`,
+            data: ssModelPoints(predictions[k]),
+            pointRadius: 3,
+            borderColor: color,
+            backgroundColor: color,
+          },
+          data,
+        ];
+      }
+      const memberValues = nonOutlierMembers
+        .map((m) => m.predictions?.[k])
+        .filter((v): v is number[] => v !== undefined);
+      if (memberValues.length === 0) return [data];
+      const nConditions = memberValues[0].length;
+      const stats = Array.from({ length: nConditions }, (_, j) =>
+        meanStd(memberValues.map((v) => v[j])),
+      );
+      return [
+        {
+          label: "",
+          data: ssModelPoints(stats.map((st) => (st ? st.mean - st.std : NaN))),
+          borderWidth: 0,
+          pointRadius: 0,
+          fill: false,
+          borderColor: "transparent",
+        },
+        {
+          label: "",
+          data: ssModelPoints(stats.map((st) => (st ? st.mean + st.std : NaN))),
+          borderWidth: 0,
+          pointRadius: 0,
+          fill: "-1",
+          backgroundColor: withAlpha(color, 0.15),
+          borderColor: "transparent",
+        },
+        {
+          label: `${label(t.key)} (mean)`,
+          data: ssModelPoints(stats.map((st) => st?.mean ?? NaN)),
+          pointRadius: 3,
+          borderColor: color,
+          backgroundColor: color,
+        },
+        data,
+      ];
+    });
+    return { labels: [], datasets };
+  });
 
   let lineData = $derived.by(() => {
     const displayNames = model.getDisplayNames();
@@ -1464,9 +1722,11 @@
   // (and so every point on the line) visibly rescale on each progress tick —
   // the "jumping" a live-updating fit chart must not do.
   let dataYMax = $derived.by(() => {
-    if (!csv || timeColumn === undefined || targets.length === 0)
-      return undefined;
-    const values = targets.flatMap((t) => csv!.columns[t.column] ?? []);
+    if (!csv || (!isSteadyState && timeColumn === undefined)) return undefined;
+    if (targets.length === 0) return undefined;
+    const values = targets
+      .flatMap((t) => csv!.columns[t.column] ?? [])
+      .filter((v) => Number.isFinite(v));
     if (values.length === 0) return undefined;
     return Math.max(...values) * 1.2;
   });
@@ -1501,6 +1761,19 @@
         <option value="ensemble">Ensemble fit</option>
       </select>
     </label>
+    <label>
+      Data:
+      <select
+        value={dataKind}
+        disabled={running || ensembleRunning}
+        onchange={(e) =>
+          setDataKind((e.target as HTMLSelectElement).value as FitDataKind)}
+      >
+        <option value="timeCourse">Time course</option>
+        <option value="protocol">Protocol time course</option>
+        <option value="steadyState">Steady states</option>
+      </select>
+    </label>
   </div>
 
   <div class="config-row">
@@ -1519,10 +1792,17 @@
             <td>
               <select bind:value={backendChoice}>
                 <option value="lm">Levenberg-Marquardt</option>
-                <option value="lm-jacobian"
+                <!-- Only finite-difference LM integrates protocols and
+                     steady states (FitInitRequest.experiments). -->
+                <option
+                  value="lm-jacobian"
+                  disabled={dataKind !== "timeCourse"}
                   >Levenberg-Marquardt (analytic Jacobian)</option
                 >
-                <option value="adjoint">Adjoint</option>
+                <option
+                  value="adjoint"
+                  disabled={dataKind !== "timeCourse"}>Adjoint</option
+                >
               </select>
             </td>
           </tr>
@@ -1556,6 +1836,36 @@
               />
             </td>
           </tr>
+          {#if isSteadyState}
+            <tr>
+              <td
+                title="A condition counts as steady once ‖dy/dt‖ / max(‖y‖, 1) drops below this"
+                >Steady-state tolerance</td
+              >
+              <td>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  bind:value={ssTol}
+                />
+              </td>
+            </tr>
+            <tr>
+              <td
+                title="A condition that hasn't reached steady state by this time counts as a failed simulation"
+                >Steady-state max. time</td
+              >
+              <td>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  bind:value={ssTMax}
+                />
+              </td>
+            </tr>
+          {/if}
           {#if mode === "ensemble"}
             <tr>
               <td>Ensemble size</td>
@@ -1608,12 +1918,14 @@
           {/if}
         </tbody>
       </table>
-      <CurriculumStagesEditor
-        bind:stages={stages}
-        tEnd={curriculumTEnd}
-        budgetScale={maxFunctionEvaluations}
-        minBudgetWarn={chunkMaxfev}
-      />
+      {#if !isSteadyState}
+        <CurriculumStagesEditor
+          bind:stages={stages}
+          tEnd={curriculumTEnd}
+          budgetScale={maxFunctionEvaluations}
+          minBudgetWarn={chunkMaxfev}
+        />
+      {/if}
     </div>
     <div class="config-col">
       <h3>Data</h3>
@@ -1639,10 +1951,42 @@
           <tbody>
             {#each csv.headers as header (header)}
               {@const mapping = targets.find((t) => t.column === header)}
+              {@const condition = conditionColumns.find(
+                (c) => c.column === header,
+              )}
               <tr>
                 <td>{header}</td>
                 <td>
-                  {#if header === timeColumn}
+                  {#if isSteadyState}
+                    <select
+                      value={mapping
+                        ? `target:${mapping.key}`
+                        : condition
+                          ? `param:${condition.parameter}`
+                          : ""}
+                      onchange={(e) => {
+                        const value = (e.target as HTMLSelectElement).value;
+                        if (value === "") unmapColumn(header);
+                        else if (value.startsWith("param:"))
+                          setConditionColumn(header, value.slice(6));
+                        else setTargetColumn(header, value.slice(7));
+                      }}
+                    >
+                      <option value="">(ignore)</option>
+                      <optgroup label="Condition (sets parameter)">
+                        {#each parameterNames as id (id)}
+                          <option value={`param:${id}`}>{id}</option>
+                        {/each}
+                      </optgroup>
+                      <optgroup label="Observed steady state">
+                        {#each candidateKeys as c (c.key)}
+                          <option value={`target:${c.key}`}
+                            >{c.key} ({c.kind})</option
+                          >
+                        {/each}
+                      </optgroup>
+                    </select>
+                  {:else if header === timeColumn}
                     <span class="time-badge">time axis</span>
                   {:else}
                     <select
@@ -1680,10 +2024,26 @@
           >
         </div>
       {:else}
+        {#if isSteadyState}
+          <p class="nn-note">
+            One row per condition: map the columns that set parameters (e.g.
+            light intensity) as conditions, and the measured steady-state
+            values as observations. Empty cells count as missing.
+          </p>
+        {/if}
         <Button
           variant="secondary"
           onclick={() => fileInput?.click()}>Upload data</Button
         >
+      {/if}
+      {#if dataKind === "protocol"}
+        <h3>Protocol</h3>
+        <FitProtocolEditor
+          parameterNames={parameterNames}
+          presets={protocolPresets}
+          bind:protocol={protocol}
+          disabled={running || ensembleRunning}
+        />
       {/if}
     </div>
   </div>
@@ -1908,6 +2268,16 @@
     {/if}
   {/if}
 
+  {#if overriddenFitParams.length > 0}
+    <p class="target-missed">
+      {overriddenFitParams.join(", ")}
+      {overriddenFitParams.length === 1 ? "is" : "are"} also set by the {isSteadyState
+        ? "conditions"
+        : "protocol"}, which overrides the fitted value — so the fit can't
+      change {overriddenFitParams.length === 1 ? "it" : "them"}.
+    </p>
+  {/if}
+
   {#if mode === "single"}
     <div class="run-row">
       {#if !running}
@@ -1965,9 +2335,10 @@
       {:else}
         <div class="chart-cell">
           <LineChart
-            data={lineData}
+            data={isSteadyState ? steadyStateLineData : lineData}
             loading={false}
             yMax={yMax ?? dataYMax}
+            xLabel={xAxisLabel}
           />
         </div>
       {/if}
@@ -2033,9 +2404,10 @@
     <div class="charts-row">
       <div class="chart-cell">
         <LineChart
-          data={ensembleLineData}
+          data={isSteadyState ? steadyStateLineData : ensembleLineData}
           loading={false}
           yMax={yMax ?? dataYMax}
+          xLabel={xAxisLabel}
         />
       </div>
       <div class="chart-cell">
@@ -2083,8 +2455,9 @@
   }
   .mode-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.5rem 1.5rem;
   }
   .mode-row label {
     display: flex;

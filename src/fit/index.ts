@@ -17,6 +17,10 @@ export {
   type PhaseRegion,
 } from "./FitLineChart.svelte";
 export { default as CurriculumStagesEditor } from "./CurriculumStagesEditor.svelte";
+export {
+  default as FitProtocolEditor,
+  type ProtocolPreset,
+} from "./FitProtocolEditor.svelte";
 export { default as SimErrDisplay } from "./SimErrDisplay.svelte";
 export * from "./curriculum";
 export * from "./curriculumRunner";

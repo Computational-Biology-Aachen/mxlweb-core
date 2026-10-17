@@ -142,6 +142,37 @@ export interface FitTarget {
 }
 
 /**
+ * One block of fit data (ADR 0009). Every experiment starts from the same
+ * `y0`; their residuals are concatenated into one least-squares problem.
+ *
+ * - `timeCourse`: data at ascending `dataT`, integrated from t=0. With a
+ *   `protocol`, parameters are overridden piecewise-constant per segment
+ *   (same shape and semantics as {@link SimulationRequest.protocol}; every
+ *   `dataT` must be <= the last segment's `t_end`).
+ * - `steadyState`: one observation per target at the steady state reached
+ *   under `overrides` (parameter name -> value), integrated to convergence.
+ *
+ * `dataY` is target-major within the experiment: `dataY[k * nPoints + j]`
+ * is target k's value at point j (nPoints = `dataT.length`, or 1 for a
+ * steady state). NaN marks a missing observation.
+ *
+ * Overrides (protocol entries and steady-state conditions alike) replace a
+ * fitted parameter's trial value, the same as MxlPy.
+ */
+export type FitExperiment =
+  | {
+      kind: "timeCourse";
+      dataT: number[];
+      dataY: number[];
+      protocol?: Array<{ t_end: number } & Record<string, number>>;
+    }
+  | {
+      kind: "steadyState";
+      overrides: Record<string, number>;
+      dataY: number[];
+    };
+
+/**
  * One-time setup for a fit session. Compiles `rhsWat` (and `derivedWat`, if
  * any target has kind="derived") and calls the WASM `fit_init`. Follow with
  * one or more {@link FitChunkRequest}s, then a {@link FitFreeRequest}.
@@ -190,12 +221,19 @@ export interface FitInitRequest {
    * — guarantees positivity without a bounded solver; see ADR 0004 §2.4). */
   logFlags: boolean[];
   targets: FitTarget[];
-  /** Ascending timestamps, shared across all targets. */
-  dataT: number[];
-  /** Target-major: dataY[k * dataT.length + j] is target k's value at dataT[j]. */
-  dataY: number[];
-  /** Integration end time — should cover the last data timestamp. */
-  tEnd: number;
+  /** The data to fit. `"adjoint"` and the `jacobianWat` path accept exactly
+   * one `timeCourse` experiment without a protocol; only `"lm"`'s
+   * finite-difference path handles protocols and steady states. */
+  experiments: FitExperiment[];
+  /** Names matching `pars`, used to resolve protocol/condition override
+   * keys to indices. Required iff any experiment overrides a parameter. */
+  parNames?: string[];
+  /** Steady-state convergence: ||dy/dt|| / max(||y||, 1) below this.
+   * Default 1e-6. */
+  ssTol?: number;
+  /** Steady-state experiments that haven't converged by this time count as
+   * failed (penalty residual). Default 1e6. */
+  ssTMax?: number;
   solver: FitSolver;
   rtol: number;
   atol: number;
@@ -237,6 +275,8 @@ export interface FitInitResult {
    * iff ok=true. Lets a progress/convergence plot anchor at nfev=0 instead
    * of starting from whatever the first chunk happens to reach. */
   initialResidualNorm?: number;
+  /** Like {@link FitProgress.predictions}, at the initial guess. */
+  initialPredictions?: number[];
 }
 
 /**
@@ -267,6 +307,11 @@ export interface FitProgress {
   /** "adjoint" backend only; absent under "lm". */
   gradNorm?: number;
   params: number[];
+  /** "lm" (finite-difference) backend only: the model value behind every
+   * residual entry at `params`, concatenated per experiment in the same
+   * layout as each {@link FitExperiment}'s `dataY`. NaN where an
+   * experiment's integration failed or never reached steady state. */
+  predictions?: number[];
   done: boolean;
   /** Present iff done. */
   reason?: FitStopReason;

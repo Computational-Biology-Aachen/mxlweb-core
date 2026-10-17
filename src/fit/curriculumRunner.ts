@@ -66,6 +66,8 @@ export type CurriculumRunHandlers = {
    * per-stage convergence chart at nfev=0. */
   onStageInit?: (info: {
     initialResidualNorm?: number;
+    /** See `FitInitResult.initialPredictions`. */
+    initialPredictions?: number[];
     stageIndex: number;
     stageCount: number;
     stageCutoffT: number;
@@ -87,8 +89,9 @@ export function runCurriculumFit(
   getSettings: () => CurriculumRunSettings,
   handlers: CurriculumRunHandlers,
 ): CurriculumRunHandle {
-  const tEnd = config.sortedT[config.sortedT.length - 1];
-  const minT = config.sortedT[0];
+  // A steady-state fit has no time axis: every stage covers all the data.
+  const tEnd = config.sortedT[config.sortedT.length - 1] ?? Infinity;
+  const minT = config.sortedT[0] ?? 0;
   const rng = mulberry32(Math.floor(Math.random() * 2 ** 31));
 
   const session = new FitSession();
@@ -161,6 +164,7 @@ export function runCurriculumFit(
     }
     handlers.onStageInit?.({
       initialResidualNorm: result.initialResidualNorm,
+      initialPredictions: result.initialPredictions,
       stageIndex,
       stageCount: stages.length,
       stageCutoffT,

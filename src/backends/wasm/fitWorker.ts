@@ -35,6 +35,12 @@ import type {
   SimulationError,
 } from "../../index.js";
 import {
+  DEFAULT_SS_T_MAX,
+  DEFAULT_SS_TOL,
+  flattenExperiments,
+  plainTimeCourse,
+} from "./fitExperiments.js";
+import {
   compileModel,
   loadRadau,
   type EmscriptenModule,
@@ -205,6 +211,8 @@ interface FitSession {
   /** "lm": derived_fn, if any target needed one. "lm-jacobian": the augmented (forward-sensitivity) model_fn — always present. "adjoint": the adjoint_fn — always present, never null (adjointWat is required for this backend). */
   secondaryFnIdx: number | null;
   nPars: number;
+  /** "lm" only: length of `FitProgress.predictions`; 0 for the others. */
+  nPredictions: number;
 }
 let session: FitSession | null = null;
 
@@ -226,8 +234,23 @@ function fitInitError(rc: number): string {
       return "Out of memory setting up the fit.";
     case -2:
       return 'A parameter marked "fit in log-space" has a non-positive initial value.';
+    case -3:
+      return "Inconsistent fit data: time-course data extends past the protocol's last segment.";
     default:
       return `fit_init failed (code ${rc}).`;
+  }
+}
+
+function readPredictions(
+  mod: EmscriptenModule,
+  n: number,
+): number[] | undefined {
+  const outPtr = mod._malloc(Math.max(n, 1) * 8);
+  try {
+    if (mod._fit_get_predictions(outPtr) !== 0) return undefined;
+    return Array.from(mod.HEAPF64.subarray(outPtr / 8, outPtr / 8 + n));
+  } finally {
+    mod._free(outPtr);
   }
 }
 
@@ -256,7 +279,14 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
     mod._set_derived_fn(derivedFnIdx);
   }
 
-  const nPoints = req.dataT.length;
+  const flat = flattenExperiments(req);
+  if (typeof flat === "string") {
+    mod.removeFunction(modelFnIdx);
+    if (derivedFnIdx !== null) mod.removeFunction(derivedFnIdx);
+    postInitResult({ requestId: req.requestId, ok: false, error: flat });
+    return;
+  }
+  const nPoints = flat.dataT.length;
   const ptrs = {
     y0: allocF64(mod, req.y0),
     pars: allocF64(mod, req.pars),
@@ -277,8 +307,14 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
       mod,
       req.targets.map((t) => t.scale),
     ),
-    dataT: allocF64(mod, req.dataT),
-    dataY: allocF64(mod, req.dataY),
+    ovrIdx: allocI32(mod, flat.ovrIdx),
+    expKind: allocI32(mod, flat.expKind),
+    expNSeg: allocI32(mod, flat.expNSeg),
+    expNPoints: allocI32(mod, flat.expNPoints),
+    segTEnd: allocF64(mod, flat.segTEnd),
+    segOvr: allocF64(mod, flat.segOvr),
+    dataT: allocF64(mod, flat.dataT),
+    dataY: allocF64(mod, flat.dataY),
   };
 
   let rc: number;
@@ -295,14 +331,24 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
       ptrs.targetKind,
       ptrs.targetIndex,
       ptrs.targetScale,
+      flat.ovrIdx.length,
+      ptrs.ovrIdx,
+      flat.expKind.length,
+      ptrs.expKind,
+      ptrs.expNSeg,
+      ptrs.expNPoints,
+      flat.segTEnd.length,
+      ptrs.segTEnd,
+      ptrs.segOvr,
       nPoints,
       ptrs.dataT,
       ptrs.dataY,
-      req.tEnd,
       req.nDerived,
       SOLVER_ID[req.solver],
       req.rtol,
       req.atol,
+      req.ssTol ?? DEFAULT_SS_TOL,
+      req.ssTMax ?? DEFAULT_SS_T_MAX,
       req.targetResidualNorm ?? -1,
       req.progressUpdateInterval ?? 0,
     );
@@ -326,11 +372,13 @@ async function handleFitInit(req: FitInitRequest, mod: EmscriptenModule) {
     primaryFnIdx: modelFnIdx,
     secondaryFnIdx: derivedFnIdx,
     nPars: req.pars.length,
+    nPredictions: req.targets.length * nPoints,
   };
   postInitResult({
     requestId: req.requestId,
     ok: true,
     initialResidualNorm: mod._fit_get_residual_norm(),
+    initialPredictions: readPredictions(mod, session.nPredictions),
   });
 }
 
@@ -356,6 +404,12 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
     return;
   }
 
+  const tc = plainTimeCourse(req);
+  if (typeof tc === "string") {
+    postInitResult({ requestId: req.requestId, ok: false, error: tc });
+    return;
+  }
+
   const plainInstance = await compileModel(req.rhsWat, mod, basePath);
   const plainFn = plainInstance.exports.fcn as (...args: unknown[]) => void;
   const plainFnIdx = mod.addFunction(plainFn, "vidiii");
@@ -366,7 +420,7 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
   const augFnIdx = mod.addFunction(augFn, "vidiii");
   mod._jacobian_set_augmented_fn(augFnIdx);
 
-  const nPoints = req.dataT.length;
+  const nPoints = tc.dataT.length;
   const ptrs = {
     y0: allocF64(mod, req.y0),
     pars: allocF64(mod, req.pars),
@@ -383,8 +437,8 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
       mod,
       req.targets.map((t) => t.scale),
     ),
-    dataT: allocF64(mod, req.dataT),
-    dataY: allocF64(mod, req.dataY),
+    dataT: allocF64(mod, tc.dataT),
+    dataY: allocF64(mod, tc.dataY),
   };
 
   let rc: number;
@@ -403,7 +457,7 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
       nPoints,
       ptrs.dataT,
       ptrs.dataY,
-      req.tEnd,
+      tc.tEnd,
       SOLVER_ID[req.solver],
       req.rtol,
       req.atol,
@@ -430,6 +484,7 @@ async function handleJacobianInit(req: FitInitRequest, mod: EmscriptenModule) {
     primaryFnIdx: plainFnIdx,
     secondaryFnIdx: augFnIdx,
     nPars: req.pars.length,
+    nPredictions: 0,
   };
   postInitResult({
     requestId: req.requestId,
@@ -466,6 +521,11 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
     });
     return;
   }
+  const tc = plainTimeCourse(req);
+  if (typeof tc === "string") {
+    postInitResult({ requestId: req.requestId, ok: false, error: tc });
+    return;
+  }
 
   const forwardInstance = await compileModel(req.rhsWat, mod, basePath);
   const forwardFn = forwardInstance.exports.fcn as (...args: unknown[]) => void;
@@ -489,8 +549,8 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
       mod,
       req.targets.map((t) => t.scale),
     ),
-    dataT: allocF64(mod, req.dataT),
-    dataY: allocF64(mod, req.dataY),
+    dataT: allocF64(mod, tc.dataT),
+    dataY: allocF64(mod, tc.dataY),
   };
 
   let rc: number;
@@ -505,10 +565,10 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
       req.targets.length,
       ptrs.targetIndex,
       ptrs.targetScale,
-      req.dataT.length,
+      tc.dataT.length,
       ptrs.dataT,
       ptrs.dataY,
-      req.tEnd,
+      tc.tEnd,
       SOLVER_ID[req.solver],
       req.rtol,
       req.atol,
@@ -542,6 +602,7 @@ async function handleAdjointInit(req: FitInitRequest, mod: EmscriptenModule) {
     primaryFnIdx: forwardFnIdx,
     secondaryFnIdx: adjointFnIdx,
     nPars: req.pars.length,
+    nPredictions: 0,
   };
   postInitResult({
     requestId: req.requestId,
@@ -601,6 +662,7 @@ function handleFitChunk(req: FitChunkRequest, mod: EmscriptenModule) {
     nfev: mod._fit_get_nfev(),
     residualNorm: mod._fit_get_residual_norm(),
     params,
+    predictions: readPredictions(mod, session.nPredictions),
     done,
     reason: done ? infoToReason(info) : undefined,
     err:

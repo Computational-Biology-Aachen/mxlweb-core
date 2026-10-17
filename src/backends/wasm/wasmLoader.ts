@@ -65,14 +65,24 @@ export interface EmscriptenModule {
     targetKindPtr: number,
     targetIndexPtr: number,
     targetScalePtr: number,
+    nOvr: number,
+    ovrIdxPtr: number,
+    nExp: number,
+    expKindPtr: number,
+    expNSegPtr: number,
+    expNPointsPtr: number,
+    nSegTotal: number,
+    segTEndPtr: number,
+    segOvrPtr: number,
     nPoints: number,
     dataTPtr: number,
     dataYPtr: number,
-    tEnd: number,
     nDerived: number,
     solverId: number,
     rtol: number,
     atol: number,
+    ssTol: number,
+    ssTMax: number,
     targetResidualNorm: number,
     progressInterval: number,
   ): number;
@@ -80,6 +90,9 @@ export interface EmscriptenModule {
   _fit_get_nfev(): number;
   _fit_get_residual_norm(): number;
   _fit_get_params(outPtr: number): void;
+  /** Model values behind every residual entry at the current estimate
+   * (fit_wrapper.c's own doc comment); 0 on success. */
+  _fit_get_predictions(outPtr: number): number;
   _fit_free(): void;
   /** Fires the registered callback every `progressInterval` evaluations
    * *within* a chunk — mid-chunk progress, independent of fit_chunk's own

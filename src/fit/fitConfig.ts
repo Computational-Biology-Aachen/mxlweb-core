@@ -4,9 +4,20 @@
 // components — and the curriculum runner (./curriculumRunner.ts) — can all
 // call into one copy instead of three drifting ones.
 
-import type { FitBackend, ModelBuilderBase, NNBlockConfig } from "../index";
+import type {
+  FitBackend,
+  FitExperiment,
+  ModelBuilderBase,
+  NNBlockConfig,
+} from "../index";
+import type { ProtocolStep } from "../pam";
 import type { ParsedCsv } from "./csvParse";
-import type { FitParameterConfig, FitTargetMapping } from "./types";
+import type {
+  FitConditionMapping,
+  FitDataKind,
+  FitParameterConfig,
+  FitTargetMapping,
+} from "./types";
 
 export type BackendChoice = "lm" | "lm-jacobian" | "adjoint";
 
@@ -18,13 +29,23 @@ export type FitTargetEntry = {
 };
 
 export type FitConfig = {
+  kind: FitDataKind;
   parNames: string[];
   fitIdx: number[];
   nnBlockFitIdx: number[];
   combinedFitIdx: number[];
   logFlags: boolean[];
+  /** Per target, `values` is aligned with `sortedT` (time course/protocol)
+   * or `conditions` (steady state). NaN marks a missing observation. */
   fitTargetsList: FitTargetEntry[];
+  /** Ascending data times; empty for a steady-state fit. */
   sortedT: number[];
+  /** `protocol` kind only. */
+  protocol?: ProtocolStep[];
+  /** `steadyState` kind only: one parameter-override set per CSV row. */
+  conditions?: Record<string, number>[];
+  ssTol?: number;
+  ssTMax?: number;
   nDerived: number;
   rhsWat: string;
   derivedWat?: string;
@@ -82,6 +103,14 @@ export function buildFitConfig(params: {
   candidateKeys: { key: string; kind: "state" | "derived" }[];
   backendChoice: BackendChoice;
   hasTrainedNNBlock: boolean;
+  /** Defaults to "timeCourse". */
+  dataKind?: FitDataKind;
+  /** Required for the "protocol" kind. */
+  protocol?: ProtocolStep[];
+  /** "steadyState" kind: columns defining each row's condition. */
+  conditionColumns?: FitConditionMapping[];
+  ssTol?: number;
+  ssTMax?: number;
 }): { ok: true; config: FitConfig } | { ok: false; error: string } {
   const {
     model,
@@ -92,12 +121,28 @@ export function buildFitConfig(params: {
     candidateKeys,
     backendChoice,
     hasTrainedNNBlock,
+    dataKind = "timeCourse",
+    protocol,
+    conditionColumns = [],
   } = params;
+  const isSteadyState = dataKind === "steadyState";
 
-  if (!csv || timeColumn === undefined || targets.length === 0) {
+  if (
+    !csv ||
+    (!isSteadyState && timeColumn === undefined) ||
+    targets.length === 0
+  ) {
     return {
       ok: false,
       error: "Upload a data file and map at least one column first.",
+    };
+  }
+  // Only fit_wrapper.c's finite-difference path integrates protocols and
+  // steady states (FitInitRequest.experiments' doc comment).
+  if (dataKind !== "timeCourse" && backendChoice !== "lm") {
+    return {
+      ok: false,
+      error: `${isSteadyState ? "Steady-state" : "Protocol"} fits require the "Levenberg-Marquardt" backend.`,
     };
   }
   const { fitIdx, ok } = fitTargets(model, fitParameters);
@@ -121,18 +166,72 @@ export function buildFitConfig(params: {
     };
   }
 
+  // The full flat array the compiled WAT module actually indexes into
+  // (ModelBuilderBase.lower()'s ir.parNames === getAllAddressableNames():
+  // model.parameters, then model.nnWeights) — not getParameterNames(),
+  // which is the UI-facing kinetic-parameters-plus-scale subset. Every
+  // index (fitIdx, nnBlockFitIdx, combinedFitIdx) is positional against
+  // *this* array.
+  const parNames = model.getAllAddressableNames();
+
   const columns = csv.columns;
-  const dataT = columns[timeColumn];
-  const order = dataT.map((t, i) => i).sort((a, b) => dataT[a] - dataT[b]);
-  const sortedT = order.map((i) => dataT[i]);
-  if (sortedT.some((t) => Number.isNaN(t))) {
-    return {
-      ok: false,
-      error: `Column "${timeColumn}" has a non-numeric value.`,
-    };
+  let order: number[];
+  let sortedT: number[] = [];
+  let conditions: Record<string, number>[] | undefined;
+  if (isSteadyState) {
+    if (conditionColumns.length === 0) {
+      return {
+        ok: false,
+        error:
+          "Map at least one column to a condition parameter — each row is one steady state.",
+      };
+    }
+    for (const c of conditionColumns) {
+      if (!parNames.includes(c.parameter)) {
+        return {
+          ok: false,
+          error: `"${c.parameter}" is not a model parameter — re-map column "${c.column}".`,
+        };
+      }
+      if (columns[c.column].some((v) => Number.isNaN(v))) {
+        return {
+          ok: false,
+          error: `Condition column "${c.column}" has a non-numeric value.`,
+        };
+      }
+    }
+    order = Array.from({ length: csv.rowCount }, (_, i) => i);
+    conditions = order.map((i) =>
+      Object.fromEntries(
+        conditionColumns.map((c) => [c.parameter, columns[c.column][i]]),
+      ),
+    );
+  } else {
+    const dataT = columns[timeColumn!];
+    order = dataT.map((t, i) => i).sort((a, b) => dataT[a] - dataT[b]);
+    sortedT = order.map((i) => dataT[i]);
+    if (sortedT.some((t) => Number.isNaN(t))) {
+      return {
+        ok: false,
+        error: `Column "${timeColumn}" has a non-numeric value.`,
+      };
+    }
   }
+  if (dataKind === "protocol") {
+    const error = validateProtocol(protocol, sortedT, parNames);
+    if (error) return { ok: false, error };
+  }
+  // A non-numeric target cell is a missing observation (fit_wrapper.c
+  // skips NaN residuals) — except under "adjoint"/"lm-jacobian", whose C
+  // drivers don't, and a column with no observations at all is surely a
+  // mis-mapping.
+  const allowMissing = backendChoice === "lm";
   for (const t of targets) {
-    if (order.some((i) => Number.isNaN(columns[t.column][i]))) {
+    const values = order.map((i) => columns[t.column][i]);
+    if (
+      values.every((v) => Number.isNaN(v)) ||
+      (!allowMissing && values.some((v) => Number.isNaN(v)))
+    ) {
       return {
         ok: false,
         error: `Column "${t.column}" has a non-numeric value.`,
@@ -171,7 +270,10 @@ export function buildFitConfig(params: {
 
   const fitTargetsList: FitTargetEntry[] = targets.map((t) => {
     const values = order.map((i) => columns[t.column][i]);
-    const scale = Math.max(...values.map(Math.abs), 1e-12);
+    const scale = Math.max(
+      ...values.filter((v) => !Number.isNaN(v)).map(Math.abs),
+      1e-12,
+    );
     return {
       kind: t.kind,
       index:
@@ -182,14 +284,6 @@ export function buildFitConfig(params: {
       values,
     };
   });
-
-  // The full flat array the compiled WAT module actually indexes into
-  // (ModelBuilderBase.lower()'s ir.parNames === getAllAddressableNames():
-  // model.parameters, then model.nnWeights) — not getParameterNames(),
-  // which is the UI-facing kinetic-parameters-plus-scale subset. Every
-  // index (fitIdx, nnBlockFitIdx, combinedFitIdx) is positional against
-  // *this* array.
-  const parNames = model.getAllAddressableNames();
 
   // Every weight/bias, and the block's own trainable scale factor, of
   // every *trained* NN block joins the fitted set — always in linear
@@ -258,6 +352,7 @@ export function buildFitConfig(params: {
   return {
     ok: true,
     config: {
+      kind: dataKind,
       parNames,
       fitIdx,
       nnBlockFitIdx,
@@ -265,6 +360,10 @@ export function buildFitConfig(params: {
       logFlags,
       fitTargetsList,
       sortedT,
+      protocol: dataKind === "protocol" ? protocol : undefined,
+      conditions,
+      ssTol: params.ssTol,
+      ssTMax: params.ssTMax,
       nDerived: derivedKeys.length,
       rhsWat: model.buildWat(),
       derivedWat,
@@ -277,6 +376,87 @@ export function buildFitConfig(params: {
       nnBlockConfigs,
     },
   };
+}
+
+function validateProtocol(
+  protocol: ProtocolStep[] | undefined,
+  sortedT: number[],
+  parNames: string[],
+): string | undefined {
+  if (!protocol || protocol.length === 0) {
+    return "Define a protocol first — a protocol fit needs at least one segment.";
+  }
+  for (let i = 1; i < protocol.length; i++) {
+    if (protocol[i].t_end < protocol[i - 1].t_end) {
+      return "Protocol segments must end in ascending order of t_end.";
+    }
+  }
+  const unknown = protocol
+    .flatMap((step) => Object.keys(step))
+    .filter((k) => k !== "t_end" && !parNames.includes(k));
+  if (unknown.length > 0) {
+    return `Protocol sets unknown parameter(s): ${[...new Set(unknown)].join(", ")}.`;
+  }
+  const tLast = protocol[protocol.length - 1].t_end;
+  if (sortedT[sortedT.length - 1] > tLast) {
+    return `The data extends to t=${sortedT[sortedT.length - 1]}, past the protocol's end (t=${tLast}).`;
+  }
+  return undefined;
+}
+
+/** The prefix of `protocol` covering `[0, tEnd]`, its last segment clipped
+ * to end exactly at `tEnd` — a curriculum stage's preview must not simulate
+ * past the data the stage has seen (`CurriculumRunHandlers.onProgress`). */
+export function truncateProtocol(
+  protocol: ProtocolStep[],
+  tEnd: number,
+): ProtocolStep[] {
+  const out: ProtocolStep[] = [];
+  for (const step of protocol) {
+    if (step.t_end >= tEnd) {
+      out.push({ ...step, t_end: tEnd });
+      break;
+    }
+    out.push(step);
+  }
+  return out;
+}
+
+/** Per-kind experiment list for {@link FitInitRequest.experiments}. */
+function experimentsOf(config: FitConfig): FitExperiment[] {
+  if (config.kind === "steadyState") {
+    return (config.conditions ?? []).map((overrides, j) => ({
+      kind: "steadyState",
+      overrides,
+      dataY: config.fitTargetsList.map((t) => t.values[j]),
+    }));
+  }
+  return [
+    {
+      kind: "timeCourse",
+      dataT: config.sortedT,
+      dataY: config.fitTargetsList.flatMap((t) => t.values),
+      protocol: config.kind === "protocol" ? config.protocol : undefined,
+    },
+  ];
+}
+
+/** Reshapes `FitProgress.predictions` (laid out per experiment, see
+ * {@link experimentsOf}) to one array per target, aligned with that
+ * target's `values` (possibly a curriculum stage's truncated prefix). */
+export function predictionsByTarget(
+  config: FitConfig,
+  predictions: number[],
+): number[][] {
+  const nTargets = config.fitTargetsList.length;
+  const nPoints = predictions.length / Math.max(nTargets, 1);
+  return config.fitTargetsList.map((_, k) =>
+    Array.from({ length: nPoints }, (_, j) =>
+      config.kind === "steadyState"
+        ? predictions[j * nTargets + k]
+        : predictions[k * nPoints + j],
+    ),
+  );
 }
 
 export function fitInitPayload(
@@ -297,9 +477,10 @@ export function fitInitPayload(
       index,
       scale,
     })),
-    dataT: config.sortedT,
-    dataY: config.fitTargetsList.flatMap((t) => t.values),
-    tEnd: config.sortedT[config.sortedT.length - 1],
+    experiments: experimentsOf(config),
+    parNames: config.parNames,
+    ssTol: config.ssTol,
+    ssTMax: config.ssTMax,
     solver: "radau5" as const,
     rtol: 1e-8,
     atol: 1e-10,
@@ -322,6 +503,10 @@ export function truncatedFitInitPayload(
   settings: { targetResidualNorm: number; progressUpdateInterval: number },
   cutoffT: number,
 ) {
+  // A steady-state fit has no time axis to grow a curriculum along.
+  if (config.kind === "steadyState") {
+    return fitInitPayload(config, pars, settings);
+  }
   const n = Math.max(
     1,
     Math.min(
@@ -375,7 +560,18 @@ export function residualPerPoint(
   cutoffT: number,
   config: FitConfig,
 ): number {
-  const nPoints = config.sortedT.filter((t) => t <= cutoffT).length;
-  const nEntries = Math.max(1, nPoints * config.fitTargetsList.length);
+  const nPoints =
+    config.kind === "steadyState"
+      ? (config.conditions?.length ?? 0)
+      : config.sortedT.filter((t) => t <= cutoffT).length;
+  // Missing observations contribute no residual term.
+  const nEntries = Math.max(
+    1,
+    config.fitTargetsList.reduce(
+      (n, t) =>
+        n + t.values.slice(0, nPoints).filter((v) => !Number.isNaN(v)).length,
+      0,
+    ),
+  );
   return residualNorm / Math.sqrt(nEntries);
 }

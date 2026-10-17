@@ -24,6 +24,10 @@
  *     finite penalty residual, not an abort — lmdif's own trust region rejects and
  *     shrinks away from it. iflag<0 (real MINPACK abort) is reserved for fatal
  *     internal errors (allocation failure), not solver hiccups.
+ *   - The residual is a concatenation of independent experiments (ADR 0009):
+ *     time courses under an optional piecewise-constant parameter protocol,
+ *     and steady states under per-condition parameter overrides — see
+ *     fit_init's own doc comment for the layout.
  */
 
 #include "minpack/cminpack.h"
@@ -47,6 +51,7 @@ extern int run_dop853(int n, double t_start, double t_end, double *y, double *rp
                        double rtol, double atol, double h_init, int nmax);
 extern int run_dopri5(int n, double t_start, double t_end, double *y, double *rpar,
                        double rtol, double atol, double h_init, int nmax);
+extern void eval_rhs(int n, double t, double *y, double *dydt, double *pars);
 
 /* Solver choice, matching wasmWorker.ts's method dispatch. */
 enum { SOLVER_RADAU5 = 0, SOLVER_DOP853 = 1, SOLVER_DOPRI5 = 2 };
@@ -99,9 +104,13 @@ void fit_set_progress_fn(int table_idx) {
  * error" rather than reporting it as a fatal fit failure. */
 #define FIT_TARGET_REACHED (-2)
 
+/* Experiment kinds — see the "Experiments" block comment above fit_init. */
+#define EXP_TIME_COURSE 0
+#define EXP_STEADY_STATE 1
+
 typedef struct {
   int n_y;
-  double *y0; /* length n_y, fixed initial conditions */
+  double *y0; /* length n_y, fixed initial conditions (shared by every experiment) */
 
   int n_pars;
   double *pars; /* length n_pars, full vector (fixed values stay put) */
@@ -115,15 +124,34 @@ typedef struct {
   int *target_index; /* length n_targets, index into y[] or derived_out[] */
   double *target_scale; /* length n_targets, normalization divisor */
 
-  int n_points;
-  double *data_t; /* length n_points, ascending */
-  double *data_y; /* length n_targets * n_points, target-major */
+  /* Parameter overrides: one shared list of parameter indices; every
+   * segment carries one value per entry (NaN = leave unchanged). */
+  int n_ovr;
+  int *ovr_idx; /* length n_ovr */
+
+  int n_exp;
+  int *exp_kind;    /* length n_exp, EXP_TIME_COURSE | EXP_STEADY_STATE */
+  int *exp_n_seg;   /* length n_exp */
+  int *exp_seg_off; /* length n_exp, derived: offset into seg_t_end */
+  int *exp_n_points; /* length n_exp */
+  int *exp_pt_off;   /* length n_exp, derived: offset into data_t */
+
+  int n_seg_total;
+  double *seg_t_end; /* length n_seg_total, ascending within an experiment */
+  double *seg_ovr;   /* length n_seg_total * n_ovr */
+
+  int n_points; /* total over all experiments */
+  double *data_t; /* length n_points; ascending within a time-course experiment */
+  /* length n_targets * n_points: experiment e's block starts at
+   * n_targets * exp_pt_off[e] and is target-major within it. NaN = missing. */
+  double *data_y;
 
   int n_derived; /* size of the derived_fn output buffer, 0 if unused */
 
-  double t_end;
   int solver_id;
   double rtol, atol;
+  double ss_tol;   /* steady state: ||f(y)|| / max(||y||, 1) below this */
+  double ss_t_max; /* steady state: give up (penalty) past this time */
 
   /* Absolute residual-norm early-stop, checked in fit_fcn; negative disables
    * the check (rely on lmdif's own convergence criteria only). */
@@ -155,6 +183,14 @@ static void fit_session_free(FitSession *s) {
   free(s->target_kind);
   free(s->target_index);
   free(s->target_scale);
+  free(s->ovr_idx);
+  free(s->exp_kind);
+  free(s->exp_n_seg);
+  free(s->exp_seg_off);
+  free(s->exp_n_points);
+  free(s->exp_pt_off);
+  free(s->seg_t_end);
+  free(s->seg_ovr);
   free(s->data_t);
   free(s->data_y);
   free(s->x);
@@ -203,96 +239,217 @@ static void interp_at(int n_y, int out_n, const double *out_t, const double *out
 }
 
 /* ------------------------------------------------------------------ */
+/* Residual evaluation, one experiment at a time.                      */
+/* ------------------------------------------------------------------ */
+static int integrate(const FitSession *s, double t0, double t1, double *y, double *pars) {
+  switch (s->solver_id) {
+    case SOLVER_DOP853:
+      return run_dop853(s->n_y, t0, t1, y, pars, s->rtol, s->atol, 0.0, 500000);
+    case SOLVER_DOPRI5:
+      return run_dopri5(s->n_y, t0, t1, y, pars, s->rtol, s->atol, 0.0, 500000);
+    default:
+      return run_radau5(s->n_y, t0, t1, y, pars, s->rtol, s->atol, 0.0, 500000);
+  }
+}
+
+static void apply_overrides(const FitSession *s, int seg, const double *pars_trial,
+                            double *pars_seg) {
+  memcpy(pars_seg, pars_trial, (size_t)s->n_pars * sizeof(double));
+  const double *ovr = s->seg_ovr + (size_t)seg * s->n_ovr;
+  for (int i = 0; i < s->n_ovr; i++) {
+    if (!isnan(ovr[i])) pars_seg[s->ovr_idx[i]] = ovr[i];
+  }
+}
+
+/* Per-evaluation work buffers, allocated once per compute_residuals call. */
+typedef struct {
+  double *pars_seg; /* trial parameters with the current segment's overrides */
+  double *y_work;
+  double *y_interp;
+  double *derived_out;
+  double *rhs_out;
+} Scratch;
+
+/* Writes every target's residual (and, if model_out, its raw model value)
+ * for point j of experiment e from state y under w->pars_seg. */
+static void write_point(const FitSession *s, int e, int j, double t, const double *y,
+                        Scratch *w, double *fvec, double *model_out) {
+  if (s->n_derived > 0) {
+    g_derived_fn(s->n_y, t, (double *)y, w->derived_out, w->pars_seg);
+  }
+  const int n_e = s->exp_n_points[e];
+  const size_t base = (size_t)s->n_targets * s->exp_pt_off[e];
+  for (int k = 0; k < s->n_targets; k++) {
+    double model_v = (s->target_kind[k] == TARGET_STATE) ? y[s->target_index[k]]
+                                                           : w->derived_out[s->target_index[k]];
+    size_t idx = base + (size_t)k * n_e + j;
+    double data_v = s->data_y[idx];
+    fvec[idx] = isnan(data_v) ? 0.0 : (model_v - data_v) / s->target_scale[k];
+    if (model_out) model_out[idx] = model_v;
+  }
+}
+
+/* Integration failed (or a steady state never converged) for this trial
+ * parameter set — penalize, don't abort. lmdif's trust region will reject
+ * and shrink away from here on its own. */
+static void penalize_experiment(const FitSession *s, int e, double *fvec, double *model_out) {
+  const double PENALTY = 1.0e3;
+  const int n_e = s->exp_n_points[e];
+  const size_t base = (size_t)s->n_targets * s->exp_pt_off[e];
+  for (size_t idx = base; idx < base + (size_t)s->n_targets * n_e; idx++) {
+    fvec[idx] = isnan(s->data_y[idx]) ? 0.0 : PENALTY;
+    if (model_out) model_out[idx] = NAN;
+  }
+}
+
+/* Piecewise-constant protocol: integrate segment by segment, carrying the
+ * state across boundaries, and sample the data points with
+ * t_prev < t <= t_end from that segment's own output under that segment's
+ * own parameters (mirrors wasmWorker.ts's per-point allPars). A boundary
+ * point therefore belongs to the earlier segment, the same as the
+ * simulation workers (which drop each later segment's first sample). A
+ * plain time course is the one-segment, no-override special case. Returns 0
+ * on success, -1 if the integrator failed. */
+static int run_time_course(const FitSession *s, int e, const double *pars_trial, Scratch *w,
+                           double *fvec, double *model_out) {
+  const int n_e = s->exp_n_points[e];
+  const double *t_data = s->data_t + s->exp_pt_off[e];
+  memcpy(w->y_work, s->y0, (size_t)s->n_y * sizeof(double));
+
+  double t = 0.0;
+  int j = 0;
+  for (int g = 0; g < s->exp_n_seg[e] && j < n_e; g++) {
+    const int seg = s->exp_seg_off[e] + g;
+    const double t_end = s->seg_t_end[seg];
+    apply_overrides(s, seg, pars_trial, w->pars_seg);
+
+    init_output(2000, s->n_y);
+    if (t_end > t && integrate(s, t, t_end, w->y_work, w->pars_seg) < 0) {
+      free_output();
+      return -1;
+    }
+    const int out_n = get_out_n();
+    const double *out_t = get_out_t();
+    const double *out_y = get_out_y();
+    for (; j < n_e && t_data[j] <= t_end; j++) {
+      if (out_n > 0) {
+        interp_at(s->n_y, out_n, out_t, out_y, t_data[j], w->y_interp);
+      } else {
+        /* Zero-length segment (t_end == t): the state is just y_work. */
+        memcpy(w->y_interp, w->y_work, (size_t)s->n_y * sizeof(double));
+      }
+      write_point(s, e, j, t_data[j], w->y_interp, w, fvec, model_out);
+    }
+    free_output();
+    t = t_end;
+  }
+  return 0;
+}
+
+static int rhs_converged(const FitSession *s, double t, Scratch *w) {
+  eval_rhs(s->n_y, t, w->y_work, w->rhs_out, w->pars_seg);
+  double f2 = 0.0, y2 = 0.0;
+  for (int i = 0; i < s->n_y; i++) {
+    if (!isfinite(w->rhs_out[i])) return 0;
+    f2 += w->rhs_out[i] * w->rhs_out[i];
+    y2 += w->y_work[i] * w->y_work[i];
+  }
+  double ynorm = sqrt(y2);
+  return sqrt(f2) / (ynorm > 1.0 ? ynorm : 1.0) < s->ss_tol;
+}
+
+/* Integrate to steady state: windows ending at t = 1, 10, 100, ... (capped
+ * at ss_t_max), checking ||dy/dt|| after each — the browser analogue of
+ * MxlPy's simulate_to_steady_state. Steps aren't recorded (init_output(0)):
+ * only the final state matters. Returns 0 on success, -1 if the integrator
+ * failed or the state never converged before ss_t_max. */
+static int run_steady_state(const FitSession *s, int e, const double *pars_trial, Scratch *w,
+                            double *fvec, double *model_out) {
+  const int seg = s->exp_seg_off[e];
+  apply_overrides(s, seg, pars_trial, w->pars_seg);
+  memcpy(w->y_work, s->y0, (size_t)s->n_y * sizeof(double));
+
+  double t = 0.0;
+  int converged = rhs_converged(s, t, w);
+  for (double t_next = 1.0; !converged && t < s->ss_t_max; t_next *= 10.0) {
+    if (t_next > s->ss_t_max) t_next = s->ss_t_max;
+    init_output(0, s->n_y);
+    int idid = integrate(s, t, t_next, w->y_work, w->pars_seg);
+    free_output();
+    if (idid < 0) return -1;
+    t = t_next;
+    converged = rhs_converged(s, t, w);
+  }
+  if (!converged) return -1;
+
+  for (int j = 0; j < s->exp_n_points[e]; j++) {
+    write_point(s, e, j, t, w->y_work, w, fvec, model_out);
+  }
+  return 0;
+}
+
+/* Fills fvec (length n_targets * n_points) for the trial vector x, and
+ * model_out with the raw model values (NaN for penalized experiments) when
+ * non-NULL. Returns 0, or -1 on allocation failure. */
+static int compute_residuals(const FitSession *s, const double *x, double *fvec,
+                             double *model_out) {
+  double *pars_trial = (double *)malloc((size_t)s->n_pars * sizeof(double));
+  Scratch w;
+  w.pars_seg = (double *)malloc((size_t)s->n_pars * sizeof(double));
+  w.y_work = (double *)malloc((size_t)s->n_y * sizeof(double));
+  w.y_interp = (double *)malloc((size_t)s->n_y * sizeof(double));
+  w.rhs_out = (double *)malloc((size_t)s->n_y * sizeof(double));
+  w.derived_out =
+      s->n_derived > 0 ? (double *)malloc((size_t)s->n_derived * sizeof(double)) : NULL;
+  int rc = 0;
+  if (!pars_trial || !w.pars_seg || !w.y_work || !w.y_interp || !w.rhs_out ||
+      (s->n_derived > 0 && !w.derived_out)) {
+    rc = -1;
+    goto done;
+  }
+
+  /* Fixed values from s->pars, fitted values from x (undoing the log-space
+   * transform). */
+  memcpy(pars_trial, s->pars, (size_t)s->n_pars * sizeof(double));
+  for (int i = 0; i < s->n_fit; i++) {
+    pars_trial[s->fit_idx[i]] = s->log_flags[i] ? exp(x[i]) : x[i];
+  }
+
+  for (int e = 0; e < s->n_exp; e++) {
+    int ok = s->exp_kind[e] == EXP_STEADY_STATE
+                 ? run_steady_state(s, e, pars_trial, &w, fvec, model_out)
+                 : run_time_course(s, e, pars_trial, &w, fvec, model_out);
+    if (ok < 0) penalize_experiment(s, e, fvec, model_out);
+  }
+
+done:
+  free(pars_trial);
+  free(w.pars_seg);
+  free(w.y_work);
+  free(w.y_interp);
+  free(w.rhs_out);
+  free(w.derived_out);
+  return rc;
+}
+
+/* ------------------------------------------------------------------ */
 /* fcn — the LM residual callback (cminpack_func_mn signature).       */
 /* ------------------------------------------------------------------ */
 static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int iflag) {
   (void)p;
-  (void)m;
   FitSession *s = g_fit;
   s->chunk_nfev++;
 
-  /* Build the full parameter vector for this trial: fixed values from
-   * s->pars, fitted values from x (undoing the log-space transform). */
-  double *pars_full = (double *)malloc((size_t)s->n_pars * sizeof(double));
-  double *y_work = (double *)malloc((size_t)s->n_y * sizeof(double));
-  double *y_interp = (double *)malloc((size_t)s->n_y * sizeof(double));
-  double *derived_out =
-      s->n_derived > 0 ? (double *)malloc((size_t)s->n_derived * sizeof(double)) : NULL;
-  if (!pars_full || !y_work || !y_interp || (s->n_derived > 0 && !derived_out)) {
-    free(pars_full);
-    free(y_work);
-    free(y_interp);
-    free(derived_out);
-    return -1; /* fatal: allocation failure, not a numerical hiccup — abort. */
-  }
+  /* fatal: allocation failure, not a numerical hiccup — abort. */
+  if (compute_residuals(s, x, fvec, NULL) < 0) return -1;
 
-  memcpy(pars_full, s->pars, (size_t)s->n_pars * sizeof(double));
-  for (int i = 0; i < s->n_fit; i++) {
-    double v = s->log_flags[i] ? exp(x[i]) : x[i];
-    pars_full[s->fit_idx[i]] = v;
-  }
-  memcpy(y_work, s->y0, (size_t)s->n_y * sizeof(double));
-
-  const int out_cap = 2000;
-  init_output(out_cap, s->n_y);
-  int idid;
-  switch (s->solver_id) {
-    case SOLVER_DOP853:
-      idid = run_dop853(s->n_y, 0.0, s->t_end, y_work, pars_full, s->rtol, s->atol, 0.0, 500000);
-      break;
-    case SOLVER_DOPRI5:
-      idid = run_dopri5(s->n_y, 0.0, s->t_end, y_work, pars_full, s->rtol, s->atol, 0.0, 500000);
-      break;
-    default:
-      idid = run_radau5(s->n_y, 0.0, s->t_end, y_work, pars_full, s->rtol, s->atol, 0.0, 500000);
-      break;
-  }
-
-  if (idid < 0) {
-    /* Integration failed for this trial parameter set — penalize, don't abort.
-     * lmdif's trust region will reject and shrink away from here on its own. */
-    const double PENALTY = 1.0e3;
-    for (int k = 0; k < m; k++) fvec[k] = PENALTY;
-    free_output();
-    free(pars_full);
-    free(y_work);
-    free(y_interp);
-    free(derived_out);
-    return 1;
-  }
-
-  const int out_n = get_out_n();
-  const double *out_t = get_out_t();
-  const double *out_y = get_out_y();
-
-  for (int j = 0; j < s->n_points; j++) {
-    interp_at(s->n_y, out_n, out_t, out_y, s->data_t[j], y_interp);
-    if (s->n_derived > 0) {
-      g_derived_fn(s->n_y, s->data_t[j], y_interp, derived_out, pars_full);
-    }
-    for (int k = 0; k < s->n_targets; k++) {
-      double model_v = (s->target_kind[k] == TARGET_STATE) ? y_interp[s->target_index[k]]
-                                                             : derived_out[s->target_index[k]];
-      double data_v = s->data_y[(size_t)k * s->n_points + j];
-      fvec[(size_t)k * s->n_points + j] = (model_v - data_v) / s->target_scale[k];
-    }
-  }
-
-  free_output();
-  free(pars_full);
-  free(y_work);
-  free(y_interp);
-  free(derived_out);
-
-  /* Mid-chunk progress — see g_progress_fn's own doc comment. Skipped on
-   * the idid<0 penalty path above (that fvec is an artificial large
-   * constant, not a real residual — reporting it would show as a fake
-   * spike on the chart) but fires on both iflag==1 and iflag==2 here,
-   * unlike the target-reached check below: fvec is a genuine, meaningful
-   * residual either way (iflag==2's fdjac2 perturbation is a tiny epsilon
-   * step off the last real trial, indistinguishable at display precision),
-   * and gating on iflag==1 only would make the reporting cadence
-   * inconsistent with total_nfev's own count (which includes both). */
+  /* Mid-chunk progress — see g_progress_fn's own doc comment. Fires on
+   * both iflag==1 and iflag==2, unlike the target-reached check below:
+   * fvec is a genuine, meaningful residual either way (iflag==2's fdjac2
+   * perturbation is a tiny epsilon step off the last real trial,
+   * indistinguishable at display precision), and gating on iflag==1 only
+   * would make the reporting cadence inconsistent with total_nfev's own
+   * count (which includes both). */
   if (s->progress_interval > 0 && g_progress_fn &&
       s->chunk_nfev % s->progress_interval == 0) {
     double ss = 0.0;
@@ -333,8 +490,25 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
 
 /*
  * fit_init — one-time setup for a fit session. Call set_model_fn() (and
- * set_derived_fn() if n_derived>0) before this. data_t must be ascending.
- * data_y is target-major: data_y[k*n_points + j].
+ * set_derived_fn() if n_derived>0) before this.
+ *
+ * Experiments (ADR 0009): the residual vector is the concatenation of
+ * n_exp independent experiments, all starting from y0:
+ *   - EXP_TIME_COURSE: exp_n_seg[e] >= 1 protocol segments, each ending at
+ *     seg_t_end and applying its row of seg_ovr. A plain time course is one
+ *     segment ending at the last data time, with all-NaN overrides. Its
+ *     exp_n_points[e] data times must be ascending and <= the last segment's
+ *     t_end.
+ *   - EXP_STEADY_STATE: exactly one segment (its t_end is ignored) whose
+ *     overrides define the condition; integrated to convergence (ss_tol,
+ *     ss_t_max). Its data_t entries are ignored.
+ * data_t has n_points = sum(exp_n_points) entries, concatenated per
+ * experiment; data_y has n_targets * n_points, experiment-major then
+ * target-major (data_y[n_targets*pt_off(e) + k*exp_n_points[e] + j]).
+ * seg_ovr has n_seg_total * n_ovr entries (NaN = keep the trial value);
+ * ovr_idx maps each override column to an index into pars[]. An override
+ * replaces a fitted parameter's trial value, the same as MxlPy.
+ * NaN data_y entries are missing observations and contribute 0.
  *
  * target_residual_norm: fit_chunk stops as soon as the residual norm drops
  * to or below this (see FIT_TARGET_REACHED) — pass a negative value to
@@ -346,55 +520,93 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
  * <=0 disables mid-chunk reporting entirely.
  *
  * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
- * parameter's initial value is <= 0 (log undefined).
+ * parameter's initial value is <= 0 (log undefined), -3 if the experiment
+ * layout is inconsistent (time-course data past its last segment, a
+ * steady-state experiment without exactly one segment, or segment/point
+ * counts that don't sum to n_seg_total/n_points).
  */
 int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_idx,
              int *log_flags, int n_targets, int *target_kind, int *target_index,
-             double *target_scale, int n_points, double *data_t, double *data_y,
-             double t_end, int n_derived, int solver_id, double rtol, double atol,
+             double *target_scale, int n_ovr, int *ovr_idx, int n_exp, int *exp_kind,
+             int *exp_n_seg, int *exp_n_points, int n_seg_total, double *seg_t_end,
+             double *seg_ovr, int n_points, double *data_t, double *data_y, int n_derived,
+             int solver_id, double rtol, double atol, double ss_tol, double ss_t_max,
              double target_residual_norm, int progress_interval) {
   fit_free();
 
   FitSession *s = (FitSession *)calloc(1, sizeof(FitSession));
   if (!s) return -1;
 
-  s->n_y = n_y;
-  s->y0 = (double *)malloc((size_t)n_y * sizeof(double));
-  s->n_pars = n_pars;
-  s->pars = (double *)malloc((size_t)n_pars * sizeof(double));
-  s->n_fit = n_fit;
-  s->fit_idx = (int *)malloc((size_t)n_fit * sizeof(int));
-  s->log_flags = (int *)malloc((size_t)n_fit * sizeof(int));
-  s->n_targets = n_targets;
-  s->target_kind = (int *)malloc((size_t)n_targets * sizeof(int));
-  s->target_index = (int *)malloc((size_t)n_targets * sizeof(int));
-  s->target_scale = (double *)malloc((size_t)n_targets * sizeof(double));
-  s->n_points = n_points;
-  s->data_t = (double *)malloc((size_t)n_points * sizeof(double));
-  s->data_y = (double *)malloc((size_t)n_targets * (size_t)n_points * sizeof(double));
-  s->x = (double *)malloc((size_t)n_fit * sizeof(double));
+#define ALLOC_COPY(field, src, count, type)                          \
+  do {                                                               \
+    size_t bytes_ = (size_t)(count) * sizeof(type);                  \
+    s->field = (type *)malloc(bytes_ > 0 ? bytes_ : 1);              \
+    if (!s->field) {                                                 \
+      fit_session_free(s);                                           \
+      return -1;                                                     \
+    }                                                                \
+    if ((src) && bytes_ > 0) memcpy(s->field, (src), bytes_);         \
+  } while (0)
 
-  if (!s->y0 || !s->pars || !s->fit_idx || !s->log_flags || !s->target_kind ||
-      !s->target_index || !s->target_scale || !s->data_t || !s->data_y || !s->x) {
+  s->n_y = n_y;
+  s->n_pars = n_pars;
+  s->n_fit = n_fit;
+  s->n_targets = n_targets;
+  s->n_ovr = n_ovr;
+  s->n_exp = n_exp;
+  s->n_seg_total = n_seg_total;
+  s->n_points = n_points;
+  ALLOC_COPY(y0, y0, n_y, double);
+  ALLOC_COPY(pars, pars, n_pars, double);
+  ALLOC_COPY(fit_idx, fit_idx, n_fit, int);
+  ALLOC_COPY(log_flags, log_flags, n_fit, int);
+  ALLOC_COPY(target_kind, target_kind, n_targets, int);
+  ALLOC_COPY(target_index, target_index, n_targets, int);
+  ALLOC_COPY(target_scale, target_scale, n_targets, double);
+  ALLOC_COPY(ovr_idx, ovr_idx, n_ovr, int);
+  ALLOC_COPY(exp_kind, exp_kind, n_exp, int);
+  ALLOC_COPY(exp_n_seg, exp_n_seg, n_exp, int);
+  ALLOC_COPY(exp_n_points, exp_n_points, n_exp, int);
+  ALLOC_COPY(exp_seg_off, NULL, n_exp, int);
+  ALLOC_COPY(exp_pt_off, NULL, n_exp, int);
+  ALLOC_COPY(seg_t_end, seg_t_end, n_seg_total, double);
+  ALLOC_COPY(seg_ovr, seg_ovr, (size_t)n_seg_total * n_ovr, double);
+  ALLOC_COPY(data_t, data_t, n_points, double);
+  ALLOC_COPY(data_y, data_y, (size_t)n_targets * n_points, double);
+  ALLOC_COPY(x, NULL, n_fit, double);
+#undef ALLOC_COPY
+
+  int seg_off = 0, pt_off = 0;
+  for (int e = 0; e < n_exp; e++) {
+    s->exp_seg_off[e] = seg_off;
+    s->exp_pt_off[e] = pt_off;
+    if (exp_n_seg[e] < 1 || (exp_kind[e] == EXP_STEADY_STATE && exp_n_seg[e] != 1)) {
+      fit_session_free(s);
+      return -3;
+    }
+    seg_off += exp_n_seg[e];
+    pt_off += exp_n_points[e];
+    if (seg_off > n_seg_total || pt_off > n_points) {
+      fit_session_free(s);
+      return -3;
+    }
+    if (exp_kind[e] == EXP_TIME_COURSE && exp_n_points[e] > 0 &&
+        data_t[pt_off - 1] > seg_t_end[seg_off - 1]) {
+      fit_session_free(s);
+      return -3;
+    }
+  }
+  if (seg_off != n_seg_total || pt_off != n_points) {
     fit_session_free(s);
-    return -1;
+    return -3;
   }
 
-  memcpy(s->y0, y0, (size_t)n_y * sizeof(double));
-  memcpy(s->pars, pars, (size_t)n_pars * sizeof(double));
-  memcpy(s->fit_idx, fit_idx, (size_t)n_fit * sizeof(int));
-  memcpy(s->log_flags, log_flags, (size_t)n_fit * sizeof(int));
-  memcpy(s->target_kind, target_kind, (size_t)n_targets * sizeof(int));
-  memcpy(s->target_index, target_index, (size_t)n_targets * sizeof(int));
-  memcpy(s->target_scale, target_scale, (size_t)n_targets * sizeof(double));
-  memcpy(s->data_t, data_t, (size_t)n_points * sizeof(double));
-  memcpy(s->data_y, data_y, (size_t)n_targets * (size_t)n_points * sizeof(double));
-
-  s->t_end = t_end;
   s->n_derived = n_derived;
   s->solver_id = solver_id;
   s->rtol = rtol;
   s->atol = atol;
+  s->ss_tol = ss_tol;
+  s->ss_t_max = ss_t_max;
   s->target_residual_norm = target_residual_norm;
   s->total_nfev = 0;
   s->progress_interval = progress_interval;
@@ -424,7 +636,7 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
    * since it exists purely for reporting the initial state). */
   {
     int m = n_targets * n_points;
-    double *fvec0 = (double *)malloc((size_t)m * sizeof(double));
+    double *fvec0 = (double *)malloc((size_t)(m > 0 ? m : 1) * sizeof(double));
     if (fvec0) {
       fit_fcn(NULL, m, n_fit, s->x, fvec0, 1);
       double ss = 0.0;
@@ -587,4 +799,21 @@ void fit_get_params(double *out) {
   for (int i = 0; i < s->n_fit; i++) {
     out[s->fit_idx[i]] = s->log_flags[i] ? exp(s->x[i]) : s->x[i];
   }
+}
+
+/* Writes the raw model value behind every residual entry at the current
+ * estimate into out (length n_targets * n_points, same layout as data_y;
+ * NaN for an experiment whose integration failed or never reached steady
+ * state). Lets the UI plot exactly what the optimizer compared against the
+ * data — the steady-state chart has no trajectory to preview instead.
+ * Returns 0, or -1 without a session / on allocation failure. */
+int fit_get_predictions(double *out) {
+  FitSession *s = g_fit;
+  if (!s) return -1;
+  size_t m = (size_t)s->n_targets * s->n_points;
+  double *fvec = (double *)malloc((m > 0 ? m : 1) * sizeof(double));
+  if (!fvec) return -1;
+  int rc = compute_residuals(s, s->x, fvec, out);
+  free(fvec);
+  return rc;
 }

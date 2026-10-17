@@ -27,12 +27,14 @@ import type {
   CurriculumRunSettings,
 } from "../../src/fit/curriculumRunner";
 import type { CurriculumStage } from "../../src/fit/curriculum";
+import type { FitInitRequest } from "../../src/index";
 
 type Handler<T> = (arg: T) => void;
+type FitInitRequestLike = Pick<FitInitRequest, "experiments" | "pars">;
 
 class FakeFitSession {
   static instances: FakeFitSession[] = [];
-  initCalls: { dataT: number[]; tEnd: number; pars: number[] }[] = [];
+  initCalls: { dataT: number[]; pars: number[] }[] = [];
   chunkCalls: number[] = [];
   freeCalls = 0;
   cancelCalls = 0;
@@ -54,8 +56,12 @@ class FakeFitSession {
     this.progressHandlers.push(h);
     return () => {};
   }
-  init(req: { dataT: number[]; tEnd: number; pars: number[] }) {
-    this.initCalls.push(req);
+  init(req: FitInitRequestLike) {
+    const [exp] = req.experiments;
+    this.initCalls.push({
+      dataT: exp.kind === "timeCourse" ? exp.dataT : [],
+      pars: req.pars,
+    });
   }
   chunk(n: number) {
     this.chunkCalls.push(n);
@@ -82,6 +88,7 @@ const { runCurriculumFit } = await import("../../src/fit/curriculumRunner");
 
 function makeConfig(): FitConfig {
   return {
+    kind: "timeCourse",
     parNames: ["k"],
     fitIdx: [0],
     nnBlockFitIdx: [],
