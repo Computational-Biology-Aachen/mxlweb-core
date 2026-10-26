@@ -8,7 +8,7 @@ import {
   type MxlKind,
   type NNBlockConfig,
 } from "./modelBuilderBase.js";
-import { pyMetaKwargs } from "./pyString.js";
+import { pyMetaKwargs, usesSlider } from "./pyString.js";
 
 /**
  * Algebraic (steady-state) model builder: outputs are closed-form functions of
@@ -223,6 +223,9 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     const imports = ["SteadyStateModelBuilder"];
     if (usesDerived) imports.push("Derived");
     if (usesInitial) imports.push("InitialAssignment");
+    if (usesSlider([...this.parameters.values(), ...this.variables.values()])) {
+      imports.push("Slider");
+    }
     imports.sort();
 
     const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";

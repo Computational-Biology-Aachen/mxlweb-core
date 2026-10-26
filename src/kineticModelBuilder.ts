@@ -24,7 +24,7 @@ import {
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
-import { pyMetaKwargs } from "./pyString.js";
+import { pyMetaKwargs, usesSlider } from "./pyString.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -500,6 +500,9 @@ export class KineticModelBuilder extends ModelBuilderBase {
     const imports = ["Model"];
     if (usesDerived) imports.push("Derived");
     if (usesInitial()) imports.push("InitialAssignment");
+    if (usesSlider([...this.parameters.values(), ...this.variables.values()])) {
+      imports.push("Slider");
+    }
     imports.sort();
 
     const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";

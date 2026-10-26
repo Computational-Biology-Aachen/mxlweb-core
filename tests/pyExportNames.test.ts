@@ -626,3 +626,24 @@ describe("JS/WAT backends: non-canonical ids", () => {
     }
   });
 });
+
+describe("buildMxlpy: sliders", () => {
+  it("emits slider=Slider(...) and imports Slider only when used", () => {
+    const withSlider = new KineticModelBuilder()
+      .addParameter("k", {
+        value: 1,
+        slider: { min: "0", max: "2", step: "0.1", desc: "rate" },
+      })
+      .addVariable("x", { value: 1 })
+      .buildMxlpy();
+    expect(withSlider).toContain(
+      'm.add_parameter("k", 1, slider=Slider(min="0", max="2", step="0.1", desc="rate"))',
+    );
+    expect(withSlider).toContain("from mxlpy import Model, Slider");
+
+    const without = new KineticModelBuilder()
+      .addParameter("k", { value: 1 })
+      .buildMxlpy();
+    expect(without).not.toContain("Slider");
+  });
+});

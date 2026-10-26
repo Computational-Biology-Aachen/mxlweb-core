@@ -15,7 +15,7 @@ import {
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
-import { pyMetaKwargs } from "./pyString.js";
+import { pyMetaKwargs, usesSlider } from "./pyString.js";
 
 /**
  * Direct ODE model builder: dx/dt is written explicitly per variable.
@@ -228,6 +228,9 @@ export class OdeModelBuilder extends ModelBuilderBase {
 
     const imports = ["OdeModelBuilder"];
     if (usesInitial()) imports.push("InitialAssignment");
+    if (usesSlider([...this.parameters.values(), ...this.variables.values()])) {
+      imports.push("Slider");
+    }
     imports.sort();
 
     const defsBlock = defs.length > 0 ? `${defs.join("\n\n")}\n\n` : "";
