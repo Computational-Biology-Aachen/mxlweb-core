@@ -231,11 +231,11 @@ def _derived_total(A, B):
 def _rate_r(k, total):
     return k * total
 
-def _readout_total_squared(total):
+def _readout_totalSquared(total):
     return total * total
 
-def _readout_totalSquaredPlusOne(total_squared):
-    return total_squared + 1
+def _readout_totalSquaredPlusOne(totalSquared):
+    return totalSquared + 1
 
 def get_model() -> Model:
     m = Model()
@@ -249,8 +249,8 @@ def get_model() -> Model:
         args=["k", "total"],
         stoichiometry={"A": -1, "B": 1},
     )
-    m.add_readout("total_squared", _readout_total_squared, args=["total"])
-    m.add_readout("totalSquaredPlusOne", _readout_totalSquaredPlusOne, args=["total_squared"])
+    m.add_readout("totalSquared", _readout_totalSquared, args=["total"], display_name="total_squared")
+    m.add_readout("totalSquaredPlusOne", _readout_totalSquaredPlusOne, args=["totalSquared"])
     return m
 `);
   });

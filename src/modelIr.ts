@@ -16,8 +16,9 @@ import {
   Num,
   Sqrt,
   Unary,
+  nameRenamer,
 } from "./mathml/index.js";
-import { PY_RESERVED, uniqueName } from "./pyIdentifier.js";
+import { RESERVED, uniqueName } from "./identifiers.js";
 
 /**
  * Intermediate representation shared by every model builder.
@@ -61,6 +62,38 @@ export interface ModelIR {
 }
 
 const ZERO = new Num(0);
+
+/**
+ * `ir` with every id (and every `Name` in its expressions) renamed through
+ * `names`; ids not in `names` are kept. The renamed IR carries no display
+ * names: its ids are already what the code backends emit.
+ */
+export function renameIR(
+  ir: ModelIR,
+  names: ReadonlyMap<string, string>,
+): ModelIR {
+  const id = (k: string) => names.get(k) ?? k;
+  const rename = nameRenamer(names);
+  const intermediate = (m: ModelIntermediate) => ({
+    name: id(m.name),
+    expr: rename(m.expr),
+  });
+  return {
+    varNames: ir.varNames.map(id),
+    parNames: ir.parNames.map(id),
+    paramValues: new Map([...ir.paramValues].map(([k, v]) => [id(k), v])),
+    initialValues: new Map(
+      [...ir.initialValues].map(([k, v]) => [
+        id(k),
+        v instanceof Base ? rename(v) : v,
+      ]),
+    ),
+    intermediates: ir.intermediates.map(intermediate),
+    readouts: ir.readouts.map(intermediate),
+    dxdt: new Map([...ir.dxdt].map(([k, e]) => [id(k), rename(e)])),
+    displayNames: new Map(),
+  };
+}
 
 function rhsOf(ir: ModelIR, varName: string): Base {
   return ir.dxdt.get(varName) ?? ZERO;
@@ -669,9 +702,9 @@ export function irToPython(
       ...ir.varNames,
       ...ir.paramValues.keys(),
       ...allIntermediates.map((m) => m.name),
-    ].map((id) => Name(id).normalize("NFKC")),
+    ].map(Name),
   );
-  for (const r of PY_RESERVED) taken.add(r);
+  for (const r of RESERVED) taken.add(r);
   const dName = new Map(
     ir.varNames.map((name) => [name, uniqueName(`d${Name(name)}dt`, taken)]),
   );

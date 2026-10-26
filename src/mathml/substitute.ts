@@ -45,9 +45,7 @@ type Operands = {
  *
  * Reconstructs an unmatched internal node via its own constructor (the
  * same `this.constructor as new (...) => this` pattern each concrete
- * class's own `replace()` already uses), dispatching on which operand
- * fields are present rather than `instanceof`, so a future node type needs
- * no update here as long as it uses one of the five existing field names.
+ * class's own `replace()` already uses) — see {@link rebuild}.
  */
 export function substituteName(
   expr: Base,
@@ -56,48 +54,84 @@ export function substituteName(
 ): Base {
   function walk(node: Base): Base {
     if (node instanceof Name && node.name === name) return replacement;
-
-    const operands = node as unknown as Operands;
-    if (operands.children !== undefined) {
-      const newChildren = operands.children.map(walk);
-      const changed = newChildren.some((c, i) => c !== operands.children![i]);
-      if (!changed) return node;
-      const Constructor = node.constructor as new (children: Base[]) => Base;
-      return new Constructor(newChildren);
-    }
-    if (operands.left !== undefined && operands.right !== undefined) {
-      const newLeft = walk(operands.left);
-      const newRight = walk(operands.right);
-      if (newLeft === operands.left && newRight === operands.right) {
-        return node;
-      }
-      const Constructor = node.constructor as new (
-        left: Base,
-        right: Base,
-      ) => Base;
-      return new Constructor(newLeft, newRight);
-    }
-    if (operands.child !== undefined && operands.base !== undefined) {
-      const newChild = walk(operands.child);
-      const newBase = walk(operands.base);
-      if (newChild === operands.child && newBase === operands.base) {
-        return node;
-      }
-      const Constructor = node.constructor as new (
-        child: Base,
-        base: Base,
-      ) => Base;
-      return new Constructor(newChild, newBase);
-    }
-    if (operands.child !== undefined) {
-      const newChild = walk(operands.child);
-      if (newChild === operands.child) return node;
-      const Constructor = node.constructor as new (child: Base) => Base;
-      return new Constructor(newChild);
-    }
-    // A non-matching leaf (Num/Bool/Pi/E, or a Name with a different name): no operands, nothing to substitute beneath it.
-    return node;
+    return rebuild(node, walk);
   }
 
   return walk(expr);
+}
+
+/**
+ * A function renaming every `Name` leaf found in `names` (others are kept),
+ * everywhere in an expression's tree. Memoized per node across every call of
+ * the returned function, so a densely shared DAG (an NN block's composed
+ * dx/dt, see {@link substituteName}) — even one shared between several
+ * expressions — is walked once per node, not once per path, and keeps its
+ * sharing.
+ */
+export function nameRenamer(
+  names: ReadonlyMap<string, string>,
+): (expr: Base) => Base {
+  const memo = new Map<Base, Base>();
+  function walk(node: Base): Base {
+    let out = memo.get(node);
+    if (out === undefined) {
+      const renamed = node instanceof Name ? names.get(node.name) : undefined;
+      out =
+        renamed === undefined || renamed === (node as Name).name
+          ? rebuild(node, walk)
+          : new Name(renamed);
+      memo.set(node, out);
+    }
+    return out;
+  }
+  return walk;
+}
+
+/**
+ * `node` with `walk` applied to each operand, reconstructed via its own
+ * constructor only if an operand changed. Dispatches on which operand fields
+ * are present rather than `instanceof`, so a future node type needs no update
+ * here as long as it uses one of the five existing field names.
+ */
+function rebuild(node: Base, walk: (node: Base) => Base): Base {
+  const operands = node as unknown as Operands;
+  if (operands.children !== undefined) {
+    const newChildren = operands.children.map(walk);
+    const changed = newChildren.some((c, i) => c !== operands.children![i]);
+    if (!changed) return node;
+    const Constructor = node.constructor as new (children: Base[]) => Base;
+    return new Constructor(newChildren);
+  }
+  if (operands.left !== undefined && operands.right !== undefined) {
+    const newLeft = walk(operands.left);
+    const newRight = walk(operands.right);
+    if (newLeft === operands.left && newRight === operands.right) {
+      return node;
+    }
+    const Constructor = node.constructor as new (
+      left: Base,
+      right: Base,
+    ) => Base;
+    return new Constructor(newLeft, newRight);
+  }
+  if (operands.child !== undefined && operands.base !== undefined) {
+    const newChild = walk(operands.child);
+    const newBase = walk(operands.base);
+    if (newChild === operands.child && newBase === operands.base) {
+      return node;
+    }
+    const Constructor = node.constructor as new (
+      child: Base,
+      base: Base,
+    ) => Base;
+    return new Constructor(newChild, newBase);
+  }
+  if (operands.child !== undefined) {
+    const newChild = walk(operands.child);
+    if (newChild === operands.child) return node;
+    const Constructor = node.constructor as new (child: Base) => Base;
+    return new Constructor(newChild);
+  }
+  // A leaf (Num/Bool/Pi/E, or a Name left as is): nothing beneath it.
+  return node;
 }

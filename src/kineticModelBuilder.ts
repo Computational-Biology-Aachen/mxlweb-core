@@ -24,7 +24,7 @@ import {
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
-import { pyString } from "./pyIdentifier.js";
+import { pyMetaKwargs } from "./pyString.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -242,7 +242,12 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return new Map(
       [...this.readouts.entries()].map(([key, ro]) => [
         key,
-        { fn: ro.fn, displayName: ro.displayName, texName: ro.texName },
+        {
+          fn: ro.fn,
+          unit: ro.unit,
+          displayName: ro.displayName,
+          texName: ro.texName,
+        },
       ]),
     );
   }
@@ -452,9 +457,8 @@ export class KineticModelBuilder extends ModelBuilderBase {
     } = this.buildMxlpyPreamble([...this.reactions.keys()]);
 
     for (const [id, v] of this.variables) {
-      const unit = v.unit === undefined ? "" : `, unit=${pyString(v.unit)}`;
       body.push(
-        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${unit})`,
+        `m.add_variable("${name(id)}", ${initialValueSource(id, v.value)}${pyMetaKwargs(v)})`,
       );
     }
     emitAssignments();
@@ -463,8 +467,6 @@ export class KineticModelBuilder extends ModelBuilderBase {
     for (const [id, rxn] of this.reactions) {
       const fnName = `_rate_${name(id)}`;
       const args = emitFn(fnName, rxn.fn);
-      const unit =
-        rxn.unit === undefined ? "" : `        unit=${pyString(rxn.unit)}`;
 
       const stoich: string[] = [];
       for (const { name: species, value } of rxn.stoichiometry) {
@@ -487,12 +489,9 @@ export class KineticModelBuilder extends ModelBuilderBase {
           `        "${name(id)}",`,
           `        ${fnName},`,
           `        args=[${argList(args)}],`,
-          `        stoichiometry={${stoich.join(", ")}},`,
-          unit,
+          `        stoichiometry={${stoich.join(", ")}}${pyMetaKwargs(rxn, ",\n        ")},`,
           `    )`,
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        ].join("\n"),
       );
     }
 

@@ -15,6 +15,7 @@ import {
   nnBlockMxlpyImportNames,
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
+import { pyMetaKwargs } from "./pyString.js";
 
 /**
  * Direct ODE model builder: dx/dt is written explicitly per variable.
@@ -66,7 +67,12 @@ export class OdeModelBuilder extends ModelBuilderBase {
     return new Map(
       [...this.readouts.entries()].map(([key, ro]) => [
         key,
-        { fn: ro.fn, displayName: ro.displayName, texName: ro.texName },
+        {
+          fn: ro.fn,
+          unit: ro.unit,
+          displayName: ro.displayName,
+          texName: ro.texName,
+        },
       ]),
     );
   }
@@ -213,7 +219,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
       const fnName = `_diffeq_${name(id)}`;
       const args = emitFn(fnName, this.differentials.get(id) ?? new Num(0));
       body.push(
-        `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}])`,
+        `m.add_diff_eq("${name(id)}", ${initialValueSource(id, v.value)}, ${fnName}, args=[${argList(args)}]${pyMetaKwargs(v)})`,
       );
     }
 
