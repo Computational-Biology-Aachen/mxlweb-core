@@ -24,6 +24,7 @@ import type { NNBlockLayer } from "./nnBlock.js";
 import { OdeModelBuilder } from "./odeModelBuilder.js";
 import { SteadyStateModelBuilder } from "./steadyStateModelBuilder.js";
 import { kineticSchema, odeSchema, steadyStateSchema } from "./mxl/schemas.js";
+import { type CustomUnit, Unit } from "./units/index.js";
 
 const ajv = new Ajv2020({ strict: false });
 const validators: Record<string, ValidateFunction> = {
@@ -58,8 +59,15 @@ function numberFromNode(id: string, node: JsonNode): number {
   return revived.value;
 }
 
-function meta(entry: MxlEntity): { displayName?: string; texName?: string } {
-  const out: { displayName?: string; texName?: string } = {};
+function meta(entry: MxlEntity): {
+  unit?: Unit;
+  displayName?: string;
+  texName?: string;
+} {
+  const out: { unit?: Unit; displayName?: string; texName?: string } = {};
+  // Kinds are checked against the registry and `model.units` by the
+  // builder's add* methods (`ModelBuilderBase.withUnit`).
+  if (entry.unit !== undefined) out.unit = Unit.fromJson(entry.unit);
   if (entry.displayName !== undefined) out.displayName = entry.displayName;
   if (entry.texName !== undefined) out.texName = entry.texName;
   return out;
@@ -70,6 +78,17 @@ function section(
   name: string,
 ): Record<string, MxlEntity> {
   return doc.model[name] ?? {};
+}
+
+/** Declare `model.units` custom kinds — before any entity whose unit uses one. */
+function addCustomUnits(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
+  for (const [id, entry] of Object.entries(section(doc, "units"))) {
+    const unit: CustomUnit = {};
+    if (entry.symbol !== undefined) unit.symbol = entry.symbol;
+    if (entry.tex !== undefined) unit.tex = entry.tex;
+    if (entry.description !== undefined) unit.description = entry.description;
+    builder.addCustomUnit(id, unit);
+  }
 }
 
 function addVariables(builder: ModelBuilderBase, doc: MxlJsonDocument): void {
@@ -222,6 +241,7 @@ function buildKinetic(
   weightsByRef: Map<string, NNWeightsFile>,
 ): KineticModelBuilder {
   const builder = new KineticModelBuilder();
+  addCustomUnits(builder, doc);
   addVariables(builder, doc);
   addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
@@ -245,6 +265,7 @@ function buildOde(
   weightsByRef: Map<string, NNWeightsFile>,
 ): OdeModelBuilder {
   const builder = new OdeModelBuilder();
+  addCustomUnits(builder, doc);
   addVariables(builder, doc);
   addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
@@ -260,6 +281,7 @@ function buildOde(
 
 function buildSteadyState(doc: MxlJsonDocument): SteadyStateModelBuilder {
   const builder = new SteadyStateModelBuilder();
+  addCustomUnits(builder, doc);
   addParameters(builder, doc);
   addDerived(builder, doc);
   return builder;

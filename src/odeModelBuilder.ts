@@ -9,6 +9,7 @@ import {
   type MxlKind,
   type NNBlockConfig,
   nnBlockWeightMatrices,
+  type WithUnitInput,
 } from "./modelBuilderBase.js";
 import {
   buildNNBlockMxlpySource,
@@ -45,17 +46,18 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
   // Readouts
-  addReadout(key: string, readout: Assign) {
+  addReadout(key: string, readout: WithUnitInput<Assign>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.readouts.set(key, readout);
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
-  updateReadout(key: string, readout: Assign) {
-    this.readouts.set(key, readout);
+  updateReadout(key: string, readout: WithUnitInput<Assign>) {
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
   removeReadout(key: string) {
@@ -259,7 +261,7 @@ from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 ${jaxImportBlock}
 ${defsBlock}def get_model() -> OdeModelBuilder:

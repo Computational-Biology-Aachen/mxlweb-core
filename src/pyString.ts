@@ -1,4 +1,5 @@
 import type { SliderArgs } from "./modelBuilderBase.js";
+import type { Unit } from "./units/index.js";
 
 /** `s` as a Python string literal — JSON string syntax is valid Python, escapes included. */
 export function pyString(s: string): string {
@@ -19,13 +20,14 @@ function pySlider(slider: SliderArgs): string {
 }
 
 /**
- * `, unit="…", display_name="…", tex_name="…", slider=Slider(…)` — the keyword
- * arguments for whichever of these `entity` sets, each prefixed by `sep`. A
- * module using a slider must import `Slider` from mxlpy ({@link usesSlider}).
+ * `, unit=<sympy>, display_name="…", tex_name="…", slider=Slider(…)` — the
+ * keyword arguments for whichever of these `entity` sets, each prefixed by
+ * `sep`. A module using a unit needs `unitsPyImports`, one using a slider must
+ * import `Slider` from mxlpy ({@link usesSlider}).
  */
 export function pyMetaKwargs(
   entity: {
-    unit?: string;
+    unit?: Unit;
     displayName?: string;
     texName?: string;
     slider?: SliderArgs;
@@ -33,12 +35,14 @@ export function pyMetaKwargs(
   sep = ", ",
 ): string {
   const kwargs = [
-    ["unit", entity.unit],
     ["display_name", entity.displayName],
     ["tex_name", entity.texName],
   ]
     .filter(([, v]) => v)
     .map(([k, v]) => `${sep}${k}=${pyString(v!)}`);
+  if (entity.unit !== undefined) {
+    kwargs.unshift(`${sep}unit=${entity.unit.toPy()}`);
+  }
   if (entity.slider !== undefined) {
     kwargs.push(`${sep}slider=${pySlider(entity.slider)}`);
   }

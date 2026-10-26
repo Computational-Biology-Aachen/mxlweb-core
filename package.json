@@ -26,6 +26,11 @@
       "types": "./src/mxl.ts",
       "default": "./dist/mxl.js"
     },
+    "./units": {
+      "svelte": "./src/units/index.ts",
+      "types": "./src/units/index.ts",
+      "default": "./dist/units/index.js"
+    },
     "./pam": {
       "svelte": "./src/pam.ts",
       "types": "./src/pam.ts",

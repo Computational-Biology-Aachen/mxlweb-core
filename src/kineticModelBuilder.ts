@@ -18,6 +18,7 @@ import {
   nnBlockWeightMatrices,
   type Parameter,
   type Variable,
+  type WithUnitInput,
 } from "./modelBuilderBase.js";
 import {
   buildNNBlockMxlpySource,
@@ -25,6 +26,7 @@ import {
   planNNBlockMxlpy,
 } from "./nnBlockMxlpy.js";
 import { pyMetaKwargs, usesSlider } from "./pyString.js";
+import type { Unit } from "./units/index.js";
 
 /**
  * Reaction-based kinetic model builder and its LaTeX rendering helpers.
@@ -49,7 +51,7 @@ export type Stoichiometry = Array<Stoich>;
 export type Reaction = {
   fn: Base;
   stoichiometry: Stoichiometry;
-  unit?: string;
+  unit?: Unit;
   displayName?: string;
   texName?: string;
 };
@@ -220,17 +222,25 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
+  protected *allUnits(): Generator<[string, Unit]> {
+    yield* super.allUnits();
+    for (const [id, rxn] of this.reactions) {
+      if (rxn.unit !== undefined) yield [id, rxn.unit];
+    }
+  }
+
   // Readouts
-  addReadout(key: string, readout: Assign) {
+  addReadout(key: string, readout: WithUnitInput<Assign>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.readouts.set(key, readout);
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
-  updateReadout(key: string, readout: Assign) {
-    this.readouts.set(key, readout);
+  updateReadout(key: string, readout: WithUnitInput<Assign>) {
+    this.readouts.set(key, this.withUnit(readout));
     return this;
   }
   removeReadout(key: string) {
@@ -257,13 +267,13 @@ export class KineticModelBuilder extends ModelBuilderBase {
   // ordinary reaction here (a multiplicative block can't be one).
 
   // Reactions
-  addReaction(key: string, reaction: Reaction) {
+  addReaction(key: string, reaction: WithUnitInput<Reaction>) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
-    this.reactions.set(key, reaction);
+    this.reactions.set(key, this.withUnit(reaction));
     return this;
   }
-  updateReaction(key: string, reaction: Reaction) {
-    this.reactions.set(key, reaction);
+  updateReaction(key: string, reaction: WithUnitInput<Reaction>) {
+    this.reactions.set(key, this.withUnit(reaction));
     return this;
   }
   removeReaction(key: string) {
@@ -285,6 +295,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       const opts = this.tsFields([
         ["fn", rxn.fn.toTs()],
         ["stoichiometry", `[${stoich.join(", ")}]`],
+        ["unit", rxn.unit?.toTs()],
         ["displayName", this.tsString(rxn.displayName)],
         ["texName", this.tsString(rxn.texName)],
       ]);
@@ -531,7 +542,7 @@ from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 ${jaxImportBlock}
 ${defsBlock}def get_model() -> Model:

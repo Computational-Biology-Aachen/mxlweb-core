@@ -37,6 +37,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     cl.parameters = new SvelteMap(this.parameters);
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
+    cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
 
@@ -205,10 +206,12 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
         const fnName = `_init_${name(id)}`;
         const args = emitFn(fnName, v.value);
         body.push(
-          `m.add_variable("${name(id)}", InitialAssignment(fn=${fnName}, args=[${argList(args)}]))`,
+          `m.add_variable("${name(id)}", InitialAssignment(fn=${fnName}, args=[${argList(args)}])${pyMetaKwargs(v)})`,
         );
       } else {
-        body.push(`m.add_variable("${name(id)}", ${v.value})`);
+        body.push(
+          `m.add_variable("${name(id)}", ${v.value}${pyMetaKwargs(v)})`,
+        );
       }
     }
 
@@ -236,7 +239,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     return `import math
 
 import numpy as np
-
+${this.pyUnitImportBlock()}
 from mxlpy import ${imports.join(", ")}
 
 ${defsBlock}def get_model() -> SteadyStateModelBuilder:
