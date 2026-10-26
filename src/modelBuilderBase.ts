@@ -1,5 +1,10 @@
 import { SvelteMap } from "svelte/reactivity";
-import { Base, substituteName, type JsonNode } from "./mathml/index.js";
+import {
+  Base,
+  nameRenamer,
+  substituteName,
+  type JsonNode,
+} from "./mathml/index.js";
 import {
   evalInitialAssignment,
   irToAdjointWat,
@@ -10,10 +15,12 @@ import {
   irToPython,
   irToWat,
   irToWatDerived,
+  renameIR,
   type ModelIR,
 } from "./modelIr.js";
 import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
-import { pyIdentifierMap, pyString } from "./pyIdentifier.js";
+import { canonicalIdentifierMap } from "./identifiers.js";
+import { pyMetaKwargs } from "./pyString.js";
 
 export type SliderArgs = {
   min: string;
@@ -220,6 +227,7 @@ export function defaultTexName(name: string): string {
 /** A derived computation that becomes a named local during code generation. */
 export type IntermediateDef = {
   fn: Base;
+  unit?: string;
   displayName?: string;
   texName?: string;
 };
@@ -759,15 +767,17 @@ export abstract class ModelBuilderBase {
   }
 
   resolveInitialValues(): number[] {
+    // Evaluated as JS, so through the same canonical names as every backend.
+    const names = this.getCodegenNames();
+    const rename = nameRenamer(names);
     const paramMap = new Map(
-      [...this.parameters.entries()].map(([k, v]) => [k, v.value]),
+      [...this.parameters.entries()].map(([k, v]) => [names.get(k)!, v.value]),
     );
-    return [...this.variables.values()].map((v) => {
-      if (v.value instanceof Base) {
-        return evalInitialAssignment(v.value, paramMap);
-      }
-      return v.value;
-    });
+    return [...this.variables.values()].map((v) =>
+      v.value instanceof Base
+        ? evalInitialAssignment(rename(v.value), paramMap)
+        : v.value,
+    );
   }
 
   /**
@@ -878,16 +888,27 @@ export abstract class ModelBuilderBase {
   }
 
   /**
-   * {@link getDisplayNames} (plus every NN weight, which `buildPython`
-   * references by id) mapped to unique, valid Python identifiers — what the
-   * Python exports (`buildMxlpy`, `buildPython`) emit instead of the raw
-   * display names, which are free-form prose.
+   * Every id (plus every NN weight) mapped to its canonical identifier —
+   * the names every code backend (JS, WAT, Python, mxlpy) emits, so they are
+   * valid in each language and match the mxlpy model the builder was
+   * generated from. Ids themselves stay as authored; display names travel
+   * separately as metadata. Throws if two ids map to the same identifier.
    */
-  protected getPyNames(): Map<string, string> {
-    return pyIdentifierMap([
-      ...this.getDisplayNames(),
-      ...[...this.nnWeights.keys()].map((k): [string, string] => [k, k]),
-    ]);
+  protected getCodegenNames(): Map<string, string> {
+    return canonicalIdentifierMap(
+      [...this.getDisplayNames().keys(), ...this.nnWeights.keys()].map(
+        (id): [string, string] => [id, id],
+      ),
+    );
+  }
+
+  /** {@link lower}, renamed through {@link getCodegenNames}: what every code backend consumes. */
+  protected codegenIR(): { ir: ModelIR; names: (ids: string[]) => string[] } {
+    const names = this.getCodegenNames();
+    return {
+      ir: renameIR(this.lower(), names),
+      names: (ids) => ids.map((id) => names.get(id) ?? id),
+    };
   }
 
   getParameterNames(): string[] {
@@ -946,26 +967,31 @@ export abstract class ModelBuilderBase {
   }
 
   buildJs(): string {
-    return irToJs(this.lower());
+    return irToJs(this.codegenIR().ir);
   }
 
   buildJsDerived(selectedDerived?: string[]): {
     allDerived: string;
     selectDerived: string;
   } {
-    return irToJsDerived(this.lower(), selectedDerived);
+    const { ir, names } = this.codegenIR();
+    return irToJsDerived(
+      ir,
+      selectedDerived === undefined ? undefined : names(selectedDerived),
+    );
   }
 
   buildPython(userParameters: string[], selectedDerived?: string[]): string {
+    const { ir, names } = this.codegenIR();
     return irToPython(
-      { ...this.lower(), displayNames: this.getPyNames() },
-      userParameters,
-      selectedDerived,
+      ir,
+      names(userParameters),
+      selectedDerived === undefined ? undefined : names(selectedDerived),
     );
   }
 
   buildWat(): string {
-    return irToWat(this.lower());
+    return irToWat(this.codegenIR().ir);
   }
 
   /**
@@ -974,7 +1000,8 @@ export abstract class ModelBuilderBase {
    * session; `wasmWorker.ts` and an `"lm"` fit never call this at all.
    */
   buildAdjointWat(thetaNames: string[]): string {
-    return irToAdjointWat(this.lower(), thetaNames);
+    const { ir, names } = this.codegenIR();
+    return irToAdjointWat(ir, names(thetaNames));
   }
 
   /**
@@ -985,7 +1012,8 @@ export abstract class ModelBuilderBase {
    * adjoint+Adam.
    */
   buildJacobianWat(thetaNames: string[]): string {
-    return irToJacobianWat(this.lower(), thetaNames);
+    const { ir, names } = this.codegenIR();
+    return irToJacobianWat(ir, names(thetaNames));
   }
 
   /**
@@ -995,12 +1023,14 @@ export abstract class ModelBuilderBase {
    * the `"adjoint"`/`"lm-jacobian"` fit backends (ADR 0009).
    */
   buildWatDerivedGrad(selectedDerived: string[], thetaNames: string[]): string {
-    return irToDerivedGradWat(this.lower(), selectedDerived, thetaNames);
+    const { ir, names } = this.codegenIR();
+    return irToDerivedGradWat(ir, names(selectedDerived), names(thetaNames));
   }
 
   /** WAT module computing `selectedDerived` (see ADR 0004 in the mxlweb repo). */
   buildWatDerived(selectedDerived: string[]): string {
-    return irToWatDerived(this.lower(), selectedDerived);
+    const { ir, names } = this.codegenIR();
+    return irToWatDerived(ir, names(selectedDerived));
   }
 
   /**
@@ -1289,7 +1319,7 @@ ${chains.join("\n")};
     /** Emits every readout as `m.add_readout(...)` into `body`, in dependency order (`sortReadoutDependencies`), matching mxlpy's own readout sort and keeping the module readable top to bottom — call after everything a readout may read has been declared. */
     emitReadouts: () => void;
   } {
-    const displayNames = this.getPyNames();
+    const displayNames = this.getCodegenNames();
     const name = (id: string) => displayNames.get(id) ?? id;
 
     // Declaration-order index, used to order generated-function arguments.
@@ -1343,18 +1373,15 @@ ${chains.join("\n")};
 
     const body: string[] = [];
     for (const [id, p] of this.parameters) {
-      const unit = p.unit === undefined ? "" : `, unit=${pyString(p.unit)}`;
-      body.push(`m.add_parameter("${name(id)}", ${p.value}${unit})`);
+      body.push(`m.add_parameter("${name(id)}", ${p.value}${pyMetaKwargs(p)})`);
     }
 
     const emitAssignments = () => {
       for (const [id, ass] of this.assignments) {
         const fnName = `_derived_${name(id)}`;
         const args = emitFn(fnName, ass.fn);
-        const unit =
-          ass.unit === undefined ? "" : `, unit=${pyString(ass.unit)}`;
         body.push(
-          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${unit})`,
+          `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${pyMetaKwargs(ass)})`,
         );
       }
     };
@@ -1363,9 +1390,10 @@ ${chains.join("\n")};
       const readouts = this.extraReadouts();
       for (const id of this.sortReadoutDependencies()) {
         const fnName = `_readout_${name(id)}`;
-        const args = emitFn(fnName, readouts.get(id)!.fn);
+        const readout = readouts.get(id)!;
+        const args = emitFn(fnName, readout.fn);
         body.push(
-          `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+          `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}]${pyMetaKwargs(readout)})`,
         );
       }
     };

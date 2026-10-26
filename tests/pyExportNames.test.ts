@@ -3,7 +3,8 @@ import {
   OdeModelBuilder,
   SteadyStateModelBuilder,
   additiveMechanism,
-  isPyIdentifier,
+  canonicalIdentifier,
+  isCanonicalIdentifier,
   softplusActivation,
 } from "@computational-biology-aachen/mxlweb-core";
 import {
@@ -14,9 +15,10 @@ import {
 } from "@computational-biology-aachen/mxlweb-core/mathml";
 import { describe, expect, it } from "vitest";
 
-// Display names that aren't valid Python identifiers (or are reserved by the
-// generated module itself) — every Python export must convert these.
-const BAD_NAMES = [
+// Ids that aren't canonical identifiers (or are reserved by the generated
+// code itself) — every Python export must convert these. `time` is missing:
+// the builders reject it as an id outright.
+const BAD_IDS = [
   "Species A",
   "E. coli max. growth rate",
   "1abc",
@@ -31,10 +33,10 @@ const BAD_NAMES = [
   "  padded  ",
   "!!!",
   "🙂",
+  "Δψ",
   "lambda",
   "None",
   "class",
-  "time",
   "np",
   "math",
   "m",
@@ -42,39 +44,48 @@ const BAD_NAMES = [
   "variables",
   "derived",
   "get_model",
+  "pars",
+  "Math",
 ];
 
+const PY_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 function assertUnique(names: string[]): void {
-  const normalized = names.map((n) => n.normalize("NFKC"));
-  expect(new Set(normalized).size, names.join(", ")).toBe(normalized.length);
+  expect(new Set(names).size, names.join(", ")).toBe(names.length);
 }
 
-function assertValid(names: string[]): void {
+function assertCanonical(names: string[]): void {
   for (const n of names)
-    expect(isPyIdentifier(n), JSON.stringify(n)).toBe(true);
+    expect(isCanonicalIdentifier(n), JSON.stringify(n)).toBe(true);
 }
 
-/** Every identifier and quoted name a `buildMxlpy()` module emits. */
+function assertIdentifiers(names: string[]): void {
+  for (const n of names) expect(n, JSON.stringify(n)).toMatch(PY_IDENTIFIER);
+}
+
+/** Every identifier and model name a `buildMxlpy()` module emits. */
 function checkMxlpy(src: string): void {
   const defNames: string[] = [];
   for (const [, fn, params] of src.matchAll(/^def ([^(]+)\(([^)]*)\)/gm)) {
     defNames.push(fn);
     const ps = params === "" ? [] : params.split(", ");
-    assertValid(ps);
+    assertCanonical(ps);
     assertUnique(ps);
   }
-  assertValid(defNames);
+  assertIdentifiers(defNames);
   assertUnique(defNames);
-
-  // Every string literal is a model name (no units in these models).
-  const literals = [...src.matchAll(/"([^"]*)"/g)].map(([, s]) => s);
-  assertValid(literals);
 
   const declared = [...src.matchAll(/m\.add_\w+\(\s*"([^"]*)"/g)].map(
     ([, s]) => s,
   );
   expect(declared.length).toBeGreaterThan(0);
+  assertCanonical(declared);
   assertUnique(declared);
+
+  const referenced = [...src.matchAll(/args=\[([^\]]*)\]/g)].flatMap(
+    ([, list]) => [...list.matchAll(/"([^"]*)"/g)].map(([, s]) => s),
+  );
+  assertCanonical(referenced);
 }
 
 /** Every identifier a `buildPython()` module binds, per function. */
@@ -95,92 +106,95 @@ function checkPython(src: string): void {
           .filter(Boolean),
       );
     }
-    assertValid(bound);
+    assertIdentifiers(bound);
     // `name` is the function itself, not a local — exclude it.
     assertUnique(bound.slice(1));
   }
   const y0 = src.match(/^y0 = \{(.*)\}$/m);
-  if (y0) assertValid([...y0[1].matchAll(/"([^"]*)"/g)].map(([, s]) => s));
+  if (y0) assertCanonical([...y0[1].matchAll(/"([^"]*)"/g)].map(([, s]) => s));
 }
 
-// Every entity carries the same display name, so the export must both
-// convert it and deduplicate the result.
-function kineticNamed(dn: string): KineticModelBuilder {
+// The parameter carries the bad id; every entity also carries it as display
+// name, which must reach the export as metadata only.
+function kineticNamed(id: string): KineticModelBuilder {
   return new KineticModelBuilder()
-    .addParameter("k", { value: 0.5, displayName: dn })
-    .addVariable("A", { value: 10, displayName: dn })
+    .addParameter(id, { value: 0.5, displayName: id })
+    .addVariable("A", { value: 10, displayName: id })
     .addVariable("B", {
-      value: new Mul([new Num(2), new Name("k")]),
-      displayName: dn,
+      value: new Mul([new Num(2), new Name(id)]),
+      displayName: id,
     })
     .addAssignment("tot", {
       fn: new Add([new Name("A"), new Name("B")]),
-      displayName: dn,
+      displayName: id,
     })
     .addReaction("r", {
-      fn: new Mul([new Name("k"), new Name("A")]),
+      fn: new Mul([new Name(id), new Name("A")]),
       stoichiometry: [
         { name: "A", value: new Num(-1) },
         { name: "B", value: new Name("tot") },
       ],
-      displayName: dn,
+      displayName: id,
     })
     .addReadout("ro", {
       fn: new Mul([new Name("tot"), new Num(2)]),
-      displayName: dn,
+      displayName: id,
     });
 }
 
-function odeNamed(dn: string): OdeModelBuilder {
+function odeNamed(id: string): OdeModelBuilder {
   return new OdeModelBuilder()
-    .addParameter("k", { value: 0.3, displayName: dn })
-    .addVariable("x", { value: 1, displayName: dn })
-    .addVariable("y", { value: 2, displayName: dn })
+    .addParameter(id, { value: 0.3, displayName: id })
+    .addVariable("x", { value: 1, displayName: id })
+    .addVariable("y", { value: 2, displayName: id })
     .addAssignment("d", {
       fn: new Mul([new Num(2), new Name("x")]),
-      displayName: dn,
+      displayName: id,
     })
-    .setDifferential("x", new Mul([new Num(-1), new Name("k"), new Name("y")]))
+    .setDifferential("x", new Mul([new Num(-1), new Name(id), new Name("y")]))
     .setDifferential("y", new Name("d"))
     .addReadout("ro", {
       fn: new Add([new Name("d"), new Num(1)]),
-      displayName: dn,
+      displayName: id,
     });
 }
 
-function steadyNamed(dn: string): SteadyStateModelBuilder {
+function steadyNamed(id: string): SteadyStateModelBuilder {
   return new SteadyStateModelBuilder()
-    .addParameter("S", { value: 1, displayName: dn })
-    .addParameter("V", { value: 2, displayName: dn })
+    .addParameter(id, { value: 1, displayName: id })
+    .addParameter("V", { value: 2, displayName: id })
     .addAssignment("v", {
-      fn: new Mul([new Name("V"), new Name("S")]),
-      displayName: dn,
+      fn: new Mul([new Name("V"), new Name(id)]),
+      displayName: id,
     })
     .addAssignment("w", {
       fn: new Add([new Name("v"), new Num(1)]),
-      displayName: dn,
+      displayName: id,
     });
 }
 
-describe("Python exports: invalid display names become unique identifiers", () => {
-  describe.each(BAD_NAMES)("display name %j", (dn) => {
+describe("Python exports: invalid ids become canonical identifiers", () => {
+  describe.each(BAD_IDS)("id %j", (id) => {
     it("KineticModelBuilder.buildMxlpy", () => {
-      checkMxlpy(kineticNamed(dn).buildMxlpy());
+      const src = kineticNamed(id).buildMxlpy();
+      checkMxlpy(src);
+      expect(src).toContain(`m.add_parameter("${canonicalIdentifier(id)}"`);
+      expect(src).toContain(`display_name=${JSON.stringify(id)}`);
     });
     it("KineticModelBuilder.buildPython", () => {
-      checkPython(kineticNamed(dn).buildPython(["k"], ["tot", "ro"]));
+      checkPython(kineticNamed(id).buildPython([id], ["tot", "ro"]));
     });
     it("OdeModelBuilder.buildMxlpy", () => {
-      checkMxlpy(odeNamed(dn).buildMxlpy());
+      checkMxlpy(odeNamed(id).buildMxlpy());
     });
     it("OdeModelBuilder.buildPython", () => {
-      checkPython(odeNamed(dn).buildPython(["k"], ["ro"]));
+      checkPython(odeNamed(id).buildPython([id], ["ro"]));
     });
     it("SteadyStateModelBuilder.buildMxlpy", () => {
-      checkMxlpy(steadyNamed(dn).buildMxlpy());
+      checkMxlpy(steadyNamed(id).buildMxlpy());
     });
     it("SteadyStateModelBuilder.buildPython", () => {
-      checkPython(steadyNamed(dn).buildPython([], ["w"]));
+      checkPython(steadyNamed(id).buildPython([], ["w"]));
     });
   });
 });
@@ -190,12 +204,12 @@ describe("Python exports: invalid ids without a display name", () => {
     new KineticModelBuilder()
       .addParameter("2k", { value: 0.5 })
       .addVariable("my var", { value: 1 })
-      .addVariable("my-var", { value: 2 })
+      .addVariable("my var-", { value: 2 })
       .addReaction("v 1", {
         fn: new Mul([new Name("2k"), new Name("my var")]),
         stoichiometry: [
           { name: "my var", value: new Num(-1) },
-          { name: "my-var", value: new Num(1) },
+          { name: "my var-", value: new Num(1) },
         ],
       });
 
@@ -204,15 +218,15 @@ describe("Python exports: invalid ids without a display name", () => {
     checkMxlpy(src);
     expect(src).toContain('m.add_parameter("_2k", 0.5)');
     expect(src).toContain('m.add_variable("my_var", 1)');
-    expect(src).toContain('m.add_variable("my_var_2", 2)');
-    expect(src).toContain('stoichiometry={"my_var": -1, "my_var_2": 1}');
+    expect(src).toContain('m.add_variable("my_var_minus", 2)');
+    expect(src).toContain('stoichiometry={"my_var": -1, "my_var_minus": 1}');
   });
 
   it("buildPython", () => {
     const src = model().buildPython(["2k"]);
     checkPython(src);
     expect(src).toContain("_2k: float");
-    expect(src).toContain("my_var, my_var_2 = variables");
+    expect(src).toContain("my_var, my_var_minus = variables");
     expect(src).toContain("v_1 = _2k * my_var");
   });
 });
@@ -220,27 +234,24 @@ describe("Python exports: invalid ids without a display name", () => {
 describe("KineticModelBuilder: converted names", () => {
   const model = () =>
     new KineticModelBuilder()
-      .addParameter("k1", { value: 0.5, displayName: "1st param" })
-      .addVariable("A", { value: 10, displayName: "Species A" })
-      .addVariable("B", {
+      .addParameter("k1", { value: 0.5, texName: "k_1" })
+      .addVariable("Species A", { value: 10, displayName: "A" })
+      .addVariable("B-form", {
         value: new Mul([new Num(2), new Name("k1")]),
-        displayName: "B-form",
       })
-      .addAssignment("tot", {
-        fn: new Add([new Name("A"), new Name("B")]),
-        displayName: "lambda",
+      .addAssignment("lambda", {
+        fn: new Add([new Name("Species A"), new Name("B-form")]),
       })
-      .addReaction("r1", {
-        fn: new Mul([new Name("k1"), new Name("A")]),
+      .addReaction("first reaction", {
+        fn: new Mul([new Name("k1"), new Name("Species A")]),
         stoichiometry: [
-          { name: "A", value: new Num(-1) },
-          { name: "B", value: new Name("tot") },
+          { name: "Species A", value: new Num(-1) },
+          { name: "B-form", value: new Name("lambda") },
         ],
-        displayName: "first reaction",
+        displayName: "Reaction 1",
       })
-      .addReadout("ro", {
-        fn: new Mul([new Name("tot"), new Num(2)]),
-        displayName: "my readout",
+      .addReadout("my readout", {
+        fn: new Mul([new Name("lambda"), new Num(2)]),
       });
 
   it("buildMxlpy uses them in defs, args, declarations and stoichiometry", () => {
@@ -250,14 +261,14 @@ import numpy as np
 
 from mxlpy import Derived, InitialAssignment, Model
 
-def _init_B_form(_1st_param):
-    return 2 * _1st_param
+def _init_B_form(k1):
+    return 2 * k1
 
 def _derived_lambda_(Species_A, B_form):
     return Species_A + B_form
 
-def _rate_first_reaction(Species_A, _1st_param):
-    return _1st_param * Species_A
+def _rate_first_reaction(Species_A, k1):
+    return k1 * Species_A
 
 def _stoich_first_reaction_B_form(lambda_):
     return lambda_
@@ -267,15 +278,16 @@ def _readout_my_readout(lambda_):
 
 def get_model() -> Model:
     m = Model()
-    m.add_parameter("_1st_param", 0.5)
-    m.add_variable("Species_A", 10)
-    m.add_variable("B_form", InitialAssignment(fn=_init_B_form, args=["_1st_param"]))
+    m.add_parameter("k1", 0.5, tex_name="k_1")
+    m.add_variable("Species_A", 10, display_name="A")
+    m.add_variable("B_form", InitialAssignment(fn=_init_B_form, args=["k1"]))
     m.add_derived("lambda_", _derived_lambda_, args=["Species_A", "B_form"])
     m.add_reaction(
         "first_reaction",
         _rate_first_reaction,
-        args=["Species_A", "_1st_param"],
+        args=["Species_A", "k1"],
         stoichiometry={"Species_A": -1, "B_form": Derived(fn=_stoich_first_reaction_B_form, args=["lambda_"])},
+        display_name="Reaction 1",
     )
     m.add_readout("my_readout", _readout_my_readout, args=["lambda_"])
     return m
@@ -285,7 +297,7 @@ def get_model() -> Model:
   it("buildPython uses them for userParameters/selectedDerived given as ids", () => {
     // Trailing whitespace is a pre-existing irToPython quirk, not under test.
     const py = model()
-      .buildPython(["k1"], ["tot", "ro"])
+      .buildPython(["k1"], ["lambda", "my readout"])
       .replace(/[ \t]+$/gm, "");
     expect(py).toBe(`import numpy as np
 import math
@@ -293,12 +305,12 @@ import math
 def model(
     time: float,
     variables: list[float],
-      _1st_param: float
+      k1: float
 ):
     Species_A, B_form = variables
 
     lambda_ = Species_A + B_form
-    first_reaction = _1st_param * Species_A
+    first_reaction = k1 * Species_A
     dSpecies_Adt = - first_reaction
     dB_formdt = lambda_ * first_reaction
     return [dSpecies_Adt, dB_formdt]
@@ -306,19 +318,19 @@ def model(
 def all_derived(
     time: float,
     variables: list[float],
-      _1st_param: float
+      k1: float
 ):
     Species_A, B_form = variables
 
     lambda_ = Species_A + B_form
-    first_reaction = _1st_param * Species_A
+    first_reaction = k1 * Species_A
     my_readout = lambda_ * 2
     return [lambda_, first_reaction, my_readout]
 
 def selected_derived(
     time: float,
     variables: list[float],
-      _1st_param: float
+      k1: float
 ):
     Species_A, B_form = variables
 
@@ -336,7 +348,7 @@ y0 = {"Species_A": 10, "B_form": 1}
     const mxlpy = b.buildMxlpy();
     const py = b.buildPython([]);
     for (const n of [
-      "_1st_param",
+      "k1",
       "Species_A",
       "B_form",
       "lambda_",
@@ -352,19 +364,17 @@ y0 = {"Species_A": 10, "B_form": 1}
 describe("OdeModelBuilder.buildMxlpy: converted names", () => {
   it("uses them in add_diff_eq/add_derived/add_readout", () => {
     const b = new OdeModelBuilder()
-      .addParameter("k", { value: 0.3, displayName: "rate const." })
-      .addVariable("x", { value: 1, displayName: "x pos" })
-      .addAssignment("d", {
-        fn: new Mul([new Num(2), new Name("x")]),
-        displayName: "2x",
+      .addParameter("rate const.", { value: 0.3 })
+      .addVariable("x pos", { value: 1, displayName: "Position" })
+      .addAssignment("2x", {
+        fn: new Mul([new Num(2), new Name("x pos")]),
       })
       .setDifferential(
-        "x",
-        new Mul([new Num(-1), new Name("k"), new Name("x")]),
+        "x pos",
+        new Mul([new Num(-1), new Name("rate const."), new Name("x pos")]),
       )
-      .addReadout("ro", {
-        fn: new Add([new Name("d"), new Num(1)]),
-        displayName: "def",
+      .addReadout("def", {
+        fn: new Add([new Name("2x"), new Num(1)]),
       });
     expect(b.buildMxlpy()).toBe(`import math
 
@@ -384,7 +394,7 @@ def _readout_def_(_2x):
 def get_model() -> OdeModelBuilder:
     m = OdeModelBuilder()
     m.add_parameter("rate_const", 0.3)
-    m.add_diff_eq("x_pos", 1, _diffeq_x_pos, args=["x_pos", "rate_const"])
+    m.add_diff_eq("x_pos", 1, _diffeq_x_pos, args=["x_pos", "rate_const"], display_name="Position")
     m.add_derived("_2x", _derived__2x, args=["x_pos"])
     m.add_readout("def_", _readout_def_, args=["_2x"])
     return m
@@ -395,11 +405,10 @@ def get_model() -> OdeModelBuilder:
 describe("SteadyStateModelBuilder.buildPython: converted names", () => {
   it("converts parameters and outputs, renaming a shadowed `np`", () => {
     const b = new SteadyStateModelBuilder()
-      .addParameter("S", { value: 1, displayName: "substrate conc." })
-      .addParameter("V", { value: 2, displayName: "np" })
-      .addAssignment("v", {
-        fn: new Mul([new Name("V"), new Name("S")]),
-        displayName: "flux (v)",
+      .addParameter("substrate conc.", { value: 1 })
+      .addParameter("np", { value: 2 })
+      .addAssignment("flux (v)", {
+        fn: new Mul([new Name("np"), new Name("substrate conc.")]),
       });
     expect(b.buildPython()).toBe(`import numpy as np
 import math
@@ -407,63 +416,68 @@ import math
 
 def model(
     substrate_conc: float = 1,
-    np_2: float = 2,
+    np_: float = 2,
 ):
-    flux_v = np_2 * substrate_conc
+    flux_v = np_ * substrate_conc
     return flux_v
 `);
   });
 });
 
 describe("Python exports: collisions", () => {
-  it("a valid name keeps its spelling over one converted to it", () => {
+  it("two ids mapping to the same identifier are an error", () => {
     const b = new KineticModelBuilder()
-      .addVariable("p", { value: 1, displayName: "a b" })
-      .addVariable("q", { value: 2, displayName: "a_b" });
-    const src = b.buildMxlpy();
-    expect(src).toContain('m.add_variable("a_b_2", 1)');
-    expect(src).toContain('m.add_variable("a_b", 2)');
+      .addVariable("a b", { value: 1 })
+      .addVariable("a_b", { value: 2 });
+    for (const build of [
+      () => b.buildMxlpy(),
+      () => b.buildPython([]),
+      () => b.buildJs(),
+      () => b.buildWat(),
+    ]) {
+      expect(build).toThrow(
+        '"a b" and "a_b" both map to the identifier "a_b"; rename one of them',
+      );
+    }
   });
 
-  it("identical display names are suffixed in declaration order", () => {
+  it("identical display names don't affect the Python names", () => {
     const b = new KineticModelBuilder()
       .addVariable("x", { value: 1, displayName: "rate" })
-      .addVariable("y", { value: 2, displayName: "rate" })
-      .addParameter("k", { value: 3, displayName: "rate" });
+      .addVariable("y", { value: 2, displayName: "rate" });
     const src = b.buildMxlpy();
-    expect(src).toContain('m.add_variable("rate", 1)');
-    expect(src).toContain('m.add_variable("rate_2", 2)');
-    expect(src).toContain('m.add_parameter("rate_3", 3)');
+    expect(src).toContain('m.add_variable("x", 1, display_name="rate")');
+    expect(src).toContain('m.add_variable("y", 2, display_name="rate")');
   });
 
-  it.each(["time", "np", "math", "m", "get_model"])(
-    "buildMxlpy renames %j, which the generated module uses itself",
-    (dn) => {
+  it.each(["np", "math", "m", "get_model", "Math", "pars"])(
+    "buildMxlpy renames %j, which the generated code uses itself",
+    (id) => {
       const src = new KineticModelBuilder()
-        .addParameter("k", { value: 1, displayName: dn })
-        .addAssignment("a", { fn: new Mul([new Name("k"), new Num(2)]) })
+        .addParameter(id, { value: 1 })
+        .addAssignment("a", { fn: new Mul([new Name(id), new Num(2)]) })
         .buildMxlpy();
-      expect(src).toContain(`m.add_parameter("${dn}_2", 1)`);
-      expect(src).toContain(`def _derived_a(${dn}_2):`);
+      expect(src).toContain(`m.add_parameter("${id}_", 1)`);
+      expect(src).toContain(`def _derived_a(${id}_):`);
     },
   );
 
-  it.each(["variables", "model", "derived", "all_derived", "time"])(
+  it.each(["variables", "model", "derived", "all_derived"])(
     "buildPython renames %j, which the generated module uses itself",
-    (dn) => {
+    (id) => {
       const src = new KineticModelBuilder()
-        .addParameter("k", { value: 1, displayName: dn })
+        .addParameter(id, { value: 1 })
         .addVariable("x", { value: 1 })
         .buildPython([]);
-      expect(src).toContain(`    ${dn}_2 = 1`);
+      expect(src).toContain(`    ${id}_ = 1`);
     },
   );
 
   it("buildPython's d<x>dt locals never shadow a model name", () => {
     const src = new OdeModelBuilder()
-      .addParameter("k", { value: 1, displayName: "dxdt" })
+      .addParameter("dxdt", { value: 1 })
       .addVariable("x", { value: 1 })
-      .setDifferential("x", new Name("k"))
+      .setDifferential("x", new Name("dxdt"))
       .buildPython([]);
     checkPython(src);
     expect(src).toContain("    dxdt = 1");
@@ -502,15 +516,15 @@ describe("Python exports: NN block with an invalid key", () => {
   it("buildPython converts the scale parameter and every weight name", () => {
     const src = model().buildPython([]);
     checkPython(src);
-    expect(src).toContain("    my_block_output_scale = 0.1");
+    expect(src).toContain("    my_block_scale = 0.1");
     expect(src).toMatch(/^ {4}my_block_w0_0_0 = /m);
     expect(src).not.toContain("my block");
   });
 
   it("buildMxlpy converts the scale parameter", () => {
     const src = model().buildMxlpy();
-    expect(src).toContain('m.add_parameter("my_block_output_scale", 0.1)');
-    expect(src).not.toMatch(/"my block/);
+    expect(src).toContain('m.add_parameter("my_block_scale", 0.1, ');
+    expect(src).not.toMatch(/m\.add_\w+\("my block/);
   });
 });
 
@@ -529,7 +543,7 @@ describe("buildPython: variable unpacking", () => {
 
   it("unpacks a single prose-named variable", () => {
     const src = new KineticModelBuilder()
-      .addVariable("x", { value: 1, displayName: "x pos" })
+      .addVariable("x pos", { value: 1, displayName: "Position" })
       .buildPython([]);
     expect(unpackLines(src)).toEqual(["x_pos,", "x_pos,"]);
   });
@@ -549,5 +563,66 @@ describe("buildPython: variable unpacking", () => {
       .addVariable("y", { value: 2 })
       .buildPython([]);
     expect(unpackLines(src)).toEqual(["x, y", "x, y"]);
+  });
+});
+
+describe("JS/WAT backends: non-canonical ids", () => {
+  // `1st param`, `B-form` and `class` aren't valid JS identifiers; every
+  // backend must see the canonical names instead of the raw ids.
+  const model = () =>
+    new KineticModelBuilder()
+      .addParameter("1st param", { value: 0.5 })
+      .addParameter("class", { value: 2 })
+      .addVariable("A+", { value: 10 })
+      .addVariable("B-form", {
+        value: new Mul([new Num(4), new Name("1st param")]),
+      })
+      .addAssignment("tot", {
+        fn: new Add([new Name("A+"), new Name("B-form")]),
+      })
+      .addReaction("v 1", {
+        fn: new Mul([new Name("1st param"), new Name("class"), new Name("A+")]),
+        stoichiometry: [
+          { name: "A+", value: new Num(-1) },
+          { name: "B-form", value: new Num(1) },
+        ],
+      })
+      .addReadout("ratio (A/B)", {
+        fn: new Mul([new Name("A+"), new Name("tot")]),
+      });
+
+  it("evaluates expression-valued initial values", () => {
+    expect(model().resolveInitialValues()).toEqual([10, 2]);
+  });
+
+  it("buildJs compiles and evaluates the right-hand side", () => {
+    const rhs = new Function(`return (${model().buildJs()})`)() as (
+      t: number,
+      y: number[],
+      p: number[],
+    ) => number[];
+    expect(rhs(0, [10, 2], [0.5, 2])).toEqual([-10, 10]);
+  });
+
+  it("buildJsDerived selects outputs given as ids", () => {
+    const { allDerived, selectDerived } = model().buildJsDerived([
+      "ratio (A/B)",
+    ]);
+    const all = new Function(`return (${allDerived})`)() as (
+      t: number,
+      y: number[],
+      p: number[],
+    ) => number[];
+    const select = new Function(`return (${selectDerived})`)() as (
+      all: number[],
+    ) => number[];
+    expect(select(all(0, [10, 2], [0.5, 2]))).toEqual([120]);
+  });
+
+  it("buildWat and buildWatDerived emit only canonical locals", () => {
+    const b = model();
+    for (const wat of [b.buildWat(), b.buildWatDerived(["tot"])]) {
+      expect(wat).not.toMatch(/\$(1st|B-form|A\+|class\b)/);
+    }
   });
 });

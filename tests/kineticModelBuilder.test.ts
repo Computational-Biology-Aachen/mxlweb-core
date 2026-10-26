@@ -244,7 +244,7 @@ def get_model() -> Model:
         _rate_v,
         args=["S", "k"],
         stoichiometry={"S": -1, "P": 1},
-        unit="unit_react"
+        unit="unit_react",
     )
     return m
 `);
@@ -269,7 +269,7 @@ def get_model() -> Model:
     expect(src).toContain(`m.add_parameter("k", 0.5, unit=${literal})`);
     expect(src).toContain(`m.add_variable("S", 10, unit=${literal})`);
     expect(src).toContain(`args=["S"], unit=${literal})`);
-    expect(src).toContain(`        unit=${literal}\n`);
+    expect(src).toContain(`        unit=${literal},\n`);
     // Every line is a complete statement: no raw newline leaked from a unit.
     expect(src).not.toContain("line\nbreak");
   });

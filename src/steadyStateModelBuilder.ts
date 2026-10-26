@@ -8,6 +8,7 @@ import {
   type MxlKind,
   type NNBlockConfig,
 } from "./modelBuilderBase.js";
+import { pyMetaKwargs } from "./pyString.js";
 
 /**
  * Algebraic (steady-state) model builder: outputs are closed-form functions of
@@ -84,7 +85,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     selectedDerived?: string[],
   ): string {
     const ir = this.lower();
-    const displayNames = this.getPyNames();
+    const displayNames = this.getCodegenNames();
     const Name = (x: string) => displayNames.get(x) ?? x;
 
     const order = ir.intermediates.map((m) => m.name);
@@ -155,7 +156,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
    * argument placed first.
    */
   buildMxlpy(): string {
-    const displayNames = this.getPyNames();
+    const displayNames = this.getCodegenNames();
     const name = (id: string) => displayNames.get(id) ?? id;
 
     // Declaration-order index, used to order generated-function arguments.
@@ -195,7 +196,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     const body: string[] = [];
 
     for (const [id, p] of this.parameters) {
-      body.push(`m.add_parameter("${name(id)}", ${p.value})`);
+      body.push(`m.add_parameter("${name(id)}", ${p.value}${pyMetaKwargs(p)})`);
     }
 
     for (const [id, v] of this.variables) {
@@ -215,7 +216,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
       const fnName = `_derived_${name(id)}`;
       const args = emitFn(fnName, ass.fn);
       body.push(
-        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}])`,
+        `m.add_derived("${name(id)}", ${fnName}, args=[${argList(args)}]${pyMetaKwargs(ass)})`,
       );
     }
 
