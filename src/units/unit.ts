@@ -109,6 +109,24 @@ function superscript(n: number): string {
   return [...`${n}`].map((c) => SUPERSCRIPT[c] ?? c).join("");
 }
 
+/** The power of ten `m` is, if it is one of at least three digits (`1e-6` -> -6; `0.01` stays). */
+function powerOfTen(m: number): number | undefined {
+  const n = Math.round(Math.log10(m));
+  return Math.abs(n) >= 3 && Number(`1e${n}`) === m ? n : undefined;
+}
+
+/** A multiplier as display text: `10⁻⁶` rather than `0.000001`. */
+function multiplierText(m: number): string {
+  const n = powerOfTen(m);
+  return n === undefined ? `${m}` : `10${superscript(n)}`;
+}
+
+/** A multiplier as LaTeX: `10^{-6}` rather than `0.000001`. */
+function multiplierTex(m: number): string {
+  const n = powerOfTen(m);
+  return n === undefined ? `${m}` : `10^{${n}}`;
+}
+
 /**
  * An immutable physical unit. Construction normalises the factors: one entry
  * per kind (exponents summed, mismatched prefixes folded into a single prefix
@@ -312,7 +330,7 @@ export class Unit {
       const base = sym.includes(" ") && (prefix || exp) ? `(${sym})` : sym;
       return `${prefix}${base}${exp}`;
     });
-    if (this.multiplier !== 1) parts.unshift(`${this.multiplier}`);
+    if (this.multiplier !== 1) parts.unshift(multiplierText(this.multiplier));
     return parts.length === 0 ? "1" : parts.join("·");
   }
 
@@ -328,7 +346,7 @@ export class Unit {
       const base = prefix === "" ? kind : `{${prefix}${kind}}`;
       return f.exponent === 1 ? base : `${base}^{${f.exponent}}`;
     });
-    if (this.multiplier !== 1) parts.unshift(`${this.multiplier}`);
+    if (this.multiplier !== 1) parts.unshift(multiplierTex(this.multiplier));
     return parts.length === 0 ? "1" : parts.join(" \\cdot ");
   }
 

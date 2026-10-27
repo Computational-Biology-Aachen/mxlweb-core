@@ -119,6 +119,11 @@ describe("Unit", () => {
     );
     expect(Unit.dimensionless.toDisplay()).toBe("1");
     expect(`${parseUnit("mM")}`).toBe("mmol·L⁻¹");
+    // µmol mol⁻¹ cancels to a bare multiplier, shown as a power of ten
+    const ppm = new Unit([], 1e-6);
+    expect(ppm.toDisplay()).toBe("10⁻⁶");
+    expect(ppm.toTex()).toBe("10^{-6}");
+    expect(new Unit([], 2.5).toTex()).toBe("2.5");
   });
 
   it("renders SBML unit definitions", () => {
