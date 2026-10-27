@@ -1,5 +1,7 @@
 # @computational-biology-aachen/mxlweb-core
 
+[![mxl-e2e](https://img.shields.io/github/actions/workflow/status/Computational-Biology-Aachen/mxlweb-core/e2e.yml?branch=main&label=mxl-e2e&style=flat-square)](https://github.com/Computational-Biology-Aachen/mxlweb-core/actions/workflows/e2e.yml)
+
 Shared core for the MxlWeb browser-side ODE/kinetic model toolkit. Holds the model builders, the intermediate representation, the MathML → WAT pipeline, and the three compute backends — so that every site that runs models client-side builds on the same engine instead of re-implementing it.
 
 All compute is client-side: there is no server component.
