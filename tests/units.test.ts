@@ -34,10 +34,11 @@ const customsOf = (f: Fixture) => new Map(Object.entries(f.units ?? {}));
 const SCHEMAS_DIR = resolve(process.cwd(), "../../misc/mxl-schemas");
 
 describe("vendored unit registry and fixtures match mxl-schemas", () => {
-  it.each([
+  // it.for, not it.each: only it.for passes the test context (ctx.skip).
+  it.for([
     ["v1/units.json", unitRegistry],
     ["tests/units.fixtures.json", FIXTURES],
-  ])("%s is up to date", (file, vendored, ctx) => {
+  ] as const)("%s is up to date", ([file, vendored], ctx) => {
     let canonical: unknown;
     try {
       canonical = JSON.parse(readFileSync(resolve(SCHEMAS_DIR, file), "utf8"));
