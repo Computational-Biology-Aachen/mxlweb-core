@@ -41,6 +41,9 @@ static doublereal c_b103 = 1.;
 static doublereal c_b113 = .8;
 static doublereal c_b115 = .25;
 
+/* Largest growth of |h| over a Jacobian's lifetime; 0 disables the limit. */
+double radau5_jac_growth = 0.;
+
 /* Subroutine */ int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *
 	y, doublereal *xend, doublereal *h__, doublereal *rtol, doublereal *
 	atol, integer *itol, U_fp jac, integer *ijac, integer *mljac, integer 
@@ -923,6 +926,8 @@ static doublereal c_b115 = .25;
     static integer irtrn, nrsol, nsolu;
     static doublereal qnewt, xosol, acont3;
     static logical index1, index2, index3, caljac;
+    static doublereal hjac; /* step size when the Jacobian was last computed */
+    logical jac_ok;
     static doublereal faccon;
     extern /* Subroutine */ int decomc_(integer *, doublereal *, integer *, 
 	    doublereal *, integer *, integer *, integer *, integer *, integer 
@@ -1204,6 +1209,7 @@ L14:
 	(*jac)(n, x, &y[1], &fjac[fjac_offset], ldjac, &rpar[1], &ipar[1]);
     }
     caljac = TRUE_;
+    hjac = *h__;
     calhes = TRUE_;
 L20:
 /* --- COMPUTE THE MATRICES E1 AND E2 AND THEIR DECOMPOSITIONS */
@@ -1393,6 +1399,16 @@ L40:
 	    1], &y[1], ijob, x, m1, m2, nm1, &e1[e1_offset], lde1, &z1[1], &
 	    z2[1], &z3[1], &cont[1], &f1[1], &f2[1], &ip1[1], &iphes[1], &
 	    scal[1], &err, &first, &reject, &fac1, &rpar[1], &ipar[1]);
+/* --- max() in ESTRAD turns a NaN error into a tiny one, which would accept
+ * the step. A non-finite result must be rejected like any other large error. */
+    i__1 = *n;
+    for (i__ = 1; i__ <= i__1; ++i__) {
+	d__1 = y[i__] + z3[i__];
+	if (d__1 - d__1 != 0.) {
+	    err = 1e6;
+	    break;
+	}
+    }
 /* --- COMPUTATION OF HNEW */
 /* --- WE REQUIRE .2<=HNEW/H<=8. */
 /* Computing MIN */
@@ -1495,13 +1511,18 @@ L40:
 	} else {
 	    qt = hnew / *h__;
 	    hhfac = *h__;
-	    if (theta <= *thet && qt >= *quot1 && qt <= *quot2) {
+	    /* --- A Jacobian older than this step growth misleads the error estimate. */
+	    jac_ok = theta <= *thet && (radau5_jac_growth <= 0. ||
+		    abs(hnew) <= radau5_jac_growth * abs(hjac));
+	    if (jac_ok && qt >= *quot1 && qt <= *quot2) {
 		goto L30;
 	    }
 	    *h__ = hnew;
 	}
 	hhfac = *h__;
-	if (theta <= *thet) {
+	jac_ok = theta <= *thet && (radau5_jac_growth <= 0. ||
+		abs(*h__) <= radau5_jac_growth * abs(hjac));
+	if (jac_ok) {
 	    goto L20;
 	}
 	goto L10;

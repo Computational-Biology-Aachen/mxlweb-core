@@ -27,6 +27,8 @@ extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y,
                    integer *liwork, doublereal *rpar, integer *ipar,
                    integer *idid);
 
+extern double radau5_jac_growth;
+
 /* ------------------------------------------------------------------ */
 /* Model function pointer                                              */
 /* ------------------------------------------------------------------ */
@@ -187,10 +189,10 @@ static int solout_dispatch(integer *nr, doublereal *xold, doublereal *x,
  * Before calling: set_model_fn(table_idx) and init_output(nout, n)
  * After calling:  read results via get_out_n / get_out_t / get_out_y
  */
-int run_radau5(int n, double t_start, double t_end,
-               double *y, double *rpar,
-               double rtol, double atol,
-               double h_init, int nmax) {
+static int radau5_impl(int n, double t_start, double t_end,
+                       double *y, double *rpar,
+                       double rtol, double atol,
+                       double h_init, int nmax, int tuned) {
 
     integer N     = (integer)n;
     integer ITOL  = 0; /* scalar tolerances */
@@ -213,8 +215,17 @@ int run_radau5(int n, double t_start, double t_end,
     integer    *iwork = (integer    *)calloc((size_t)LIWORK, sizeof(integer));
     if (!work || !iwork) { free(work); free(iwork); return -1; }
 
-    /* Allow up to NMAX steps — radau5_ does --iwork so IWORK(1) = iwork[0] */
-    iwork[0] = NMAX;
+    /* radau5_ does --iwork and --work, so IWORK(k) = iwork[k-1], WORK(k) = work[k-1]. */
+    iwork[0] = 1;    /* IWORK(1): Hessenberg form, cheap per decomposition with a reused Jacobian */
+    iwork[1] = NMAX; /* IWORK(2): maximal number of steps */
+    radau5_jac_growth = 0.;
+    if (tuned) {
+        /* Measured in misc/mxl-perf against Hairer's defaults. */
+        iwork[2] = 10;  /* IWORK(3): Newton iterations (default 7), avoids costly step rejections */
+        work[2] = 0.05; /* WORK(3): reuse the Jacobian more often (default 0.001 recomputes nearly every step) */
+        work[5] = 1.5;  /* WORK(6): keep the decomposition while the step grows up to 1.5x (default 1.2) */
+        radau5_jac_growth = 8.; /* recompute the Jacobian after 8x step growth, see radau5.c */
+    }
 
     doublereal rtol_d   = (doublereal)rtol;
     doublereal atol_d   = (doublereal)atol;
@@ -235,6 +246,22 @@ int run_radau5(int n, double t_start, double t_end,
     free(work);
     free(iwork);
     return (int)IDID;
+}
+
+int run_radau5(int n, double t_start, double t_end,
+               double *y, double *rpar,
+               double rtol, double atol,
+               double h_init, int nmax) {
+    return radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 1);
+}
+
+/* Hairer's default Jacobian handling, for the fit drivers: they difference the
+ * objective across parameters, and reusing Jacobians makes it too rough for that. */
+int run_radau5_fit(int n, double t_start, double t_end,
+                   double *y, double *rpar,
+                   double rtol, double atol,
+                   double h_init, int nmax) {
+    return radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 0);
 }
 
 /* ================================================================== */

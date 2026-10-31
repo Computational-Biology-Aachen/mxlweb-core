@@ -17,7 +17,7 @@ extern void free_output(void);
 extern int get_out_n(void);
 extern double *get_out_t(void);
 extern double *get_out_y(void);
-extern int run_radau5(int n, double t_start, double t_end, double *y, double *rpar,
+extern int run_radau5_fit(int n, double t_start, double t_end, double *y, double *rpar,
                        double rtol, double atol, double h_init, int nmax);
 extern int run_dop853(int n, double t_start, double t_end, double *y, double *rpar,
                        double rtol, double atol, double h_init, int nmax);
@@ -194,7 +194,7 @@ int exp_integrate(const ExpProblem *P, ModelFn fn, int n, double t0, double t1, 
     case SOLVER_DOPRI5:
       return run_dopri5(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
     default:
-      return run_radau5(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
+      return run_radau5_fit(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
   }
 }
 
