@@ -851,14 +851,44 @@ export abstract class ModelBuilderBase {
     // Evaluated as JS, so through the same canonical names as every backend.
     const names = this.getCodegenNames();
     const rename = nameRenamer(names);
-    const paramMap = new Map(
+    const known = new Map(
       [...this.parameters.entries()].map(([k, v]) => [names.get(k)!, v.value]),
     );
-    return [...this.variables.values()].map((v) =>
-      v.value instanceof Base
-        ? evalInitialAssignment(rename(v.value), paramMap)
-        : v.value,
-    );
+    known.set("time", 0);
+    for (const [id, v] of this.variables) {
+      if (!(v.value instanceof Base)) known.set(names.get(id)!, v.value);
+    }
+    // Initial expressions may use assignments, which may use each other and
+    // other variables' initial values, so settle whatever is ready repeatedly.
+    let pending: Array<[string, Base]> = [
+      ...[...this.assignments].map(
+        ([id, a]) => [names.get(id)!, rename(a.fn)] as [string, Base],
+      ),
+      ...[...this.variables]
+        .filter(([, v]) => v.value instanceof Base)
+        .map(
+          ([id, v]) =>
+            [names.get(id)!, rename(v.value as Base)] as [string, Base],
+        ),
+    ];
+    while (pending.length > 0) {
+      const waiting = pending.filter(([name, expr]) => {
+        const ready = [...expr.getSymbols(new Set())].every((s) =>
+          known.has(s),
+        );
+        if (ready) known.set(name, evalInitialAssignment(expr, known));
+        return !ready;
+      });
+      if (waiting.length === pending.length) break;
+      pending = waiting;
+    }
+    return [...this.variables.keys()].map((id) => {
+      const value = known.get(names.get(id)!);
+      if (value === undefined) {
+        throw new Error(`Can't resolve the initial value of "${id}"`);
+      }
+      return value;
+    });
   }
 
   /**
@@ -1018,6 +1048,7 @@ export abstract class ModelBuilderBase {
       [...this.variables.keys()].map((name) => [name, this.dxdtExpr(name)]),
     );
     const dxdt = this.composeNNBlocks(mechanistic);
+    const initialValues = this.resolveInitialValues();
     return {
       varNames: [...this.variables.keys()],
       // `parameters` first, then `nnWeights` — every WAT/adjoint `Name`
@@ -1032,8 +1063,9 @@ export abstract class ModelBuilderBase {
         ),
         ...this.nnWeights.entries(),
       ]),
+      // Resolved here: an initial value may depend on assignments.
       initialValues: new Map(
-        [...this.variables.entries()].map(([k, v]) => [k, v.value]),
+        [...this.variables.keys()].map((k, i) => [k, initialValues[i]]),
       ),
       intermediates,
       // Post-simulation-only report outputs — never folded into

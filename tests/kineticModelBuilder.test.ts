@@ -299,3 +299,22 @@ def get_model() -> Model:
     expect(m.parameters.size + m.variables.size).toBe(0);
   });
 });
+
+describe("resolveInitialValues", () => {
+  it("resolves initial values that use assignments", () => {
+    const m = new KineticModelBuilder()
+      .addParameter("a", { value: 3 })
+      .addAssignment("twice", { fn: new Mul([new Num(2), new Name("a")]) })
+      .addAssignment("more", { fn: new Mul([new Num(2), new Name("twice")]) })
+      .addVariable("x", { value: 5 })
+      .addVariable("y", { value: new Mul([new Name("more"), new Name("x")]) });
+    expect(m.resolveInitialValues()).toEqual([5, 60]);
+  });
+
+  it("refuses an initial value it can't resolve", () => {
+    const m = new KineticModelBuilder().addVariable("y", {
+      value: new Name("missing"),
+    });
+    expect(() => m.resolveInitialValues()).toThrow(/initial value of "y"/);
+  });
+});

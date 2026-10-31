@@ -12,7 +12,8 @@ type RhsFn = (n: number, t: number, y: number, f: number, p: number) => void;
 export const DEFAULT_RTOL = 1e-6;
 export const DEFAULT_ATOL = 1e-8;
 const DEFAULT_SS_TOL = 1e-6;
-const DEFAULT_SS_T_MAX = 1e6;
+const SS_STEP = 100;
+const DEFAULT_SS_T_MAX = 1e5;
 
 // Resample irregular time series to nPoints evenly-spaced times
 function resampleUniform(
@@ -258,25 +259,22 @@ export async function simulate(
 
   try {
     if (steadyState) {
-      // The browser analogue of MxlPy's simulate_to_steady_state, and the same
-      // criterion as fit_experiments.c: scaled ||dy/dt|| over growing horizons.
+      // Same criterion as MxlPy's integrate_to_steady_state, so scans agree with
+      // it: the state moves by less than `tol` over a whole step of length 100.
       const tol = steadyState.tol ?? DEFAULT_SS_TOL;
       const tMax = steadyState.tMax ?? DEFAULT_SS_T_MAX;
-      const isSteady = (t: number) => {
-        const norm = (v: ArrayLike<number>) =>
-          Math.sqrt(Array.from(v).reduce((sum, x) => sum + x * x, 0));
-        return norm(rhs.eval(t, y)) / Math.max(norm(y), 1) < tol;
-      };
       let t = 0;
-      let next = 1;
-      while (!isSteady(t)) {
+      for (;;) {
         if (t >= tMax) {
           throw new Error(`No steady state within t=${tMax} (tol=${tol})`);
         }
-        next = Math.min(next, tMax);
-        segment(t, next);
-        t = next;
-        next *= 10;
+        const before = Array.from(y);
+        segment(t, t + SS_STEP);
+        t += SS_STEP;
+        const moved = Math.sqrt(
+          before.reduce((sum, v, i) => sum + (y[i] - v) ** 2, 0),
+        );
+        if (moved < tol) break;
       }
       allTime = [t];
       allY = [Array.from(y)];

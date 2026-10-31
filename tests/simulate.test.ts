@@ -101,6 +101,16 @@ describe("simulate", () => {
     expect(res.values[4][0]).toBeCloseTo(exact(2, atSwitch, 0, 2), 7);
   });
 
+  it("grows the heap for very long outputs", async () => {
+    const tEval = Array.from({ length: 2_000_000 }, (_, i) => i / 200_000);
+    const res = await run({ tEval, rtol: 1e-6, atol: 1e-8 });
+    expect(res.time).toHaveLength(tEval.length);
+    expect(res.values[tEval.length - 1][0]).toBeCloseTo(
+      exact(tEval[tEval.length - 1], 2, 0, 1),
+      4,
+    );
+  });
+
   it("keeps the interpolated output unchanged without tEval", async () => {
     const res = await run({ nTimePoints: 11 });
     expect(res.time).toHaveLength(11);
@@ -115,7 +125,7 @@ describe("simulate", () => {
 
   it("fails rather than returning an unconverged steady state", async () => {
     await expect(
-      run({ pars: [3, 1e-9], steadyState: { tMax: 10 } }),
+      run({ pars: [3, 1e-9], steadyState: { tMax: 200 } }),
     ).rejects.toThrow(/No steady state/);
   });
 
