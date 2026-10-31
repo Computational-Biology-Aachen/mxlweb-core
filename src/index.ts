@@ -58,6 +58,15 @@ export interface SimulationRequest {
   rtol?: number;
   /** Absolute solver tolerance. Defaults per backend if omitted. */
   atol?: number;
+  /**
+   * Output exactly these ascending times from the solver's own dense output,
+   * instead of `nTimePoints` interpolated ones. WASM RADAU5 only.
+   */
+  tEval?: number[];
+  /** Integrate until steady, returning that one state. WASM only. */
+  steadyState?: { tol?: number; tMax?: number };
+  /** Also return dy/dt at each output point. WASM only. */
+  returnRhs?: boolean;
 }
 
 /**
@@ -82,6 +91,10 @@ export interface SimulationResult {
   values: number[][];
   requestId?: string;
   err?: SimulationError;
+  /** dy/dt per output point, if `returnRhs` was requested. */
+  rhs?: number[][];
+  /** The state at the end of integration (WASM), for chaining runs. */
+  finalState?: number[];
 }
 
 /**

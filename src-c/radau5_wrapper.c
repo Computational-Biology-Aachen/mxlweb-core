@@ -27,6 +27,8 @@ extern int radau5_(integer *n, U_fp fcn, doublereal *x, doublereal *y,
                    integer *liwork, doublereal *rpar, integer *ipar,
                    integer *idid);
 
+extern doublereal contr5_(integer *i__, doublereal *x, doublereal *cont, integer *lrc);
+
 extern double radau5_jac_growth;
 
 /* ------------------------------------------------------------------ */
@@ -150,6 +152,47 @@ void eval_rhs(int n, double t, double *y, double *dydt, double *pars) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Optional output grid (RADAU5 only)                                  */
+/* ------------------------------------------------------------------ */
+/* When set, run_radau5 records the collocation polynomial at exactly these
+ * ascending times instead of one point per accepted step. Consumed by the next
+ * run_radau5 and then cleared; the array must stay valid until it returns. */
+static const double *grid_t = NULL;
+static int grid_n = 0;
+static int grid_i = 0;
+static double *grid_y = NULL;
+
+void set_output_grid(const double *t, int n) {
+    grid_t = t;
+    grid_n = n;
+    grid_i = 0;
+}
+
+static void clear_output_grid(void) {
+    grid_t = NULL;
+    grid_n = grid_i = 0;
+    free(grid_y);
+    grid_y = NULL;
+}
+
+static void record_grid_points(integer nr, double x, const double *y,
+                               double *cont, integer *lrc, integer n) {
+    while (grid_i < grid_n && grid_t[grid_i] <= x) {
+        double t = grid_t[grid_i++];
+        /* CONTR5 is only defined from the second SOLOUT call on, and the step
+         * endpoint itself is more accurate than the polynomial. */
+        if (nr < 2 || t == x) {
+            record_point(t, y);
+            continue;
+        }
+        for (integer i = 1; i <= n; i++) {
+            grid_y[i - 1] = contr5_(&i, &t, cont, lrc);
+        }
+        record_point(t, grid_y);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* SOLOUT dispatcher                                                   */
 /* ------------------------------------------------------------------ */
 /* Fortran ABI: (nr, xold, x, y, cont, lrc, n, rpar, ipar, irtrn)    */
@@ -157,8 +200,12 @@ static int solout_dispatch(integer *nr, doublereal *xold, doublereal *x,
                            doublereal *y, doublereal *cont, integer *lrc,
                            integer *n, doublereal *rpar, integer *ipar,
                            integer *irtrn) {
-    (void)nr; (void)xold; (void)cont; (void)lrc; (void)rpar; (void)ipar;
-    record_point(*x, y);
+    (void)xold; (void)rpar; (void)ipar;
+    if (grid_t) {
+        record_grid_points(*nr, *x, y, cont, lrc, *n);
+    } else {
+        record_point(*x, y);
+    }
     *irtrn = 1; /* continue */
     return 0;
 }
@@ -252,7 +299,10 @@ int run_radau5(int n, double t_start, double t_end,
                double *y, double *rpar,
                double rtol, double atol,
                double h_init, int nmax) {
-    return radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 1);
+    if (grid_t) grid_y = (double *)malloc((size_t)n * sizeof(double));
+    int idid = radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 1);
+    clear_output_grid();
+    return idid;
 }
 
 /* Hairer's default Jacobian handling, for the fit drivers: they difference the

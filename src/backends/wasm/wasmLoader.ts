@@ -51,6 +51,8 @@ export interface EmscriptenModule {
   _get_out_n(): number;
   _get_out_t(): number; // pointer
   _get_out_y(): number; // pointer
+  /** Record `run_radau5`'s next run at these times only (radau5_wrapper.c). */
+  _set_output_grid(tPtr: number, n: number): void;
   /** Fit-only exports (fit_wrapper.c) — unused by the plain simulation worker. */
   _set_derived_fn(tableIdx: number): void;
   /** Derived-target gradients for the gradient fit backends (ADR 0009). */
@@ -286,10 +288,20 @@ export async function compileModel(
   emMod: EmscriptenModule,
   basePath: string,
 ): Promise<WebAssembly.Instance> {
+  return compileModelWith(wat, emMod, (code) => watToWasm(code, basePath));
+}
+
+/** {@link compileModel} with the WAT compiler passed in, for callers that can't
+ * fetch it (see nodeLoader.ts). */
+export async function compileModelWith(
+  wat: string,
+  emMod: EmscriptenModule,
+  toWasm: (wat: string) => Uint8Array | Promise<Uint8Array>,
+): Promise<WebAssembly.Instance> {
   const key = hashStr(wat);
   let compiled = modelCache.get(key);
   if (!compiled) {
-    const bytes = await watToWasm(wat, basePath);
+    const bytes = await toWasm(wat);
     compiled = await WebAssembly.compile(bytes.buffer as ArrayBuffer);
     modelCache.set(key, compiled);
   }

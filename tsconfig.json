@@ -14,5 +14,5 @@
     "declarationMap": true
   },
   "include": ["src"],
-  "exclude": ["src/fit"]
+  "exclude": ["src/fit", "src/backends/wasm/nodeLoader.ts"]
 }
