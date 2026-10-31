@@ -116,7 +116,7 @@
     "@computational-biology-aachen/design": "*",
     "chart.js": ">=4.5.0",
     "papaparse": "^5.7.0",
-    "svelte": ">=5.57.2"
+    "svelte": ">=5.57.3"
   },
   "peerDependenciesMeta": {
     "@computational-biology-aachen/design": {
@@ -143,11 +143,11 @@
     "papaparse": "^5.7.0",
     "prettier": ">=3.9.9",
     "pyodide": "^314.0.7",
-    "svelte": ">=5.57.2",
+    "svelte": ">=5.57.3",
     "svelte-check": ">=4.7.4",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": ">=8.72.0",
+    "typescript-eslint": ">=8.72.1",
     "vitest": "^4.1.11",
     "wat-compiler": "^1.1.1"
   }
