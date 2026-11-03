@@ -19,8 +19,9 @@ import {
   type ModelIR,
 } from "./modelIr.js";
 import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
+import { type DataSet, foldData, type MxlDataDocument } from "./data.js";
 import { canonicalIdentifierMap } from "./identifiers.js";
-import { pyMetaKwargs } from "./pyString.js";
+import { pyFloat, pyMetaKwargs } from "./pyString.js";
 import {
   type CustomUnit,
   parseUnit,
@@ -303,10 +304,12 @@ export type MxlEntity = {
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
 export type MxlJsonDocument = {
   $schema: string;
-  spec_version: "1.0" | "1.1";
+  spec_version: "1.0" | "1.1" | "1.2";
   kind: MxlKind;
   model_id: string;
   description?: string;
+  /** Path of the data sidecar (`model-data.schema.json`), relative to the model file; present iff the model has data. */
+  data_ref?: string;
   model: Record<string, Record<string, MxlEntity>>;
 };
 
@@ -335,6 +338,14 @@ export abstract class ModelBuilderBase {
   variables: SvelteMap<string, Variable> = new SvelteMap();
   assignments: SvelteMap<string, Assign> = new SvelteMap();
   nnBlocks: SvelteMap<string, NNBlockConfig> = new SvelteMap();
+  /**
+   * Named 1-D arrays (mxl-schemas ADR 0014), e.g. spectra. Reachable only
+   * through array nodes (`Simpson`, `Sum`, …) whose subtrees reference
+   * nothing but data and numbers; {@link lower} folds each such subtree to
+   * its number, so no backend ever sees an array. Serialised to a sidecar
+   * file (`buildDataFile`), never inline in `.mxl.json`.
+   */
+  data: SvelteMap<string, DataSet> = new SvelteMap();
   /**
    * Every NN block's generated weight/bias values, keyed by the generator's
    * naming convention (`nnBlock.ts`). Deliberately not `parameters`: a
@@ -501,6 +512,26 @@ export abstract class ModelBuilderBase {
   removeParameter(key: string) {
     this.parameters.delete(key);
     return this;
+  }
+
+  // Data
+  addData(key: string, value: WithUnitInput<DataSet>) {
+    if (key === "time") throw new Error('"time" is a reserved identifier');
+    this.data.set(key, this.withUnit(value));
+    return this;
+  }
+  updateData(key: string, value: WithUnitInput<DataSet>) {
+    this.data.set(key, this.withUnit(value));
+    return this;
+  }
+  removeData(key: string) {
+    this.data.delete(key);
+    return this;
+  }
+
+  /** `expr` with every data subtree folded to its number (see {@link foldData}); `where` names the owner in errors. */
+  protected foldData(expr: Base, where: string): Base {
+    return foldData(expr, this.data, `"${where}"`);
   }
 
   // Assignments
@@ -847,6 +878,30 @@ export abstract class ModelBuilderBase {
     ]);
   }
 
+  /** {@link intermediateDefs} with data folded: the form every numeric consumer uses. */
+  private foldedIntermediateDefs(): Map<string, IntermediateDef> {
+    const defs = this.intermediateDefs();
+    if (this.data.size === 0) return defs;
+    return new Map(
+      [...defs].map(([id, def]) => [
+        id,
+        { ...def, fn: this.foldData(def.fn, id) },
+      ]),
+    );
+  }
+
+  /** {@link extraReadouts} with data folded. */
+  private foldedReadouts(): Map<string, IntermediateDef> {
+    const defs = this.extraReadouts();
+    if (this.data.size === 0) return defs;
+    return new Map(
+      [...defs].map(([id, def]) => [
+        id,
+        { ...def, fn: this.foldData(def.fn, id) },
+      ]),
+    );
+  }
+
   resolveInitialValues(): number[] {
     // Evaluated as JS, so through the same canonical names as every backend.
     const names = this.getCodegenNames();
@@ -862,13 +917,17 @@ export abstract class ModelBuilderBase {
     // other variables' initial values, so settle whatever is ready repeatedly.
     let pending: Array<[string, Base]> = [
       ...[...this.assignments].map(
-        ([id, a]) => [names.get(id)!, rename(a.fn)] as [string, Base],
+        ([id, a]) =>
+          [names.get(id)!, rename(this.foldData(a.fn, id))] as [string, Base],
       ),
       ...[...this.variables]
         .filter(([, v]) => v.value instanceof Base)
         .map(
           ([id, v]) =>
-            [names.get(id)!, rename(v.value as Base)] as [string, Base],
+            [names.get(id)!, rename(this.foldData(v.value as Base, id))] as [
+              string,
+              Base,
+            ],
         ),
     ];
     while (pending.length > 0) {
@@ -948,10 +1007,12 @@ export abstract class ModelBuilderBase {
       // throw.
       ...this.nnWeights.keys(),
     ]);
-    const toSort = [...this.intermediateDefs().entries()].map(([key, val]) => ({
-      k: key,
-      args: val.fn.getSymbols(new Set()),
-    }));
+    const toSort = [...this.foldedIntermediateDefs().entries()].map(
+      ([key, val]) => ({
+        k: key,
+        args: val.fn.getSymbols(new Set()),
+      }),
+    );
     return ModelBuilderBase.topoSort(available, toSort);
   }
 
@@ -970,7 +1031,7 @@ export abstract class ModelBuilderBase {
       ...this.variables.keys(),
       ...this.intermediateDefs().keys(),
     ]);
-    const toSort = [...this.extraReadouts().entries()].map(([key, val]) => ({
+    const toSort = [...this.foldedReadouts().entries()].map(([key, val]) => ({
       k: key,
       args: val.fn.getSymbols(new Set()),
     }));
@@ -1007,9 +1068,11 @@ export abstract class ModelBuilderBase {
    */
   protected getCodegenNames(): Map<string, string> {
     return canonicalIdentifierMap(
-      [...this.getDisplayNames().keys(), ...this.nnWeights.keys()].map(
-        (id): [string, string] => [id, id],
-      ),
+      [
+        ...this.data.keys(),
+        ...this.getDisplayNames().keys(),
+        ...this.nnWeights.keys(),
+      ].map((id): [string, string] => [id, id]),
     );
   }
 
@@ -1033,19 +1096,22 @@ export abstract class ModelBuilderBase {
   /** Lower the builder to the shared IR consumed by all numeric backends. */
   lower(): ModelIR {
     const order = this.sortDependencies();
-    const defs = this.intermediateDefs();
+    const defs = this.foldedIntermediateDefs();
     const intermediates = order.map((name) => ({
       name,
       expr: defs.get(name)!.fn,
     }));
     const readoutOrder = this.sortReadoutDependencies();
-    const readoutDefs = this.extraReadouts();
+    const readoutDefs = this.foldedReadouts();
     const readouts = readoutOrder.map((name) => ({
       name,
       expr: readoutDefs.get(name)!.fn,
     }));
     const mechanistic = new Map(
-      [...this.variables.keys()].map((name) => [name, this.dxdtExpr(name)]),
+      [...this.variables.keys()].map((name) => [
+        name,
+        this.foldData(this.dxdtExpr(name), `d${name}/dt`),
+      ]),
     );
     const dxdt = this.composeNNBlocks(mechanistic);
     const initialValues = this.resolveInitialValues();
@@ -1153,7 +1219,7 @@ export abstract class ModelBuilderBase {
    * expressions are emitted as their constructor source via {@link Base.toTs};
    * imports are derived from the constructors each expression uses.
    */
-  buildMxlweb(): string {
+  buildMxlweb(dataPath = "./model.data.json"): string {
     const ctors = new Set<string>();
     const collect = (expr: Base) => {
       expr.getCtors(ctors);
@@ -1165,6 +1231,11 @@ export abstract class ModelBuilderBase {
       chains.push(
         `    .addCustomUnit(${JSON.stringify(id)}, ${JSON.stringify(u)})`,
       );
+    }
+    // Data from the sidecar (`buildDataFile`), imported below.
+    for (const id of this.data.keys()) {
+      const key = JSON.stringify(id);
+      chains.push(`    .addData(${key}, data[${key}])`);
     }
     // NN blocks first, deliberately: addNNBlock always Glorot-reinitializes
     // its weights fresh from `seed` unless given an explicit trained-weights
@@ -1214,8 +1285,13 @@ export abstract class ModelBuilderBase {
             )}\n} from "@computational-biology-aachen/mxlweb-core/mathml";\n`
         : "";
 
+    const dataImport =
+      this.data.size > 0
+        ? `import data from ${JSON.stringify(dataPath)};\n`
+        : "";
+
     return `import { ${coreNames} } from "@computational-biology-aachen/mxlweb-core";
-${mathmlImport}
+${mathmlImport}${dataImport}
 export function initModel(): ${className} {
   return new ${className}()
 ${chains.join("\n")};
@@ -1241,7 +1317,11 @@ ${chains.join("\n")};
    * {@link mxlModel}); everything else is the common envelope. `modelId` is
    * required (the schema mandates it); `description` is omitted when absent.
    */
-  buildMxlJson(modelId: string, description?: string): string {
+  buildMxlJson(
+    modelId: string,
+    description?: string,
+    dataRef = "model.data.json",
+  ): string {
     const kind = this.mxlKind();
     const model = this.mxlModel();
     if (this.customUnits.size > 0) {
@@ -1251,13 +1331,33 @@ ${chains.join("\n")};
     }
     const doc: MxlJsonDocument = {
       $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/${kind}-model.schema.json`,
-      spec_version: "1.1",
+      // 1.2 adds `data_ref`; without data the document stays valid 1.1.
+      spec_version: this.data.size > 0 ? "1.2" : "1.1",
       kind,
       model_id: modelId,
       ...(description !== undefined ? { description } : {}),
+      ...(this.data.size > 0 ? { data_ref: dataRef } : {}),
       model,
     };
     return JSON.stringify(doc, null, 2);
+  }
+
+  /**
+   * The data sidecar (mxl-schemas `model-data.schema.json`) that
+   * {@link buildMxlJson}'s `data_ref` and {@link buildMxlweb}'s import name:
+   * every data set keyed by its id. Undefined for a model without data.
+   */
+  buildDataFile(): string | undefined {
+    if (this.data.size === 0) return undefined;
+    const doc: MxlDataDocument = {};
+    for (const [id, d] of this.data) {
+      doc[id] = {
+        values: [...d.values],
+        ...(d.unit !== undefined ? { unit: d.unit.toJson() } : {}),
+        ...(d.description !== undefined ? { description: d.description } : {}),
+      };
+    }
+    return `${JSON.stringify(doc, null, 2)}\n`;
   }
 
   /** Serialise an initial/parameter value to a node: a bare number becomes a `Num` node. */
@@ -1452,6 +1552,7 @@ ${chains.join("\n")};
     // Declaration-order index, used to order generated-function arguments.
     const declOrder = new Map<string, number>();
     for (const id of [
+      ...this.data.keys(),
       ...this.variables.keys(),
       ...this.parameters.keys(),
       ...this.assignments.keys(),
@@ -1499,6 +1600,11 @@ ${chains.join("\n")};
     };
 
     const body: string[] = [];
+    for (const [id, d] of this.data) {
+      body.push(
+        `m.add_data("${name(id)}", pd.Series([${d.values.map(pyFloat).join(", ")}], dtype=float))`,
+      );
+    }
     for (const [id, p] of this.parameters) {
       body.push(`m.add_parameter("${name(id)}", ${p.value}${pyMetaKwargs(p)})`);
     }
@@ -1542,6 +1648,12 @@ ${chains.join("\n")};
   protected pyUnitImportBlock(): string {
     const lines = unitsPyImports([...this.allUnits()].map(([, u]) => u));
     return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+  }
+
+  /** Import lines {@link buildMxlpy}'s data needs (`pd.Series`, and `simpson` for the `Simpson` node), with a trailing newline (empty without data). */
+  protected pyDataImportBlock(): string {
+    if (this.data.size === 0) return "";
+    return "import pandas as pd\nfrom scipy.integrate import simpson\n";
   }
 
   protected tsSlider(s: SliderArgs): string {

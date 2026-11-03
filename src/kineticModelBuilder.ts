@@ -542,7 +542,7 @@ from mxlpy.jax.models import ${nnBlockMxlpyImportNames(nnPlan.kind).join(", ")}
     return `import math
 
 import numpy as np
-${this.pyUnitImportBlock()}
+${this.pyUnitImportBlock()}${this.pyDataImportBlock()}
 from mxlpy import ${imports.join(", ")}
 ${jaxImportBlock}
 ${defsBlock}def get_model() -> Model:

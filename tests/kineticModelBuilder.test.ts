@@ -122,7 +122,7 @@ import numpy as np
 from mxlpy import InitialAssignment, Model
 
 def _init_P(k):
-    return - k
+    return - (k)
 
 def _derived_total(S, P):
     return S + P
@@ -182,7 +182,7 @@ def _rate_v(A):
     return A
 
 def _stoich_v_A(n):
-    return - n
+    return - (n)
 
 def get_model() -> Model:
     m = Model()
@@ -226,7 +226,7 @@ import sympy.physics.units as su
 from mxlpy import InitialAssignment, Model
 
 def _init_P(k):
-    return - k
+    return - (k)
 
 def _derived_total(S, P):
     return S + P

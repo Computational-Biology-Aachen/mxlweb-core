@@ -311,7 +311,7 @@ def model(
 
     lambda_ = Species_A + B_form
     first_reaction = k1 * Species_A
-    dSpecies_Adt = - first_reaction
+    dSpecies_Adt = - (first_reaction)
     dB_formdt = lambda_ * first_reaction
     return [dSpecies_Adt, dB_formdt]
 

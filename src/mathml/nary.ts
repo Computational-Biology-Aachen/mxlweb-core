@@ -702,8 +702,9 @@ export class Minus extends Nary {
     super();
   }
   toJs(): string {
+    // Parenthesised: the child may be a sum (`-(a + b)`, not `- a + b`).
     if (this.children.length === 1) {
-      return `- ${this.children[0].toJs()}`;
+      return `- (${this.children[0].toJs()})`;
     }
     return this.children
       .map((c) => c.toJs())
@@ -711,7 +712,7 @@ export class Minus extends Nary {
   }
   toPy(displayNames: Map<string, string>): string {
     if (this.children.length === 1) {
-      return `- ${this.children[0].toPy(displayNames)}`;
+      return `- (${this.children[0].toPy(displayNames)})`;
     }
     return this.children
       .map((c) => c.toPy(displayNames))

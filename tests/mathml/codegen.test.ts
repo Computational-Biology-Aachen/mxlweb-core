@@ -88,9 +88,15 @@ describe("Minus", () => {
   const y = new Name("y");
 
   it("unary negation", () => {
-    expect(new Minus([x]).toJs()).toBe("- x");
-    expect(new Minus([x]).toPy(NO_NAMES)).toBe("- x");
+    expect(new Minus([x]).toJs()).toBe("- (x)");
+    expect(new Minus([x]).toPy(NO_NAMES)).toBe("- (x)");
     expect(new Minus([x]).toTex(NO_NAMES)).toBe("- x");
+  });
+
+  it("unary negation of a sum keeps its parentheses", () => {
+    const sum = new Minus([new Add([x, y])]);
+    expect(sum.toJs()).toBe("- (x + y)");
+    expect(sum.toPy(NO_NAMES)).toBe("- (x + y)");
   });
 
   it("binary subtraction", () => {

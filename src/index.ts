@@ -11,6 +11,7 @@
  * @module
  */
 
+export * from "./data.js";
 export * from "./modelBuilderBase.js";
 export * from "./units/index.js";
 export * from "./modelIr.js";

@@ -6,6 +6,14 @@ export function pyString(s: string): string {
   return JSON.stringify(s);
 }
 
+/** `x` as a Python float expression (`float("nan")` / `float("inf")` for the non-finite values). */
+export function pyFloat(x: number): string {
+  if (Number.isNaN(x)) return 'float("nan")';
+  if (x === Infinity) return 'float("inf")';
+  if (x === -Infinity) return 'float("-inf")';
+  return String(x);
+}
+
 /** `Slider(min="…", max="…", step="…"[, desc="…"])` — an mxlpy slider configuration. */
 function pySlider(slider: SliderArgs): string {
   return `Slider(${[

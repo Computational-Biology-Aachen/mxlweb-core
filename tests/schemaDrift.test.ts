@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   kineticSchema,
+  modelDataSchema,
   odeSchema,
   steadyStateSchema,
 } from "../src/mxl/schemas.js";
@@ -20,6 +21,7 @@ const CASES: Array<[string, string, Record<string, unknown>]> = [
   ["kinetic", "kinetic-model.schema.json", kineticSchema],
   ["ode", "ode-model.schema.json", odeSchema],
   ["steady-state", "steady-state-model.schema.json", steadyStateSchema],
+  ["model-data", "model-data.schema.json", modelDataSchema],
 ];
 
 describe("vendored schemas match canonical mxl-schemas", () => {

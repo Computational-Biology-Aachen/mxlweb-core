@@ -310,7 +310,7 @@ function sumContributions(contributions: Base[] | undefined): Base {
 
 /** Rebuilds `expr` with every child mapped through `f` (children only, not
  * `expr` itself); leaves and unknown node types come back unchanged. */
-function mapChildren(expr: Base, f: (child: Base) => Base): Base {
+export function mapChildren(expr: Base, f: (child: Base) => Base): Base {
   if (expr instanceof Unary) {
     const Ctor = expr.constructor as new (child: Base) => Base;
     return new Ctor(f(expr.child));

@@ -20,11 +20,17 @@ import {
   type ModelBuilderBase,
   type SliderArgs,
 } from "./modelBuilderBase.js";
+import type { MxlDataDocument } from "./data.js";
 import type { NNBlockLayer } from "./nnBlock.js";
 import { OdeModelBuilder } from "./odeModelBuilder.js";
 import { SteadyStateModelBuilder } from "./steadyStateModelBuilder.js";
-import { kineticSchema, odeSchema, steadyStateSchema } from "./mxl/schemas.js";
-import { type CustomUnit, Unit } from "./units/index.js";
+import {
+  kineticSchema,
+  modelDataSchema,
+  odeSchema,
+  steadyStateSchema,
+} from "./mxl/schemas.js";
+import { type CustomUnit, Unit, type UnitJson } from "./units/index.js";
 
 const ajv = new Ajv2020({ strict: false });
 const validators: Record<string, ValidateFunction> = {
@@ -32,6 +38,7 @@ const validators: Record<string, ValidateFunction> = {
   ode: ajv.compile(odeSchema),
   "steady-state": ajv.compile(steadyStateSchema),
 };
+const validateData = ajv.compile(modelDataSchema);
 
 /** Revive a slider config (string bounds preserve authored precision). */
 function sliderFromEntry(slider: NonNullable<MxlEntity["slider"]>): SliderArgs {
@@ -236,12 +243,47 @@ function addNNBlocks(
   }
 }
 
+/**
+ * Revive the data a document's `data_ref` names, from the already-parsed
+ * sidecar `data` (the caller resolves and reads the file, as for
+ * `weights_ref`). Throws if the document has a `data_ref` but no sidecar was
+ * supplied.
+ */
+function addData(
+  builder: ModelBuilderBase,
+  doc: MxlJsonDocument,
+  data: MxlDataDocument | undefined,
+): void {
+  if (doc.data_ref === undefined) return;
+  if (data === undefined) {
+    throw new Error(`no data file supplied for data_ref "${doc.data_ref}"`);
+  }
+  if (!validateData(data)) {
+    throw new Error(
+      `invalid data file "${doc.data_ref}": ${ajv.errorsText(validateData.errors)}`,
+    );
+  }
+  for (const [id, entry] of Object.entries(data)) {
+    builder.addData(id, {
+      values: entry.values,
+      ...(entry.unit !== undefined
+        ? { unit: Unit.fromJson(entry.unit as UnitJson) }
+        : {}),
+      ...(entry.description !== undefined
+        ? { description: entry.description }
+        : {}),
+    });
+  }
+}
+
 function buildKinetic(
   doc: MxlJsonDocument,
   weightsByRef: Map<string, NNWeightsFile>,
+  data: MxlDataDocument | undefined,
 ): KineticModelBuilder {
   const builder = new KineticModelBuilder();
   addCustomUnits(builder, doc);
+  addData(builder, doc, data);
   addVariables(builder, doc);
   addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
@@ -263,9 +305,11 @@ function buildKinetic(
 function buildOde(
   doc: MxlJsonDocument,
   weightsByRef: Map<string, NNWeightsFile>,
+  data: MxlDataDocument | undefined,
 ): OdeModelBuilder {
   const builder = new OdeModelBuilder();
   addCustomUnits(builder, doc);
+  addData(builder, doc, data);
   addVariables(builder, doc);
   addNNBlocks(builder, doc, weightsByRef);
   addParameters(builder, doc);
@@ -279,9 +323,13 @@ function buildOde(
   return builder;
 }
 
-function buildSteadyState(doc: MxlJsonDocument): SteadyStateModelBuilder {
+function buildSteadyState(
+  doc: MxlJsonDocument,
+  data: MxlDataDocument | undefined,
+): SteadyStateModelBuilder {
   const builder = new SteadyStateModelBuilder();
   addCustomUnits(builder, doc);
+  addData(builder, doc, data);
   addParameters(builder, doc);
   addDerived(builder, doc);
   return builder;
@@ -296,6 +344,7 @@ function buildSteadyState(doc: MxlJsonDocument): SteadyStateModelBuilder {
 export function mxlJsonToModel(
   doc: string | MxlJsonDocument,
   weightsByRef: Map<string, NNWeightsFile> = new Map(),
+  data?: MxlDataDocument,
 ): ModelBuilderBase {
   const parsed: MxlJsonDocument =
     typeof doc === "string" ? JSON.parse(doc) : doc;
@@ -313,10 +362,10 @@ export function mxlJsonToModel(
 
   switch (kind) {
     case "kinetic":
-      return buildKinetic(parsed, weightsByRef);
+      return buildKinetic(parsed, weightsByRef, data);
     case "ode":
-      return buildOde(parsed, weightsByRef);
+      return buildOde(parsed, weightsByRef, data);
     case "steady-state":
-      return buildSteadyState(parsed);
+      return buildSteadyState(parsed, data);
   }
 }

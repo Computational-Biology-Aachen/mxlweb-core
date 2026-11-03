@@ -29,8 +29,8 @@ export const kineticSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
-      enum: ["1.0", "1.1"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2"],
     },
     kind: {
       type: "string",
@@ -45,6 +45,12 @@ export const kineticSchema: JsonSchema = {
     description: {
       type: "string",
       description: "Human-readable description of the model.",
+    },
+    data_ref: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Path, relative to this file, of the model's data sidecar (model-data.schema.json): named 1-D arrays such as spectra (ADR 0014). Math reaches data only through array nodes (`Simpson`, `Sum`, `Index`, ...) whose subtrees reference nothing but data and numbers, so every such subtree is a constant. Present iff the model has data.",
     },
     model: {
       type: "object",
@@ -423,7 +429,7 @@ export const kineticSchema: JsonSchema = {
     node: {
       type: "object",
       description:
-        "A math expression node. The 'type' discriminator selects the operand fields.",
+        "A math expression node. The 'type' discriminator selects the operand fields. Besides the Content MathML operators, the array nodes of ADR 0014 (Sum, Mean, Std, MaxOf, MinOf, Index, Slice, At, Simpson; operands in `children`) reduce or select from 1-D data.",
       required: ["type"],
       properties: {
         type: {
@@ -784,8 +790,8 @@ export const odeSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
-      enum: ["1.0", "1.1"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2"],
     },
     kind: {
       type: "string",
@@ -800,6 +806,12 @@ export const odeSchema: JsonSchema = {
     description: {
       type: "string",
       description: "Human-readable description of the model.",
+    },
+    data_ref: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Path, relative to this file, of the model's data sidecar (model-data.schema.json): named 1-D arrays such as spectra (ADR 0014). Math reaches data only through array nodes (`Simpson`, `Sum`, `Index`, ...) whose subtrees reference nothing but data and numbers, so every such subtree is a constant. Present iff the model has data.",
     },
     model: {
       type: "object",
@@ -1142,7 +1154,7 @@ export const odeSchema: JsonSchema = {
     node: {
       type: "object",
       description:
-        "A math expression node. The 'type' discriminator selects the operand fields.",
+        "A math expression node. The 'type' discriminator selects the operand fields. Besides the Content MathML operators, the array nodes of ADR 0014 (Sum, Mean, Std, MaxOf, MinOf, Index, Slice, At, Simpson; operands in `children`) reduce or select from 1-D data.",
       required: ["type"],
       properties: {
         type: {
@@ -1503,8 +1515,8 @@ export const steadyStateSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units; 1.0 files remain valid.",
-      enum: ["1.0", "1.1"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2"],
     },
     kind: {
       type: "string",
@@ -1519,6 +1531,12 @@ export const steadyStateSchema: JsonSchema = {
     description: {
       type: "string",
       description: "Human-readable description of the model.",
+    },
+    data_ref: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Path, relative to this file, of the model's data sidecar (model-data.schema.json): named 1-D arrays such as spectra (ADR 0014). Math reaches data only through array nodes (`Simpson`, `Sum`, `Index`, ...) whose subtrees reference nothing but data and numbers, so every such subtree is a constant. Present iff the model has data.",
     },
     model: {
       type: "object",
@@ -1637,7 +1655,7 @@ export const steadyStateSchema: JsonSchema = {
     node: {
       type: "object",
       description:
-        "A math expression node. The 'type' discriminator selects the operand fields.",
+        "A math expression node. The 'type' discriminator selects the operand fields. Besides the Content MathML operators, the array nodes of ADR 0014 (Sum, Mean, Std, MaxOf, MinOf, Index, Slice, At, Simpson; operands in `children`) reduce or select from 1-D data.",
       required: ["type"],
       properties: {
         type: {
@@ -1803,6 +1821,41 @@ export const steadyStateSchema: JsonSchema = {
         description: {
           type: "string",
         },
+      },
+    },
+  },
+};
+
+export const modelDataSchema: JsonSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/model-data.schema.json",
+  title: "Mxl model data sidecar",
+  description:
+    "The data of one model, referenced by its `data_ref` (kinetic-model.schema.json / ode-model.schema.json / steady-state-model.schema.json): named 1-D arrays such as spectra (ADR 0014). Kept out of the model file so that file stays small and diffable, as nn weights are (ADR 0008). A table is stored as one array per column; arrays sampled on a shared axis (e.g. wavelength) list that axis as an array of its own.",
+  type: "object",
+  propertyNames: {
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+  },
+  additionalProperties: {
+    type: "object",
+    required: ["values"],
+    additionalProperties: false,
+    properties: {
+      values: {
+        type: "array",
+        items: {
+          type: "number",
+        },
+        minItems: 1,
+        description: "The array's values.",
+      },
+      unit: {
+        description:
+          "Unit of every value, in the representation of the model formats' `$defs/unit` (units.json).",
+      },
+      description: {
+        type: "string",
+        description: "What the array holds.",
       },
     },
   },

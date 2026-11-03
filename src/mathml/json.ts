@@ -8,6 +8,7 @@
  * @module
  */
 
+import * as arrayNodes from "./array.js";
 import * as baseNodes from "./base.js";
 import { Base, type JsonNode, setNodeReviver } from "./base.js";
 import * as binaryNodes from "./binary.js";
@@ -19,7 +20,7 @@ import * as specialNodes from "./unary-special.js";
 type NodeClass = { fromJson(json: JsonNode): Base };
 
 /** Abstract bases that share serialisers but are never a concrete node `type`. */
-const ABSTRACT = new Set(["Nullary", "Unary", "Binary", "Nary"]);
+const ABSTRACT = new Set(["Nullary", "Unary", "Binary", "Nary", "ArrayNode"]);
 
 let registry: Record<string, NodeClass> | null = null;
 
@@ -33,6 +34,7 @@ function nodeRegistry(): Record<string, NodeClass> {
   if (registry === null) {
     registry = {};
     const modules = [
+      arrayNodes,
       baseNodes,
       binaryNodes,
       naryNodes,

@@ -239,7 +239,7 @@ ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}
     return `import math
 
 import numpy as np
-${this.pyUnitImportBlock()}
+${this.pyUnitImportBlock()}${this.pyDataImportBlock()}
 from mxlpy import ${imports.join(", ")}
 
 ${defsBlock}def get_model() -> SteadyStateModelBuilder:
