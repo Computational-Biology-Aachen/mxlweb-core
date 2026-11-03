@@ -163,6 +163,8 @@ interface FitSetup {
   targetResidualNorm?: number;
   ssTol?: number;
   ssTMax?: number;
+  /** fit_experiments.h's SOLVER_* id; defaults to RADAU5. */
+  solver?: number;
 }
 
 /** fit_init over the generalized experiment layout (fit_wrapper.c's own
@@ -224,7 +226,7 @@ function initFit(setup: FitSetup): { rc: number; dispose: () => void } {
     ptrs.dataT,
     ptrs.dataY,
     setup.nDerived ?? (setup.derivedWat ? 1 : 0),
-    0, // solver = radau5
+    setup.solver ?? 0, // solver, 0 = radau5
     1e-8,
     1e-10,
     setup.ssTol ?? 1e-6,
@@ -272,6 +274,7 @@ function runFit(
   k0: number,
   trueK: number,
   targetResidualNorm = -1,
+  solver = 0,
 ) {
   const y0Val = 10;
   const dataT = [0, 1, 2, 3, 4, 5];
@@ -288,6 +291,7 @@ function runFit(
     fitIdx: [0],
     targetKind,
     targetResidualNorm,
+    solver,
     experiments: [
       {
         kind: EXP_TIME_COURSE,
@@ -303,6 +307,11 @@ function runFit(
 describe("fit_wrapper.c: chunked LM fit recovery", () => {
   it("recovers a state-variable target from a perturbed initial guess", () => {
     const { kFinal } = runFit("state", 0.1, 0.5);
+    expect(kFinal).toBeCloseTo(0.5, 2);
+  });
+
+  it("recovers a state-variable target with LSODA", () => {
+    const { kFinal } = runFit("state", 0.1, 0.5, -1, 3); // SOLVER_LSODA
     expect(kFinal).toBeCloseTo(0.5, 2);
   });
 
@@ -521,6 +530,26 @@ describe("fit_wrapper.c: steady states", () => {
 });
 
 describe("radau5_wrapper.c: output buffer", () => {
+  it.each(["_run_radau5", "_run_lsoda"] as const)(
+    "%s integrates backward in time, as the adjoint fit needs",
+    (run) => {
+      // dY/dt = -k*Y from t=5 back to 0: Y(0) = Y(5) * exp(5k).
+      const modelIdx = compileWatFn(rhsWat);
+      mod._set_model_fn(modelIdx);
+      mod._init_output(0, 1);
+      const y = allocF64([1]);
+      const pars = allocF64([0.5]);
+      const idid = mod[run](1, 5, 0, y, pars, 1e-10, 1e-12, 0, 500000);
+      const y0 = mod.HEAPF64[y / 8];
+      mod._free_output();
+      mod._free(y);
+      mod._free(pars);
+      mod.removeFunction(modelIdx);
+      expect(idid).toBeGreaterThan(0);
+      expect(Math.abs(y0 - Math.exp(2.5)) / Math.exp(2.5)).toBeLessThan(1e-7);
+    },
+  );
+
   it("grows past its initial capacity instead of dropping steps", () => {
     // dY/dt = -k*Y over a long horizon at tight tolerances takes far more
     // accepted steps than the deliberately tiny initial capacity.

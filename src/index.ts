@@ -37,7 +37,7 @@ export interface SimulationRequest {
   // Required; don't change!
   requestId: string;
   rhsFn?: string;
-  /** WAT module string for native WASM backend (method === 'radau5') */
+  /** WAT module string for the native WASM backend (method 'radau5', 'dop853', 'dopri5' or 'lsoda') */
   rhsWat?: string;
   allDerivedFn: string;
   selectDerivedFn: string;
@@ -60,7 +60,7 @@ export interface SimulationRequest {
   atol?: number;
   /**
    * Output exactly these ascending times from the solver's own dense output,
-   * instead of `nTimePoints` interpolated ones. WASM RADAU5 only.
+   * instead of `nTimePoints` interpolated ones. WASM RADAU5 and LSODA only.
    */
   tEval?: number[];
   /** Integrate until steady, returning that one state. WASM only. */
@@ -100,13 +100,13 @@ export interface SimulationResult {
 /**
  * Fitting a model's parameters to uploaded data (ADR 0004 in the mxlweb repo)
  * runs entirely inside the WASM backend: `fitWorker.ts` vendors cminpack's
- * `lmdif` alongside the Radau5/DOP853/DOPRI5 integrators (mxlweb-core's
+ * `lmdif` alongside the Radau5/DOP853/DOPRI5/LSODA integrators (mxlweb-core's
  * `build:wasm`), so the fit's inner loop never crosses the JS↔WASM boundary
  * per trial parameter set. Fitting runs in chunks — call {@link FitChunkRequest}
  * repeatedly and report {@link FitProgress} between chunks — so the caller can
  * show live progress and cancel by simply not requesting the next chunk.
  */
-export type FitSolver = "radau5" | "dop853" | "dopri5";
+export type FitSolver = "radau5" | "dop853" | "dopri5" | "lsoda";
 
 /**
  * Which algorithm actually ran a fit session (ADR 0005). Chosen once, inside

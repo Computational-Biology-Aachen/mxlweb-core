@@ -23,6 +23,8 @@ extern int run_dop853(int n, double t_start, double t_end, double *y, double *rp
                        double rtol, double atol, double h_init, int nmax);
 extern int run_dopri5(int n, double t_start, double t_end, double *y, double *rpar,
                        double rtol, double atol, double h_init, int nmax);
+extern int run_lsoda(int n, double t_start, double t_end, double *y, double *rpar,
+                       double rtol, double atol, double h_init, int nmax);
 extern void eval_rhs(int n, double t, double *y, double *dydt, double *pars);
 
 DerivedFn g_derived_fn = NULL;
@@ -193,6 +195,8 @@ int exp_integrate(const ExpProblem *P, ModelFn fn, int n, double t0, double t1, 
       return run_dop853(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
     case SOLVER_DOPRI5:
       return run_dopri5(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
+    case SOLVER_LSODA:
+      return run_lsoda(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
     default:
       return run_radau5_fit(n, t0, t1, y, pars, P->rtol, P->atol, 0.0, 500000);
   }

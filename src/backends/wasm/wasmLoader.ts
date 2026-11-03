@@ -45,13 +45,25 @@ export interface EmscriptenModule {
     hInit: number,
     nmax: number,
   ): number;
+  /** SciPy's C LSODA, vendored from mxl-solvers. Same contract as `_run_radau5`. */
+  _run_lsoda(
+    n: number,
+    tStart: number,
+    tEnd: number,
+    yPtr: number,
+    rparPtr: number,
+    rtol: number,
+    atol: number,
+    hInit: number,
+    nmax: number,
+  ): number;
   _set_model_fn(tableIdx: number): void;
   _init_output(capacity: number, dim: number): void;
   _free_output(): void;
   _get_out_n(): number;
   _get_out_t(): number; // pointer
   _get_out_y(): number; // pointer
-  /** Record `run_radau5`'s next run at these times only (radau5_wrapper.c). */
+  /** Record the next `run_radau5` or `run_lsoda` at these times only (radau5_wrapper.c). */
   _set_output_grid(tPtr: number, n: number): void;
   /** Fit-only exports (fit_wrapper.c) — unused by the plain simulation worker. */
   _set_derived_fn(tableIdx: number): void;

@@ -129,10 +129,80 @@ describe("simulate", () => {
     ).rejects.toThrow(/No steady state/);
   });
 
+  it("rejects tEval for a solver without dense output", async () => {
+    await expect(run({ method: "dop853", tEval: [0, 1] })).rejects.toThrow(
+      /RADAU5 and LSODA/,
+    );
+  });
+
   it("returns dy/dt per output point", async () => {
     const res = await run({ pars: [3, 2], tEval: [0, 1], returnRhs: true });
     res.rhs!.forEach(([dy], i) => {
       expect(dy).toBeCloseTo(3 - 2 * res.values[i][0], 10);
     });
+  });
+});
+
+describe.each(["radau5", "lsoda", "dop853", "dopri5"])(
+  "simulate with %s",
+  (method) => {
+    it("matches the analytic solution on the interpolated output", async () => {
+      const res = await run({ method, nTimePoints: 11 });
+      expect(res.time).toHaveLength(11);
+      // Output points are linearly interpolated between the solver's own steps,
+      // which high-order solvers take far apart, so only the endpoint is exact.
+      res.values.forEach(([v], i) => {
+        const want = exact(res.time[i], 2, 0, 1);
+        expect(Math.abs(v - want) / want).toBeLessThan(5e-2);
+      });
+      const want = exact(10, 2, 0, 1);
+      expect(Math.abs(res.finalState[0] - want) / want).toBeLessThan(1e-7);
+    });
+
+    it("follows a protocol's parameter changes", async () => {
+      const res = await run({
+        method,
+        tEnd: 0,
+        protocol: [
+          { t_end: 1, k: 1 },
+          { t_end: 3, k: 2 },
+        ],
+      });
+      const want = exact(2, exact(1, 2, 0, 1), 0, 2);
+      expect(Math.abs(res.finalState[0] - want) / want).toBeLessThan(1e-7);
+    });
+
+    it("finds a steady state", async () => {
+      const res = await run({ method, pars: [3, 2], steadyState: {} });
+      expect(res.values[0][0]).toBeCloseTo(1.5, 5);
+    });
+  },
+);
+
+describe("simulate with lsoda", () => {
+  it("outputs exactly the requested times", async () => {
+    const tEval = [0, 1e-6, 1e-3, 0.1, 1.2345, 7, 10];
+    const res = await run({ method: "lsoda", tEval });
+    expect(res.time).toEqual(tEval);
+    res.values.forEach(([v], i) => {
+      const want = exact(tEval[i], 2, 0, 1);
+      expect(Math.abs(v - want) / want).toBeLessThan(1e-6);
+    });
+  });
+
+  it("assigns tEval across protocol segments", async () => {
+    const res = await run({
+      method: "lsoda",
+      tEnd: 0,
+      protocol: [
+        { t_end: 1, k: 1 },
+        { t_end: 3, k: 2 },
+      ],
+      tEval: [0, 0.5, 1, 2, 3],
+    });
+    expect(res.time).toEqual([0, 0.5, 1, 2, 3]);
+    const atSwitch = exact(1, 2, 0, 1);
+    expect(res.values[2][0]).toBeCloseTo(atSwitch, 7);
+    expect(res.values[4][0]).toBeCloseTo(exact(2, atSwitch, 0, 2), 7);
   });
 });

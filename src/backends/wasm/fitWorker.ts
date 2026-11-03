@@ -118,6 +118,7 @@ const SOLVER_ID: Record<FitSolver, number> = {
   radau5: 0,
   dop853: 1,
   dopri5: 2,
+  lsoda: 3, // fit_experiments.h's SOLVER_LSODA
 };
 
 // Matches fit_wrapper.c's FIT_TARGET_REACHED — negative (so lmdif itself

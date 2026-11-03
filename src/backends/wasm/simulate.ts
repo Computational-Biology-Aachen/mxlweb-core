@@ -6,7 +6,9 @@
 import type { SimulationRequest } from "../../index.js";
 import type { EmscriptenModule } from "./wasmLoader.js";
 
-type WasmSolver = "radau5" | "dop853" | "dopri5";
+type WasmSolver = "radau5" | "dop853" | "dopri5" | "lsoda";
+/** Solvers that can output exactly the requested `tEval` times. */
+const DENSE_SOLVERS: ReadonlySet<WasmSolver> = new Set(["radau5", "lsoda"]);
 type RhsFn = (n: number, t: number, y: number, f: number, p: number) => void;
 
 export const DEFAULT_RTOL = 1e-6;
@@ -76,12 +78,12 @@ function runSegment(
       mod._set_output_grid(gridPtr, grid.length);
     }
 
-    const runFn =
-      solver === "dop853"
-        ? mod._run_dop853
-        : solver === "dopri5"
-          ? mod._run_dopri5
-          : mod._run_radau5;
+    const runFn = {
+      radau5: mod._run_radau5,
+      dop853: mod._run_dop853,
+      dopri5: mod._run_dopri5,
+      lsoda: mod._run_lsoda,
+    }[solver];
     const idid = runFn(n, tStart, tEnd, yPtr, rparPtr, rtol, atol, 0, 500000);
 
     if (idid < 0) {
@@ -213,9 +215,13 @@ export async function simulate(
   } = req;
 
   const solver: WasmSolver =
-    method === "dop853" ? "dop853" : method === "dopri5" ? "dopri5" : "radau5";
-  if (tEval && solver !== "radau5") {
-    throw new Error(`tEval is only supported by RADAU5, not ${solver}`);
+    method === "dop853" || method === "dopri5" || method === "lsoda"
+      ? method
+      : "radau5";
+  if (tEval && !DENSE_SOLVERS.has(solver)) {
+    throw new Error(
+      `tEval is only supported by RADAU5 and LSODA, not ${solver}`,
+    );
   }
   if (!rhsWat) throw new Error("rhsWat missing for WASM solver");
 

@@ -60,4 +60,9 @@ repos vendor from:
   solvers in mxl-solvers and re-vendor them instead of editing them here.
 - The wrappers (`*_wrapper.c`), `fit_experiments.*` and `minpack/` stay in this repo.
 
-mxl-solvers also carries SciPy's C LSODA. It isn't built into `radau5.wasm` yet.
+mxl-solvers also carries SciPy's C LSODA (`lsoda.c`, with `mxs_lapack.c` standing in
+for BLAS/LAPACK), vendored into `src-c/` too. Unlike the Hairer solvers it isn't f2c
+output, but it follows the same rule: an established reference implementation, here the
+exact code `scipy.integrate` runs, rather than new numerics. `run_lsoda`
+(`radau5_wrapper.c`) has `run_radau5`'s contract, including `set_output_grid`, so
+`method: "lsoda"` supports `tEval`, protocols, steady states and fits (`FitSolver`).

@@ -1,9 +1,10 @@
 /*
  * radau5_wrapper.c — Clean C API over f2c-generated ODE solvers
  *
- * Contains wrappers for RADAU5 (stiff), DOP853 (explicit RK8(5,3)) and
- * DOPRI5 (explicit RK4(5)). All three share a single output buffer and
- * model-function slot — only one solver runs at a time.
+ * Contains wrappers for RADAU5 (stiff), DOP853 (explicit RK8(5,3)), DOPRI5
+ * (explicit RK4(5)) and LSODA (Adams/BDF, switching automatically). All four
+ * share a single output buffer and model-function slot — only one solver runs
+ * at a time. The solvers themselves are vendored from mxl-solvers (VENDORED).
  *
  * Model function signature (WAT side must match):
  *   void model_fn(int n, double t, double* y, double* dydt, double* pars)
@@ -11,6 +12,7 @@
  */
 
 #include "f2c.h"
+#include "lsoda.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -152,11 +154,12 @@ void eval_rhs(int n, double t, double *y, double *dydt, double *pars) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Optional output grid (RADAU5 only)                                  */
+/* Optional output grid (RADAU5 and LSODA)                             */
 /* ------------------------------------------------------------------ */
 /* When set, run_radau5 records the collocation polynomial at exactly these
- * ascending times instead of one point per accepted step. Consumed by the next
- * run_radau5 and then cleared; the array must stay valid until it returns. */
+ * ascending times instead of one point per accepted step, and run_lsoda its
+ * own interpolant. Consumed by the next run_radau5 or run_lsoda and then
+ * cleared; the array must stay valid until it returns. */
 static const double *grid_t = NULL;
 static int grid_n = 0;
 static int grid_i = 0;
@@ -436,4 +439,91 @@ int run_dopri5(int n, double t_start, double t_end,
     free(work);
     free(iwork);
     return (int)IDID;
+}
+
+/* ================================================================== */
+/* LSODA — SciPy's C translation of Hindmarsh's ODEPACK LSODA         */
+/* ================================================================== */
+
+/* LSODA's right-hand side takes no parameter array. */
+static double *g_lsoda_rpar = NULL;
+
+static void lsoda_dispatch(int *n, double *t, double *y, double *dydt) {
+    if (g_model_fn) g_model_fn(*n, *t, y, dydt, g_lsoda_rpar);
+}
+
+/*
+ * run_lsoda — same contract as run_radau5. Records every step, or, with
+ * set_output_grid, exactly the grid times from LSODA's own interpolant. nmax
+ * caps the total number of steps. Like Hairer's solvers it integrates
+ * backward when t_end < t_start (the adjoint fit relies on that); a grid is
+ * then expected in decreasing order.
+ *
+ * Returns 1 on success, or LSODA's negative ISTATE: -1 too many steps,
+ * -2 too much accuracy requested, -3 bad input, -4 repeated error test
+ * failures, -5 repeated convergence failures, -6 an error weight became zero.
+ * Returns -9 if allocation fails.
+ */
+int run_lsoda(int n, double t_start, double t_end,
+              double *y, double *rpar,
+              double rtol, double atol,
+              double h_init, int nmax) {
+    const int NMAX = (nmax > 0) ? nmax : 100000;
+    /* Work array sizes as in SciPy's odepack: Adams up to order 12, BDF up to 5,
+     * full internal Jacobian (JT = 2). */
+    const int lrn = 20 + n * 13 + 3 * n, lrs = 20 + n * 6 + 3 * n + n * n + 2;
+    const int lrw = lrn > lrs ? lrn : lrs, liw = 20 + n;
+    double *rwork = (double *)calloc((size_t)lrw, sizeof(double));
+    int *iwork = (int *)calloc((size_t)liw, sizeof(int));
+    if (!rwork || !iwork) {
+        free(rwork);
+        free(iwork);
+        clear_output_grid();
+        return -9;
+    }
+    int istate = 1, iopt = 1, itask;
+    rwork[4] = h_init; /* RWORK(5): first step size, 0 = LSODA's own guess */
+    iwork[5] = NMAX;   /* IWORK(6): steps allowed per call */
+    lsoda_common_struct_t S;
+    memset(&S, 0, sizeof S);
+    g_lsoda_rpar = rpar;
+    double t = t_start;
+    const double dir = t_end >= t_start ? 1.0 : -1.0;
+
+    if (grid_t) {
+        itask = 1; /* integrate past each grid time, then interpolate back */
+        for (; grid_i < grid_n && istate > 0; grid_i++) {
+            double tout = grid_t[grid_i];
+            if ((tout - t_end) * dir > 0) break;
+            if ((tout - t) * dir > 0) {
+                lsoda(lsoda_dispatch, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt,
+                      rwork, lrw, iwork, liw, NULL, 2, &S);
+                if (istate < 0) break;
+            }
+            record_point(tout, y);
+        }
+        if (istate > 0 && (t_end - t) * dir > 0) {
+            /* Finish the segment, so y is the state at t_end. */
+            double tout = t_end;
+            lsoda(lsoda_dispatch, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt,
+                  rwork, lrw, iwork, liw, NULL, 2, &S);
+        }
+    } else {
+        itask = 5;          /* one step at a time, never past t_end */
+        rwork[0] = t_end;   /* RWORK(1): TCRIT */
+        record_point(t, y);
+        while ((t_end - t) * dir > 0 && istate > 0) {
+            double tout = t_end;
+            lsoda(lsoda_dispatch, n, y, &t, &tout, 1, &rtol, &atol, &itask, &istate, &iopt,
+                  rwork, lrw, iwork, liw, NULL, 2, &S);
+            if (istate > 0) record_point(t, y);
+            if (iwork[10] > NMAX) istate = -1; /* IWORK(11): steps so far */
+        }
+    }
+    if (istate > 0 && iwork[10] > NMAX) istate = -1;
+
+    free(rwork);
+    free(iwork);
+    clear_output_grid();
+    return istate < 0 ? istate : 1;
 }

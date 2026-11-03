@@ -1,9 +1,10 @@
 /**
- * wasmWorker.ts — native WASM backend (radau5 / dop853 / dopri5)
+ * wasmWorker.ts — native WASM backend (radau5 / dop853 / dopri5 / lsoda)
  *
  * Architecture:
  *   1. On __INIT__: load Emscripten module from static/wasm/radau5.js
- *      (contains RADAU5, DOP853, DOPRI5 — all compiled from Fortran via f2c)
+ *      (contains RADAU5, DOP853, DOPRI5 — compiled from Fortran via f2c — and
+ *      SciPy's C LSODA, all vendored from mxl-solvers)
  *   2. Per request:
  *      a. JIT-compile WAT string → model WASM (shares Emscripten memory)
  *      b. Register model function in function table

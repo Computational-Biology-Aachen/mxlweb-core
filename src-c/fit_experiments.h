@@ -27,7 +27,7 @@ extern DerivedFn g_derived_grad_fn;
 /* Exported from radau5_wrapper.c. */
 extern ModelFn get_model_fn(void);
 
-enum { SOLVER_RADAU5 = 0, SOLVER_DOP853 = 1, SOLVER_DOPRI5 = 2 };
+enum { SOLVER_RADAU5 = 0, SOLVER_DOP853 = 1, SOLVER_DOPRI5 = 2, SOLVER_LSODA = 3 };
 
 #define TARGET_STATE 0
 #define TARGET_DERIVED 1
