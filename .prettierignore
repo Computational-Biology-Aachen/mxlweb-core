@@ -10,7 +10,6 @@ dist/
 static/
 tmp/
 src-c/
-src-fortran/
 
 # Local Claude Code settings
 .claude/

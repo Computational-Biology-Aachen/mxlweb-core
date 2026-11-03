@@ -1,5 +1,4 @@
 node_modules
 src-c
-src-fortran
 tests
 .env

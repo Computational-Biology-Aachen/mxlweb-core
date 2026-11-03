@@ -1,7 +1,7 @@
 # ADR 0005: Vendor Hairer's Fortran Solvers (via C, via Emscripten) — Not Rust, Not New Numerics
 
 **Status:** Implemented
-**Scope:** `src-fortran/`, `src-c/`, `src/backends/wasm/`, `npm run build:wasm`
+**Scope:** `src-c/` (vendored from mxl-solvers, see §5), `src/backends/wasm/`, `npm run build:wasm`
 
 ---
 
@@ -44,3 +44,20 @@ language choice; Rust specifically was never part of this design.
   numerics.
 - Keep the meta-repo's cross-repo documentation (`CLAUDE.md`) in sync if this backend's
   implementation language ever changes — it was already found stale once.
+
+## 5. Update (2026-11): solvers live in mxl-solvers
+
+MxlPy's `Native` integrator compiles the same Hairer solvers, and its hand copy drifted
+from `src-c/` once (the `radau5.c` fixes landed in MxlPy first). The Fortran originals
+and the f2c'd solvers now live in
+[mxl-solvers](https://github.com/Computational-Biology-Aachen/mxl-solvers), which both
+repos vendor from:
+
+- `src-fortran/` was removed; the originals are in mxl-solvers' `fortran/`.
+- `radau5.c`, `dc_decsol.c`, `decsol.c`, `dop853.c`, `dopri5.c`, `f2c.h` and
+  `libf2c_stubs.c` in `src-c/` are copied by mxl-solvers' `scripts/vendor.sh`, which
+  writes `src-c/VENDORED`. `tests/vendoredSolvers.test.ts` checks those hashes, so fix
+  solvers in mxl-solvers and re-vendor them instead of editing them here.
+- The wrappers (`*_wrapper.c`), `fit_experiments.*` and `minpack/` stay in this repo.
+
+mxl-solvers also carries SciPy's C LSODA. It isn't built into `radau5.wasm` yet.

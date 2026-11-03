@@ -1,0 +1,10 @@
+# Vendored from https://github.com/Computational-Biology-Aachen/mxl-solvers at 497e21745295b74821db0e1b836812edbc180e29.
+# Don't edit these files here: change mxl-solvers, then re-run its scripts/vendor.sh.
+da5d9b896c422aa002b6d8fc3c7003a6e6345454afd700ae65fa3cd944ab12e5  radau5.c
+8d2173c6ae898e77a71c2dc52e027ce2b6185d91170bd5f031b185aff6e1d354  dc_decsol.c
+9dc2c0ede63b1511813fbde4300c23a6c1e0536e4d316c6fd5492ae0f20d8195  decsol.c
+7d8f8f994e1c477fd023e0197fb7efde6287900010e96de3a3f188bc961cfb51  dop853.c
+41652bfb7aa54277f9d2dff987a0c7cdbc63e68dac94a644daccf5c8ecd491b5  dopri5.c
+cf5d31866e63553809a79416b6baa957be45e3c03a5da59254fbbb317c735cfc  f2c.h
+5ab404a0cbf7e02c21105b9f8322cb65ef78e10f40937740a9cc90b36796b8b8  libf2c_stubs.c
+49bcfad0e3bbe5c3a0428624254567f32786948332a3204fc1e35b8b2a02b0fd  HAIRER-LICENCE.txt

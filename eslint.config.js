@@ -9,7 +9,7 @@ const gitignorePath = fileURLToPath(new URL("./.gitignore", import.meta.url));
 
 export default ts.config(
   includeIgnoreFile(gitignorePath),
-  { ignores: ["dist/", "static/", "tmp/", "src-c/", "src-fortran/"] },
+  { ignores: ["dist/", "static/", "tmp/", "src-c/"] },
   js.configs.recommended,
   ...ts.configs.recommended,
   prettier,
