@@ -46,7 +46,13 @@ function close(actual: Value, expected: Value): void {
 describe.skipIf(fixtures === undefined)(
   "mxl-schemas expression fixtures",
   () => {
-    const { columns, cases, errors } = fixtures!;
+    // vitest still runs a skipped suite's factory to collect its tests, so
+    // it must not touch the missing fixtures.
+    const { columns, cases, errors } = fixtures ?? {
+      columns: {},
+      cases: [],
+      errors: [],
+    };
     const resolveName = (name: string) => {
       const v = columns[name];
       if (v === undefined) throw new Error(`unknown reference ${name}`);
