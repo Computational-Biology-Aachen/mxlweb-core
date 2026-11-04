@@ -1,4 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
+import { DataSet } from "./data.js";
 import {
   Add,
   Base,
@@ -155,6 +156,7 @@ export function getTexNames(
   parameters: Iterable<[string, Parameter]>,
   assignments: Iterable<[string, Assign]>,
   reactions: Iterable<[string, Reaction]>,
+  data: Iterable<[string, DataSet]>,
 ): Map<string, string> {
   const texNames: Map<string, string> = new Map();
 
@@ -176,6 +178,11 @@ export function getTexNames(
   for (const [name, rxn] of reactions) {
     if (rxn.texName) {
       texNames.set(name, rxn.texName || defaultTexName(name));
+    }
+  }
+  for (const [name, ds] of data) {
+    if (ds.texName) {
+      texNames.set(name, ds.texName || defaultTexName(name));
     }
   }
   return texNames;
@@ -381,6 +388,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       this.parameters.entries(),
       this.assignments.entries(),
       this.reactions.entries(),
+      this.data.entries(),
     );
 
     // Collect rhs terms per variable — this.reactions never contains a

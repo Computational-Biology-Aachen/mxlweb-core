@@ -26,6 +26,8 @@ export type DataSet = {
   values: number[];
   unit?: Unit;
   description?: string;
+  displayName?: string;
+  texName?: string;
 };
 
 /** The data sidecar file (mxl-schemas `model-data.schema.json`): data sets keyed by id. */
