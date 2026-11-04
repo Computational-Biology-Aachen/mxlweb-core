@@ -42,6 +42,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.parameters = new SvelteMap(this.parameters);
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
+    cl.data = new SvelteMap(this.data);
     cl.differentials = new SvelteMap(this.differentials);
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);

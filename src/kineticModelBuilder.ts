@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { DataSet } from "./data.js";
+import type { DataSet } from "./data.js";
 import {
   Add,
   Base,
@@ -225,6 +225,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.parameters = new SvelteMap(this.parameters);
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
+    cl.data = new SvelteMap(this.data);
     cl.reactions = new SvelteMap(this.reactions);
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);

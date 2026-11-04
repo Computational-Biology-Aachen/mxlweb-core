@@ -153,6 +153,14 @@ describe("model data", () => {
     expect(() => model.lower()).not.toThrow();
   });
 
+  it("clone() keeps data, independently of the original", () => {
+    const model = spectralModel();
+    const cl = model.clone();
+    expect(() => cl.lower()).not.toThrow();
+    cl.updateData("light", { values: peak.map((v) => 2 * v) });
+    expect(model.data.get("light")!.values).toEqual(peak);
+  });
+
   it("initial values see folded data", () => {
     const model = spectralModel().updateVariable("x", {
       value: new Name("absorbed"),

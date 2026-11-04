@@ -37,6 +37,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     cl.parameters = new SvelteMap(this.parameters);
     cl.variables = new SvelteMap(this.variables);
     cl.assignments = new SvelteMap(this.assignments);
+    cl.data = new SvelteMap(this.data);
     cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
