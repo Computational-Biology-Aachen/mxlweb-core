@@ -7,11 +7,45 @@
  */
 import { mathImports } from "./wat-codegen.js";
 
-export interface EmscriptenModule {
+/** What `simulate()` needs from either runtime: the model slot and output
+ * buffer of solver_common.c, plus Emscripten's memory and function table. */
+export interface SimulationModule {
   addFunction(fn: (...args: unknown[]) => unknown, sig: string): number;
   removeFunction(idx: number): void;
   _malloc(size: number): number;
   _free(ptr: number): void;
+  _set_model_fn(tableIdx: number): void;
+  _init_output(capacity: number, dim: number): void;
+  _free_output(): void;
+  _get_out_n(): number;
+  _get_out_t(): number; // pointer
+  _get_out_y(): number; // pointer
+  /** Record the next `run_radau5`, `run_lsoda` or `run_cvode` at these times only. */
+  _set_output_grid(tPtr: number, n: number): void;
+  HEAPF64: Float64Array;
+  wasmMemory: WebAssembly.Memory;
+}
+
+/** static/wasm/cvode.{js,wasm}: SUNDIALS' CVODE, loaded only when a `cvode_*`
+ * method runs (cvode_wrapper.c). */
+export interface CvodeModule extends SimulationModule {
+  /** Same contract as `_run_lsoda`; `adams` = 1 for Adams-Moulton, 0 for BDF. */
+  _run_cvode(
+    n: number,
+    tStart: number,
+    tEnd: number,
+    yPtr: number,
+    rparPtr: number,
+    rtol: number,
+    atol: number,
+    hInit: number,
+    nmax: number,
+    adams: number,
+  ): number;
+}
+
+/** static/wasm/radau5.{js,wasm}: Hairer's solvers, LSODA and the fit drivers. */
+export interface EmscriptenModule extends SimulationModule {
   _run_radau5(
     n: number,
     tStart: number,
@@ -57,14 +91,6 @@ export interface EmscriptenModule {
     hInit: number,
     nmax: number,
   ): number;
-  _set_model_fn(tableIdx: number): void;
-  _init_output(capacity: number, dim: number): void;
-  _free_output(): void;
-  _get_out_n(): number;
-  _get_out_t(): number; // pointer
-  _get_out_y(): number; // pointer
-  /** Record the next `run_radau5` or `run_lsoda` at these times only (radau5_wrapper.c). */
-  _set_output_grid(tPtr: number, n: number): void;
   /** Fit-only exports (fit_wrapper.c) — unused by the plain simulation worker. */
   _set_derived_fn(tableIdx: number): void;
   /** Derived-target gradients for the gradient fit backends (ADR 0009). */
@@ -219,24 +245,37 @@ export interface EmscriptenModule {
   _jacobian_get_predictions(outPtr: number): number;
   /** See `_fit_set_progress_fn`'s doc comment. */
   _jacobian_set_progress_fn(tableIdx: number): void;
-  HEAPF64: Float64Array;
   HEAP32: Int32Array;
-  wasmMemory: WebAssembly.Memory;
 }
 
-export async function loadRadau(base: string): Promise<EmscriptenModule> {
-  const glueUrl = `${base}/wasm/radau5.js`;
+/** The Emscripten runtimes under static/wasm/, by file name and the factory
+ * name their glue defines (EXPORT_NAME in scripts/build-wasm.sh). */
+export const RUNTIMES = {
+  radau5: "RadauModule",
+  cvode: "CvodeModule",
+} as const;
+export type Runtime = keyof typeof RUNTIMES;
+
+async function loadRuntime<T>(base: string, runtime: Runtime): Promise<T> {
+  const glueUrl = `${base}/wasm/${runtime}.js`;
   const response = await fetch(glueUrl);
   if (!response.ok) {
-    throw new Error(`Failed to load RADAU5 WASM glue from ${glueUrl}`);
+    throw new Error(`Failed to load ${runtime} WASM glue from ${glueUrl}`);
   }
   const js = await response.text();
   // Emscripten MODULARIZE=1 output: eval returns a factory function
-  const factory = new Function(js + "\nreturn RadauModule;")();
-  const mod: EmscriptenModule = await factory({
-    locateFile: (f: string) => `${base}/wasm/${f}`,
-  });
-  return mod;
+  const factory = new Function(`${js}\nreturn ${RUNTIMES[runtime]};`)();
+  return factory({ locateFile: (f: string) => `${base}/wasm/${f}` });
+}
+
+export function loadRadau(base: string): Promise<EmscriptenModule> {
+  return loadRuntime(base, "radau5");
+}
+
+/** Fetches cvode.wasm (~110 kB) on first use only, so sites that never pick
+ * a CVODE method never download it. */
+export function loadCvode(base: string): Promise<CvodeModule> {
+  return loadRuntime(base, "cvode");
 }
 
 // ------------------------------------------------------------
@@ -297,7 +336,7 @@ function hashStr(s: string): string {
  * Emscripten module's linear memory (see buildModelWat / buildDerivedWat). */
 export async function compileModel(
   wat: string,
-  emMod: EmscriptenModule,
+  emMod: SimulationModule,
   basePath: string,
 ): Promise<WebAssembly.Instance> {
   return compileModelWith(wat, emMod, (code) => watToWasm(code, basePath));
@@ -307,7 +346,7 @@ export async function compileModel(
  * fetch it (see nodeLoader.ts). */
 export async function compileModelWith(
   wat: string,
-  emMod: EmscriptenModule,
+  emMod: SimulationModule,
   toWasm: (wat: string) => Uint8Array | Promise<Uint8Array>,
 ): Promise<WebAssembly.Instance> {
   const key = hashStr(wat);

@@ -49,8 +49,19 @@ npm run dev          # tsx watch on src/index.ts
 npm run build        # tsc → dist/
 npm run typecheck    # tsc --noEmit
 npm run test         # vitest
-npm run build:wasm   # emcc → static/wasm/radau5.js (requires Emscripten)
+npm run build:wasm   # emcc → static/wasm/{radau5,cvode}.{js,wasm} (requires Emscripten)
 ```
+
+## WASM solvers
+
+The WASM backend fetches its Emscripten runtimes from `<base>/wasm/` at runtime, so sites copy `static/wasm/` as is and bundlers never see (or tree-shake) them:
+
+| File               | Solvers                                                                                                        | Loaded                                 |
+| ------------------ | -------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `radau5.{js,wasm}` | RADAU5, DOP853, DOPRI5 (Hairer & Wanner), LSODA (SciPy), plus the fit drivers                                  | when the worker starts                 |
+| `cvode.{js,wasm}`  | CVODE BDF and Adams ([SUNDIALS](https://github.com/LLNL/sundials) v7.9.0), methods `cvode_bdf` / `cvode_adams` | only on the first `cvode_*` simulation |
+
+The solvers are vendored from [mxl-solvers](https://github.com/Computational-Biology-Aachen/mxl-solvers) into `src-c/` (see `src-c/VENDORED`); its README lists the papers to cite for SUNDIALS. `static/wasm/THIRD-PARTY-LICENCES.txt` carries their licences next to the binaries. CVODE is simulation only: fits always run RADAU5.
 
 Consumers import the `svelte` export condition (`src/`) at build time but resolve to `dist/` at runtime, so **run `npm run build` after editing `src/`** — `vitest` and dependent sites pick up `dist/`, not `src/`.
 

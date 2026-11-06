@@ -4,11 +4,73 @@
  * makes it usable headless.
  */
 import type { SimulationRequest } from "../../index.js";
-import type { EmscriptenModule } from "./wasmLoader.js";
+import type {
+  CvodeModule,
+  EmscriptenModule,
+  Runtime,
+  SimulationModule,
+} from "./wasmLoader.js";
 
-type WasmSolver = "radau5" | "dop853" | "dopri5" | "lsoda";
+const WASM_SOLVERS = [
+  "radau5",
+  "dop853",
+  "dopri5",
+  "lsoda",
+  "cvode_bdf",
+  "cvode_adams",
+] as const;
+type WasmSolver = (typeof WASM_SOLVERS)[number];
 /** Solvers that can output exactly the requested `tEval` times. */
-const DENSE_SOLVERS: ReadonlySet<WasmSolver> = new Set(["radau5", "lsoda"]);
+const DENSE_SOLVERS: ReadonlySet<WasmSolver> = new Set([
+  "radau5",
+  "lsoda",
+  "cvode_bdf",
+  "cvode_adams",
+]);
+
+/** The solver a request's `method` picks; anything unknown runs RADAU5. */
+export function wasmSolver(method: string): WasmSolver {
+  return (WASM_SOLVERS as readonly string[]).includes(method)
+    ? (method as WasmSolver)
+    : "radau5";
+}
+
+/** Which Emscripten runtime (static/wasm/<runtime>.wasm) a method runs in. */
+export function runtimeFor(method: string): Runtime {
+  return wasmSolver(method).startsWith("cvode_") ? "cvode" : "radau5";
+}
+
+type RunFn = (
+  n: number,
+  tStart: number,
+  tEnd: number,
+  yPtr: number,
+  rparPtr: number,
+  rtol: number,
+  atol: number,
+  hInit: number,
+  nmax: number,
+) => number;
+
+function runFnFor(mod: SimulationModule, solver: WasmSolver): RunFn {
+  if (solver === "cvode_bdf" || solver === "cvode_adams") {
+    if (!("_run_cvode" in mod)) {
+      throw new Error(`${solver} needs the cvode runtime (loadCvode)`);
+    }
+    const adams = solver === "cvode_adams" ? 1 : 0;
+    return (...args) => (mod as CvodeModule)._run_cvode(...args, adams);
+  }
+  if (!("_run_radau5" in mod)) {
+    throw new Error(`${solver} needs the radau5 runtime (loadRadau)`);
+  }
+  const radau = mod as EmscriptenModule;
+  return {
+    radau5: radau._run_radau5,
+    dop853: radau._run_dop853,
+    dopri5: radau._run_dopri5,
+    lsoda: radau._run_lsoda,
+  }[solver];
+}
 type RhsFn = (n: number, t: number, y: number, f: number, p: number) => void;
 
 export const DEFAULT_RTOL = 1e-6;
@@ -54,7 +116,7 @@ function resampleUniform(
 
 /** Advances `y` from tStart to tEnd. With `grid`, output is exactly those times. */
 function runSegment(
-  mod: EmscriptenModule,
+  mod: SimulationModule,
   n: number,
   tStart: number,
   tEnd: number,
@@ -78,13 +140,17 @@ function runSegment(
       mod._set_output_grid(gridPtr, grid.length);
     }
 
-    const runFn = {
-      radau5: mod._run_radau5,
-      dop853: mod._run_dop853,
-      dopri5: mod._run_dopri5,
-      lsoda: mod._run_lsoda,
-    }[solver];
-    const idid = runFn(n, tStart, tEnd, yPtr, rparPtr, rtol, atol, 0, 500000);
+    const idid = runFnFor(mod, solver)(
+      n,
+      tStart,
+      tEnd,
+      yPtr,
+      rparPtr,
+      rtol,
+      atol,
+      0,
+      500000,
+    );
 
     if (idid < 0) {
       console.error(
@@ -155,7 +221,7 @@ function applySegmentPars(
 
 /** Calls the compiled RHS directly, outside any integrator. */
 function makeRhs(
-  mod: EmscriptenModule,
+  mod: SimulationModule,
   rhs: RhsFn,
   n: number,
   pars: Float64Array,
@@ -188,12 +254,13 @@ export interface SimulationOutput {
 }
 
 /**
- * Runs one {@link SimulationRequest}. `compile` turns the request's WAT into an
- * instance sharing `mod`'s memory. Throws on solver failure, or if a requested
- * steady state does not converge.
+ * Runs one {@link SimulationRequest}. `mod` must be the runtime
+ * {@link runtimeFor} names for the request's method. `compile` turns the
+ * request's WAT into an instance sharing `mod`'s memory. Throws on solver
+ * failure, or if a requested steady state does not converge.
  */
 export async function simulate(
-  mod: EmscriptenModule,
+  mod: SimulationModule,
   req: SimulationRequest,
   compile: (wat: string) => Promise<WebAssembly.Instance>,
 ): Promise<SimulationOutput> {
@@ -214,13 +281,10 @@ export async function simulate(
     returnRhs,
   } = req;
 
-  const solver: WasmSolver =
-    method === "dop853" || method === "dopri5" || method === "lsoda"
-      ? method
-      : "radau5";
+  const solver = wasmSolver(method);
   if (tEval && !DENSE_SOLVERS.has(solver)) {
     throw new Error(
-      `tEval is only supported by RADAU5 and LSODA, not ${solver}`,
+      `tEval is only supported by RADAU5, LSODA and CVODE, not ${solver}`,
     );
   }
   if (!rhsWat) throw new Error("rhsWat missing for WASM solver");

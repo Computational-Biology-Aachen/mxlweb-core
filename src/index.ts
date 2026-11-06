@@ -38,7 +38,7 @@ export interface SimulationRequest {
   // Required; don't change!
   requestId: string;
   rhsFn?: string;
-  /** WAT module string for the native WASM backend (method 'radau5', 'dop853', 'dopri5' or 'lsoda') */
+  /** WAT module string for the native WASM backend (method 'radau5', 'dop853', 'dopri5', 'lsoda', 'cvode_bdf' or 'cvode_adams') */
   rhsWat?: string;
   allDerivedFn: string;
   selectDerivedFn: string;
