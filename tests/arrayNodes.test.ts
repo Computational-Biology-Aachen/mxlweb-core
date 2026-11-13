@@ -127,23 +127,23 @@ describe("model data", () => {
     expect(() => spectralModel().buildJs()).not.toThrow();
   });
 
-  it("an array node may only reference data", () => {
+  it("an array node may depend on variables (ADR 0015)", () => {
     const model = spectralModel().updateAssignment("absorbed", {
       fn: new Simpson([
         new Mul([new Name("light"), new Name("x")]),
         new Name("wavelength"),
       ]),
     });
-    expect(() => model.lower()).toThrow(
-      /may only reference data and numbers, not "x"/,
-    );
+    const rhs = new Function(`return (${model.buildJs()})`)();
+    // dx/dt = -absorbed * x = -x^2 * simpson(light)
+    expect(rhs(0, [3], [2])[0]).toBeCloseTo(-9 * simpson(peak, wavelength), 9);
   });
 
-  it("data must be reduced before use", () => {
+  it("an array may not reach a reaction rate", () => {
     const model = spectralModel().updateAssignment("absorbed", {
       fn: new Add([new Name("light"), new Num(1)]),
     });
-    expect(() => model.lower()).toThrow(/data "light" is an array/);
+    expect(() => model.lower()).toThrow(/"v": is an array of length 301/);
   });
 
   it("an array node must reduce to a number", () => {

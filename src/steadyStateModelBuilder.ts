@@ -9,6 +9,8 @@ import {
   type NNBlockConfig,
 } from "./modelBuilderBase.js";
 import { pyMetaKwargs, usesSlider } from "./pyString.js";
+import { scheduleArrays } from "./arrays.js";
+import { derivedNames, irArrayLengths, literal, pySteps } from "./modelIr.js";
 
 /**
  * Algebraic (steady-state) model builder: outputs are closed-form functions of
@@ -90,7 +92,7 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
     const displayNames = this.getCodegenNames();
     const Name = (x: string) => displayNames.get(x) ?? x;
 
-    const order = ir.intermediates.map((m) => m.name);
+    const order = derivedNames(ir);
     if (selectedDerived !== undefined) {
       const known = new Set(order);
       for (const key of selectedDerived) {
@@ -106,15 +108,28 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
       .join("\n");
     const args = argList.length > 0 ? `\n${argList}\n` : "";
 
-    const body = ir.intermediates
-      .map((m) => `    ${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
-      .join("\n");
+    // With arrays (mxl-schemas ADR 0015), loops become comprehensions.
+    const body =
+      ir.data === undefined || ir.data.size === 0
+        ? ir.intermediates
+            .map((m) => `    ${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
+            .join("\n")
+        : `    ${pySteps(
+            scheduleArrays(ir.intermediates, [], irArrayLengths(ir)).steps,
+            displayNames,
+          )}`;
+    const data = [...(ir.data ?? [])]
+      .map(
+        ([k, v]) =>
+          `${Name(k)} = [${v.map((x) => literal(x, true)).join(", ")}]\n`,
+      )
+      .join("");
 
     const ret = outputs.map(Name).join(", ");
 
     return `import numpy as np
 import math
-
+${data}
 
 def model(${args}):
 ${body.length > 0 ? body + "\n" : ""}    return ${ret.length > 0 ? ret : "()"}

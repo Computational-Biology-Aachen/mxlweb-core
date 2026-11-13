@@ -60,7 +60,9 @@ import {
   Tanh,
   Xor,
 } from "./mathml/index.js";
+import { unrollArrays } from "./arrays.js";
 import type { Stoichiometry } from "./kineticModelBuilder.js";
+import { irArrayLengths } from "./modelIr.js";
 import { KineticModelBuilder } from "./kineticModelBuilder.js";
 import {
   Unit,
@@ -427,6 +429,42 @@ export function mathMLToAst(el: Element): Base {
 // ─── ModelBuilder → SBML ────────────────────────────────────────────────────
 
 /**
+ * The assignment rules and reaction rate laws to export. A model with data
+ * goes through `lower()`: array subtrees over data fold to numbers, and arrays
+ * that depend on the state (mxl-schemas ADR 0015) are written out element by
+ * element (`unrollArrays`), since SBML core has no arrays. Element `i` of an
+ * array-valued assignment `x` becomes the rule `x_i`.
+ */
+function sbmlMath(model: KineticModelBuilder): {
+  rules: Array<[string, Base]>;
+  rates: Map<string, Base>;
+} {
+  if (model.data.size === 0) {
+    return {
+      rules: [...model.assignments].map(([id, a]) => [id, a.fn]),
+      rates: new Map([...model.reactions].map(([id, r]) => [id, r.fn])),
+    };
+  }
+  const ir = model.lower();
+  const { defs } = unrollArrays(
+    ir.intermediates,
+    [],
+    ir.data ?? new Map(),
+    irArrayLengths(ir),
+  );
+  return {
+    rules: defs
+      .filter((d) => !model.reactions.has(d.name))
+      .map((d) => [d.name, d.expr]),
+    rates: new Map(
+      defs
+        .filter((d) => model.reactions.has(d.name))
+        .map((d) => [d.name, d.expr]),
+    ),
+  };
+}
+
+/**
  * Serialise a {@link KineticModelBuilder} to an SBML Level 3 Version 2 document
  * string. Variables become species and parameters become `<parameter>`s, both
  * in a single `default` compartment; assignments become assignment rules and
@@ -493,12 +531,13 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
     parametersXml = `<listOfParameters>\n      ${items}\n    </listOfParameters>`;
   }
 
+  const math = sbmlMath(model);
   let rulesXml = "";
-  if (model.assignments.size > 0) {
-    const items = [...model.assignments.entries()]
-      .map(([id, a]) => {
+  if (math.rules.length > 0) {
+    const items = math.rules
+      .map(([id, fn]) => {
         return `<assignmentRule variable="${escapeXml(id)}">
-        ${mathBlock(a.fn.toSBML())}
+        ${mathBlock(fn.toSBML())}
       </assignmentRule>`;
       })
       .join("\n      ");
@@ -540,7 +579,7 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
 
         return `<reaction id="${escapeXml(id)}" name="${escapeXml(displayName)}" reversible="false">${reactantsXml}${productsXml}
         <kineticLaw>
-          ${mathBlock(r.fn.toSBML())}
+          ${mathBlock(math.rates.get(id)!.toSBML())}
         </kineticLaw>
       </reaction>`;
       })

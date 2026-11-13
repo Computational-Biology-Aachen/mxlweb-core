@@ -1,10 +1,14 @@
 import { SvelteMap } from "svelte/reactivity";
 import {
+  ARRAY_NODE_TYPES,
   Base,
+  evaluate,
   nameRenamer,
   substituteName,
   type JsonNode,
+  type Value,
 } from "./mathml/index.js";
+import { arrayLengths, normaliseArrays, usesArrays } from "./arrays.js";
 import {
   evalInitialAssignment,
   irToAdjointWat,
@@ -304,7 +308,7 @@ export type MxlEntity = {
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
 export type MxlJsonDocument = {
   $schema: string;
-  spec_version: "1.0" | "1.1" | "1.2";
+  spec_version: "1.0" | "1.1" | "1.2" | "1.3";
   kind: MxlKind;
   model_id: string;
   description?: string;
@@ -372,6 +376,14 @@ export abstract class ModelBuilderBase {
    * preserved for tie-breaking; topological order is resolved separately.
    */
   protected abstract extraIntermediates(): Map<string, IntermediateDef>;
+
+  /**
+   * Intermediates that must be numbers even in a model with arrays (mxl-schemas
+   * ADR 0015), e.g. reaction rates. Readouts and right-hand sides always are.
+   */
+  protected scalarIntermediates(): Set<string> {
+    return new Set();
+  }
 
   /**
    * Readouts — report-only quantities computed after simulation finishes,
@@ -930,12 +942,31 @@ export abstract class ModelBuilderBase {
             ],
         ),
     ];
+    // With data, assignments may be arrays (mxl-schemas ADR 0015): those go
+    // through the array-aware evaluator instead of generated JS.
+    const arrays = new Map<string, Value>(
+      [...this.data].map(([id, d]) => [names.get(id)!, d.values]),
+    );
+    const evalWithArrays = (expr: Base): Value =>
+      evaluate(expr, (name) => {
+        const v = known.get(name) ?? arrays.get(name);
+        if (v === undefined) throw new Error(`unknown symbol "${name}"`);
+        return v;
+      });
     while (pending.length > 0) {
       const waiting = pending.filter(([name, expr]) => {
-        const ready = [...expr.getSymbols(new Set())].every((s) =>
-          known.has(s),
+        const ready = [...expr.getSymbols(new Set())].every(
+          (s) => known.has(s) || arrays.has(s),
         );
-        if (ready) known.set(name, evalInitialAssignment(expr, known));
+        if (ready) {
+          if (arrays.size === 0) {
+            known.set(name, evalInitialAssignment(expr, known));
+          } else {
+            const value = evalWithArrays(expr);
+            if (typeof value === "number") known.set(name, value);
+            else arrays.set(name, value);
+          }
+        }
         return !ready;
       });
       if (waiting.length === pending.length) break;
@@ -1006,6 +1037,8 @@ export abstract class ModelBuilderBase {
       // `parameters`, so they'd otherwise never resolve and topoSort would
       // throw.
       ...this.nnWeights.keys(),
+      // Arrays over variables or parameters keep their data (ADR 0015).
+      ...this.data.keys(),
     ]);
     const toSort = [...this.foldedIntermediateDefs().entries()].map(
       ([key, val]) => ({
@@ -1030,12 +1063,33 @@ export abstract class ModelBuilderBase {
       ...this.parameters.keys(),
       ...this.variables.keys(),
       ...this.intermediateDefs().keys(),
+      ...this.data.keys(),
     ]);
     const toSort = [...this.foldedReadouts().entries()].map(([key, val]) => ({
       k: key,
       args: val.fn.getSymbols(new Set()),
     }));
     return ModelBuilderBase.topoSort(available, toSort);
+  }
+
+  /**
+   * The derived outputs a simulation can report, in evaluation order:
+   * {@link sortDependencies} then {@link sortReadoutDependencies}, without the
+   * array-valued intermediates (mxl-schemas ADR 0015), which are internal.
+   * The order `buildJsDerived`'s `allDerived` returns them in.
+   */
+  derivedNames(): string[] {
+    const order = [
+      ...this.sortDependencies(),
+      ...this.sortReadoutDependencies(),
+    ];
+    if (this.data.size === 0) return order;
+    const defs = [
+      ...this.foldedIntermediateDefs(),
+      ...this.foldedReadouts(),
+    ].map(([name, def]) => ({ name, expr: def.fn }));
+    const arrays = arrayLengths(defs, this.dataValues());
+    return order.filter((k) => !arrays.has(k));
   }
 
   getNames(): Array<string> {
@@ -1113,8 +1167,51 @@ export abstract class ModelBuilderBase {
         this.foldData(this.dxdtExpr(name), `d${name}/dt`),
       ]),
     );
-    const dxdt = this.composeNNBlocks(mechanistic);
+    let dxdt = this.composeNNBlocks(mechanistic);
     const initialValues = this.resolveInitialValues();
+    // Arrays that depend on more than data (mxl-schemas ADR 0015): check the
+    // rules and rewrite the array nodes for the loop-emitting backends.
+    let data: Map<string, number[]> | undefined;
+    if (this.data.size > 0) {
+      const values = this.dataValues();
+      const rhs = [...dxdt].map(([k, expr]) => ({ name: `d${k}/dt`, expr }));
+      const all = [...intermediates, ...readouts, ...rhs];
+      if (
+        usesArrays(
+          all.map((d) => d.expr),
+          values,
+        )
+      ) {
+        arrayLengths(
+          all,
+          values,
+          new Set([
+            ...this.scalarIntermediates(),
+            ...readouts.map((r) => r.name),
+            ...rhs.map((r) => r.name),
+          ]),
+        );
+        const normal = normaliseArrays(
+          [...intermediates, ...readouts],
+          rhs,
+          values,
+        );
+        intermediates.splice(
+          0,
+          intermediates.length,
+          ...normal.defs.slice(0, intermediates.length),
+        );
+        readouts.splice(
+          0,
+          readouts.length,
+          ...normal.defs.slice(intermediates.length),
+        );
+        dxdt = new Map(
+          [...dxdt.keys()].map((k, i) => [k, normal.outputs[i].expr]),
+        );
+        data = normal.data;
+      }
+    }
     return {
       varNames: [...this.variables.keys()],
       // `parameters` first, then `nnWeights` — every WAT/adjoint `Name`
@@ -1142,7 +1239,13 @@ export abstract class ModelBuilderBase {
       readouts,
       dxdt,
       displayNames: this.getDisplayNames(),
+      ...(data === undefined ? {} : { data }),
     };
+  }
+
+  /** Every data set's values, by id. */
+  private dataValues(): Map<string, number[]> {
+    return new Map([...this.data].map(([k, d]) => [k, d.values]));
   }
 
   buildJs(): string {
@@ -1332,7 +1435,9 @@ ${chains.join("\n")};
     const doc: MxlJsonDocument = {
       $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/${kind}-model.schema.json`,
       // 1.2 adds `data_ref`; without data the document stays valid 1.1.
-      spec_version: this.data.size > 0 ? "1.2" : "1.1",
+      // 1.3: arrays that depend on more than data (mxl-schemas ADR 0015).
+      spec_version:
+        this.data.size === 0 ? "1.1" : this.hasDynamicArrays() ? "1.3" : "1.2",
       kind,
       model_id: modelId,
       ...(description !== undefined ? { description } : {}),
@@ -1340,6 +1445,38 @@ ${chains.join("\n")};
       model,
     };
     return JSON.stringify(doc, null, 2);
+  }
+
+  /**
+   * Whether an array depends on more than data and numbers (mxl-schemas ADR
+   * 0015): some intermediate is an array, or an array node references a
+   * variable, parameter or intermediate.
+   */
+  private hasDynamicArrays(): boolean {
+    const values = this.dataValues();
+    const defs = [...this.intermediateDefs(), ...this.extraReadouts()].map(
+      ([name, def]) => ({ name, expr: def.fn }),
+    );
+    if (arrayLengths(defs, values).size > 0) return true;
+    const dynamic = (e: Base): boolean => {
+      if (
+        ARRAY_NODE_TYPES.has(e.nodeType) &&
+        [...e.getSymbols(new Set())].some((s) => !values.has(s))
+      ) {
+        return true;
+      }
+      const n = e as unknown as {
+        child?: Base;
+        base?: Base;
+        left?: Base;
+        right?: Base;
+        children?: Base[];
+      };
+      return [n.child, n.base, n.left, n.right, ...(n.children ?? [])].some(
+        (c) => c instanceof Base && dynamic(c),
+      );
+    };
+    return defs.some((d) => dynamic(d.expr));
   }
 
   /**
