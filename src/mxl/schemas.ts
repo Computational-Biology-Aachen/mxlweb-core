@@ -29,8 +29,8 @@ export const kineticSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2", "1.3"],
     },
     kind: {
       type: "string",
@@ -790,8 +790,8 @@ export const odeSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2", "1.3"],
     },
     kind: {
       type: "string",
@@ -1515,8 +1515,8 @@ export const steadyStateSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2"],
+        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["1.0", "1.1", "1.2", "1.3"],
     },
     kind: {
       type: "string",

@@ -318,6 +318,10 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return chains;
   }
 
+  protected scalarIntermediates(): Set<string> {
+    return new Set(this.reactions.keys());
+  }
+
   protected extraIntermediates(): Map<string, IntermediateDef> {
     // Reaction-mode NN blocks correct a reaction's rate law here, before
     // dxdtExpr's stoichiometry sum ever runs — see NNBlockConfig.

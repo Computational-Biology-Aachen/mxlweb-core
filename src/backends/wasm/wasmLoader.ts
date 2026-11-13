@@ -356,8 +356,42 @@ export async function compileModelWith(
     compiled = await WebAssembly.compile(bytes.buffer as ArrayBuffer);
     modelCache.set(key, compiled);
   }
-  return WebAssembly.instantiate(compiled, {
+  const instance = await WebAssembly.instantiate(compiled, {
     env: { memory: emMod.wasmMemory },
     math: mathImports() as WebAssembly.ModuleImports,
   });
+  placeArrays(instance, emMod, key);
+  return instance;
+}
+
+// Array regions (mxl-schemas ADR 0015), one per module and runtime: every
+// instance of a module shares it, since calls into a worker never interleave.
+const arrayRegions = new WeakMap<SimulationModule, Map<string, number>>();
+
+/**
+ * A model with array-valued intermediates exports `arrays_bytes()` and
+ * `init(base)` (see `watBody` in wat-codegen.ts): allocate its region in the
+ * Emscripten heap once, then let `init` write the data there.
+ */
+function placeArrays(
+  instance: WebAssembly.Instance,
+  emMod: SimulationModule,
+  key: string,
+): void {
+  const { init, arrays_bytes } = instance.exports as {
+    init?: (base: number) => void;
+    arrays_bytes?: () => number;
+  };
+  if (init === undefined || arrays_bytes === undefined) return;
+  let regions = arrayRegions.get(emMod);
+  if (regions === undefined) {
+    regions = new Map();
+    arrayRegions.set(emMod, regions);
+  }
+  let base = regions.get(key);
+  if (base === undefined) {
+    base = emMod._malloc(Math.max(arrays_bytes(), 8));
+    regions.set(key, base);
+  }
+  init(base);
 }
