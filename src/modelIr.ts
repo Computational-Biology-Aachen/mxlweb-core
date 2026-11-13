@@ -19,6 +19,14 @@ import {
   nameRenamer,
 } from "./mathml/index.js";
 import { RESERVED, uniqueName } from "./identifiers.js";
+import {
+  type Step,
+  LOOP_COUNTER,
+  arrayLengths,
+  exprLength,
+  scheduleArrays,
+} from "./arrays.js";
+import { Index, Slice, Sum, pushGradientTo } from "./mathml/index.js";
 
 /**
  * Intermediate representation shared by every model builder.
@@ -59,6 +67,13 @@ export interface ModelIR {
   dxdt: Map<string, Base>;
   /** Display/python-facing name for every id (falls back to the id). */
   displayNames: Map<string, string>;
+  /**
+   * Constant 1-D arrays the expressions read (mxl-schemas ADR 0015): the
+   * model data they use, plus arrays lowering generated (Simpson weights).
+   * Non-empty exactly when some intermediate or readout is, or reduces, an
+   * array; every backend then evaluates arrays element by element.
+   */
+  data?: Map<string, number[]>;
 }
 
 const ZERO = new Num(0);
@@ -92,7 +107,78 @@ export function renameIR(
     readouts: ir.readouts.map(intermediate),
     dxdt: new Map([...ir.dxdt].map(([k, e]) => [id(k), rename(e)])),
     displayNames: new Map(),
+    ...(ir.data === undefined
+      ? {}
+      : { data: new Map([...ir.data].map(([k, v]) => [id(k), v])) }),
   };
+}
+
+/** Whether `ir` has arrays (mxl-schemas ADR 0015). */
+function hasArrays(
+  ir: ModelIR,
+): ir is ModelIR & { data: Map<string, number[]> } {
+  return ir.data !== undefined && ir.data.size > 0;
+}
+
+/** Every array name of `ir` (data, array-valued intermediates and readouts) with its length. */
+export function irArrayLengths(ir: ModelIR): Map<string, number> {
+  if (!hasArrays(ir)) return new Map();
+  return new Map([
+    ...[...ir.data].map(([k, v]) => [k, v.length] as [string, number]),
+    ...arrayLengths([...ir.intermediates, ...ir.readouts], ir.data),
+  ]);
+}
+
+/** A JS / Python number literal (NaN and infinities included). */
+export function literal(v: number, py: boolean): string {
+  if (Number.isNaN(v)) return py ? "float('nan')" : "NaN";
+  if (!Number.isFinite(v)) {
+    if (py) return `float('${v < 0 ? "-" : ""}inf')`;
+    return v < 0 ? "-Infinity" : "Infinity";
+  }
+  return String(v);
+}
+
+/** {@link Step}s as JS statements (the loops of a model with arrays). */
+function jsSteps(steps: Step[]): string {
+  const i = LOOP_COUNTER;
+  return steps
+    .map((step) => {
+      const expr = step.expr.toJs();
+      const loop = `for (let ${i} = 0; ${i} < ${step.kind === "scalar" ? 0 : step.length}; ${i}++)`;
+      switch (step.kind) {
+        case "scalar":
+          return `  const ${step.name} = ${expr};`;
+        case "fill":
+          return `  ${loop} ${step.name}[${i}] = ${expr};`;
+        case "reduce":
+          if (step.op === "Sum") {
+            return `  let ${step.name} = 0;\n  ${loop} ${step.name} += ${expr};`;
+          }
+          // NaN propagates, as in np.max / np.min
+          return `  let ${step.name} = ${step.op === "MaxOf" ? "-Infinity" : "Infinity"};\n  ${loop} { const __v = ${expr}; if (__v ${step.op === "MaxOf" ? ">" : "<"} ${step.name} || __v !== __v) ${step.name} = __v; }`;
+      }
+    })
+    .join("\n");
+}
+
+/**
+ * `fn` (a JS arrow function's source) closed over the data and the buffers of
+ * the array-valued intermediates, so each call reuses them.
+ */
+function jsWithArrays(
+  ir: ModelIR & { data: Map<string, number[]> },
+  lengths: ReadonlyMap<string, number>,
+  fn: string,
+): string {
+  const data = [...ir.data].map(
+    ([k, v]) =>
+      `  const ${k} = new Float64Array([${v.map((x) => literal(x, false)).join(", ")}]);`,
+  );
+  const buffers = [...lengths]
+    .filter(([k]) => !ir.data.has(k))
+    .map(([k, n]) => `  const ${k} = new Float64Array(${n});`);
+  return `(() => {\n${[...data, ...buffers].join("\n")}\n  return ${fn};\n})()`;
 }
 
 function rhsOf(ir: ModelIR, varName: string): Base {
@@ -114,6 +200,7 @@ export function evalInitialAssignment(
 }
 
 export function irToJs(ir: ModelIR): string {
+  if (hasArrays(ir)) return irToJsArrays(ir);
   const varDestructure =
     ir.varNames.length > 0
       ? `const [${ir.varNames.join(", ")}] = variables;`
@@ -135,10 +222,43 @@ ${fns}
 }`;
 }
 
+function destructure(ir: ModelIR): string {
+  const vars =
+    ir.varNames.length > 0
+      ? `const [${ir.varNames.join(", ")}] = variables;`
+      : "";
+  const pars =
+    ir.parNames.length > 0 ? `const [${ir.parNames.join(", ")}] = pars;` : "";
+  return `  ${vars}\n  ${pars}`;
+}
+
+function irToJsArrays(ir: ModelIR & { data: Map<string, number[]> }): string {
+  const lengths = irArrayLengths(ir);
+  const { steps, outputs } = scheduleArrays(
+    ir.intermediates,
+    ir.varNames.map((k) => rhsOf(ir, k)),
+    lengths,
+  );
+  return jsWithArrays(
+    ir,
+    lengths,
+    `(time, variables, pars) => {\n${destructure(ir)}\n${jsSteps(steps)}\n  return [${outputs.map((o) => o.toJs()).join(", ")}];\n}`,
+  );
+}
+
+/** The names derived outputs can select: intermediates and readouts that are numbers. */
+export function derivedNames(ir: ModelIR): string[] {
+  const lengths = irArrayLengths(ir);
+  return [...ir.intermediates, ...ir.readouts]
+    .map((m) => m.name)
+    .filter((k) => !lengths.has(k));
+}
+
 export function irToJsDerived(
   ir: ModelIR,
   selectedDerived?: string[],
 ): { allDerived: string; selectDerived: string } {
+  if (hasArrays(ir)) return irToJsDerivedArrays(ir, selectedDerived);
   const varDestructure =
     ir.varNames.length > 0
       ? `const [${ir.varNames.join(", ")}] = variables;`
@@ -175,6 +295,31 @@ ${fns}
   return { allDerived, selectDerived };
 }
 
+function irToJsDerivedArrays(
+  ir: ModelIR & { data: Map<string, number[]> },
+  selectedDerived?: string[],
+): { allDerived: string; selectDerived: string } {
+  const lengths = irArrayLengths(ir);
+  const order = derivedNames(ir);
+  const { steps, outputs } = scheduleArrays(
+    [...ir.intermediates, ...ir.readouts],
+    order.map((k) => new Name(k)),
+    lengths,
+  );
+  const allDerived = jsWithArrays(
+    ir,
+    lengths,
+    `(time, variables, pars) => {\n${destructure(ir)}\n${jsSteps(steps)}\n  return [${outputs.map((o) => o.toJs()).join(", ")}];\n}`,
+  );
+  const selected = selectedDerived ?? order;
+  const indices = selected.map((k) => order.indexOf(k)).filter((i) => i >= 0);
+  const selectDerived =
+    indices.length > 0
+      ? `(all) => [${indices.map((i) => `all[${i}]`).join(", ")}]`
+      : `(all) => all`;
+  return { allDerived, selectDerived };
+}
+
 export function irToWat(ir: ModelIR): string {
   const equations = ir.varNames.map((name) => ({
     varName: name,
@@ -186,6 +331,7 @@ export function irToWat(ir: ModelIR): string {
     ir.parNames,
     "time",
     ir.intermediates,
+    ir.data,
   );
 }
 
@@ -214,6 +360,7 @@ export function irToWatDerived(ir: ModelIR, selectedDerived: string[]): string {
     ir.parNames,
     "time",
     intermediates,
+    ir.data,
   );
 }
 
@@ -230,8 +377,13 @@ export function buildDerivedGradGraph(
   modelIr: ModelIR,
   selectedDerived: string[],
   thetaNames: string[],
-): { outputs: ModelIntermediate[]; intermediates: ModelIntermediate[] } {
-  const ir = liftSubexpressions(modelIr);
+): {
+  outputs: ModelIntermediate[];
+  intermediates: ModelIntermediate[];
+  data?: Map<string, number[]>;
+} {
+  const ir = liftSubexpressions(gradientForm(modelIr));
+  const lengths = irArrayLengths(ir);
   const allIntermediates = [...ir.intermediates, ...ir.readouts];
   const known = new Set(allIntermediates.map((m) => m.name));
   for (const key of selectedDerived) {
@@ -252,8 +404,9 @@ export function buildDerivedGradGraph(
       const contributions = grads.get(name);
       if (!contributions || contributions.length === 0) continue;
       const accumName = `__dgrad_${k}_accum_${name}`;
-      accum.push({ name: accumName, expr: sumContributions(contributions) });
-      expr.pushGradient(new Name(accumName), grads);
+      const sum = sumContributions(contributions);
+      accum.push({ name: accumName, expr: sum });
+      pushFrom(ir, lengths, name, accumName, sum, expr, grads);
     }
     ir.varNames.forEach((name, m) =>
       outputs.push({
@@ -268,7 +421,7 @@ export function buildDerivedGradGraph(
       }),
     );
   });
-  return { outputs, intermediates: [...deps, ...accum] };
+  return { outputs, intermediates: [...deps, ...accum], data: ir.data };
 }
 
 /** irToDerivedGradWat — {@link buildDerivedGradGraph} as a derived-shaped
@@ -285,6 +438,7 @@ export function irToDerivedGradWat(
     ir.parNames,
     "time",
     graph.intermediates,
+    graph.data,
   );
 }
 
@@ -306,6 +460,99 @@ function adjointAccumName(intermediateName: string): string {
 function sumContributions(contributions: Base[] | undefined): Base {
   if (!contributions || contributions.length === 0) return new Num(0);
   return contributions.length === 1 ? contributions[0] : new Add(contributions);
+}
+
+/**
+ * The reverse-pass step for the intermediate `name = expr`, whose adjoint is
+ * the accumulator `accumName = accum`: push it into `expr`'s operands.
+ *
+ * With arrays (mxl-schemas ADR 0015) a number used element-wise in an array
+ * gets the sum of its per-element adjoints: an array contribution is reduced
+ * with `Sum`, a number one (an adjoint broadcast over the array) multiplied by
+ * the length. `lengths` learns the accumulator's own shape.
+ */
+function pushFrom(
+  ir: ModelIR,
+  lengths: Map<string, number>,
+  name: string,
+  accumName: string,
+  accum: Base,
+  expr: Base,
+  grads: GradMap,
+): void {
+  if (!hasArrays(ir)) {
+    expr.pushGradient(new Name(accumName), grads);
+    return;
+  }
+  const length = (e: Base) => exprLength(e, lengths, ir.data, `"${name}"`);
+  const accumLength = length(accum);
+  if (accumLength !== undefined) lengths.set(accumName, accumLength);
+  const source = lengths.get(name);
+  if (source === undefined) {
+    expr.pushGradient(new Name(accumName), grads);
+    return;
+  }
+  const local: GradMap = new Map();
+  expr.pushGradient(new Name(accumName), local);
+  for (const [target, contributions] of local) {
+    if (ir.data.has(target)) continue;
+    for (const c of contributions) {
+      const reduced = lengths.has(target)
+        ? c
+        : length(c) !== undefined
+          ? new Sum([c])
+          : new Mul([c, new Num(source)]);
+      pushGradientTo(grads, target, reduced);
+    }
+  }
+}
+
+/**
+ * `ir` with `Index` and `Sum(Slice(…))` written as `Sum` over a constant mask
+ * (one-hot resp. window), the forms whose gradient is an element-wise product
+ * (see `Sum.pushGradient`). A `Slice` anywhere else has no gradient here.
+ */
+function gradientForm(ir: ModelIR): ModelIR {
+  if (!hasArrays(ir)) return ir;
+  const lengths = irArrayLengths(ir);
+  const data = new Map(ir.data);
+  const mask = (n: number, lo: number, hi: number) => {
+    const name = `__mask_${n}_${lo}_${hi}`;
+    if (!data.has(name)) {
+      data.set(
+        name,
+        Array.from({ length: n }, (_, i) => (i >= lo && i < hi ? 1 : 0)),
+      );
+    }
+    return new Name(name);
+  };
+  const length = (e: Base) => exprLength(e, lengths, data, "gradient")!;
+  const walk = (e: Base): Base => {
+    if (e instanceof Index) {
+      const [a, k] = e.children as [Base, Num];
+      return new Sum([
+        new Mul([walk(a), mask(length(a), k.value, k.value + 1)]),
+      ]);
+    }
+    if (e instanceof Sum && e.children[0] instanceof Slice) {
+      const [a, lo, hi] = e.children[0].children as [Base, Num, Num];
+      return new Sum([new Mul([walk(a), mask(length(a), lo.value, hi.value)])]);
+    }
+    if (e instanceof Slice) {
+      throw new Error(
+        "Gradients of Slice are only supported as the direct operand of Sum",
+      );
+    }
+    return mapChildren(e, walk);
+  };
+  const def = (m: ModelIntermediate) => ({ name: m.name, expr: walk(m.expr) });
+  const rewritten = {
+    ...ir,
+    intermediates: ir.intermediates.map(def),
+    readouts: ir.readouts.map(def),
+    dxdt: new Map([...ir.dxdt].map(([k, e]) => [k, walk(e)])),
+  };
+  return { ...rewritten, data };
 }
 
 /** Rebuilds `expr` with every child mapped through `f` (children only, not
@@ -400,6 +647,8 @@ export interface AdjointGraph {
   intermediates: ModelIntermediate[];
   dlambda: { varName: string; expr: Base }[];
   dtheta: { thetaName: string; expr: Base }[];
+  /** The constant arrays `intermediates` read (see {@link ModelIR.data}). */
+  data?: Map<string, number[]>;
 }
 
 /**
@@ -423,7 +672,8 @@ export function buildAdjointGraph(
   modelIr: ModelIR,
   thetaNames: string[],
 ): AdjointGraph {
-  const ir = liftSubexpressions(modelIr);
+  const ir = liftSubexpressions(gradientForm(modelIr));
+  const lengths = irArrayLengths(ir);
   const lambdaNames = ir.varNames.map((_, i) => adjointLambdaName(i));
   const lTerms = ir.varNames.map(
     (name, i) => new Mul([new Name(lambdaNames[i]), rhsOf(ir, name)]),
@@ -440,14 +690,12 @@ export function buildAdjointGraph(
     const contributions = grads.get(name);
     if (!contributions || contributions.length === 0) continue;
     const accumName = adjointAccumName(name);
-    adjointAccum.push({
-      name: accumName,
-      expr: sumContributions(contributions),
-    });
+    const sum = sumContributions(contributions);
+    adjointAccum.push({ name: accumName, expr: sum });
     // Push the *local reference*, not `contributions` again, so anything
     // further upstream shares this one computed value instead of
     // re-expanding it at every use.
-    expr.pushGradient(new Name(accumName), grads);
+    pushFrom(ir, lengths, name, accumName, sum, expr, grads);
   }
 
   return {
@@ -460,6 +708,7 @@ export function buildAdjointGraph(
       thetaName: name,
       expr: sumContributions(grads.get(name)),
     })),
+    data: ir.data,
   };
 }
 
@@ -480,6 +729,7 @@ export function irToAdjointWat(ir: ModelIR, thetaNames: string[]): string {
     lambdaNames,
     "time",
     graph.intermediates,
+    graph.data,
   );
 }
 
@@ -500,6 +750,8 @@ export interface JacobianGraph {
   varNames: string[];
   equations: { varName: string; expr: Base }[];
   intermediates: ModelIntermediate[];
+  /** The constant arrays `intermediates` read (see {@link ModelIR.data}). */
+  data?: Map<string, number[]>;
 }
 
 /**
@@ -537,7 +789,8 @@ export function buildJacobianGraph(
   modelIr: ModelIR,
   thetaNames: string[],
 ): JacobianGraph {
-  const ir = liftSubexpressions(modelIr);
+  const ir = liftSubexpressions(gradientForm(modelIr));
+  const lengths = irArrayLengths(ir);
   const nY = ir.varNames.length;
   const nTheta = thetaNames.length;
 
@@ -559,8 +812,9 @@ export function buildJacobianGraph(
       const contributions = grads.get(name);
       if (!contributions || contributions.length === 0) continue;
       const accumName = `__jac_${k}_accum_${name}`;
-      accum.push({ name: accumName, expr: sumContributions(contributions) });
-      expr.pushGradient(new Name(accumName), grads);
+      const sum = sumContributions(contributions);
+      accum.push({ name: accumName, expr: sum });
+      pushFrom(ir, lengths, name, accumName, sum, expr, grads);
     }
 
     // dfDy[k][m] gets embedded in *every* j's sensitivity equation for this
@@ -618,6 +872,7 @@ export function buildJacobianGraph(
       ...sensEquations,
     ],
     intermediates: [...ir.intermediates, ...accum],
+    data: ir.data,
   };
 }
 
@@ -635,6 +890,7 @@ export function irToJacobianWat(ir: ModelIR, thetaNames: string[]): string {
     ir.parNames,
     "time",
     graph.intermediates,
+    graph.data,
   );
 }
 
@@ -653,6 +909,24 @@ function transitiveDerivedDeps(
   return needed;
 }
 
+/** {@link Step}s as Python statements (`dn`: display names). */
+export function pySteps(steps: Step[], dn: Map<string, string>): string {
+  const i = LOOP_COUNTER;
+  const name = (k: string) => dn.get(k) ?? k;
+  return steps
+    .map((step) => {
+      const expr = step.expr.toPy(dn);
+      if (step.kind === "scalar") return `${name(step.name)} = ${expr}`;
+      const range = `for ${i} in range(${step.length})`;
+      if (step.kind === "fill") {
+        return `${name(step.name)} = [${expr} ${range}]`;
+      }
+      const fn = { Sum: "sum", MaxOf: "max", MinOf: "min" }[step.op];
+      return `${name(step.name)} = ${fn}(${expr} ${range})`;
+    })
+    .join("\n    ");
+}
+
 export function irToPython(
   ir: ModelIR,
   userParameters: string[],
@@ -669,7 +943,7 @@ export function irToPython(
   // `selected_derived` — the post-simulation "selectable report output"
   // functions, where a readout is a legal selection.
   const allIntermediates = [...ir.intermediates, ...ir.readouts];
-  const order = allIntermediates.map((m) => m.name);
+  const order = derivedNames(ir);
   if (selectedDerived !== undefined) {
     const known = new Set(order);
     for (const key of selectedDerived) {
@@ -710,21 +984,38 @@ export function irToPython(
   );
   const dxdt = ir.varNames.map((name) => dName.get(name)!).join(", ");
 
-  const fns = ir.intermediates
-    .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
-    .join("\n    ");
+  // With arrays, every function body is scheduled (loops as comprehensions).
+  const lengths = irArrayLengths(ir);
+  const body = (defs: ModelIntermediate[], outputs: Base[]) => {
+    if (!hasArrays(ir)) {
+      return {
+        code: defs
+          .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
+          .join("\n    "),
+        outputs,
+      };
+    }
+    const scheduled = scheduleArrays(defs, outputs, lengths);
+    return {
+      code: pySteps(scheduled.steps, displayNames),
+      outputs: scheduled.outputs,
+    };
+  };
+  const rhsBody = body(
+    ir.intermediates,
+    ir.varNames.map((name) => rhsOf(ir, name)),
+  );
+  const fns = rhsBody.code;
 
-  const allFns = allIntermediates
-    .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
-    .join("\n    ");
+  const allFns = body(allIntermediates, []).code;
 
   const selectedFns = selectedDerived
     ? (() => {
         const needed = transitiveDerivedDeps(allIntermediates, selectedDerived);
-        return allIntermediates
-          .filter((m) => needed.has(m.name))
-          .map((m) => `${Name(m.name)} = ${m.expr.toPy(displayNames)}`)
-          .join("\n    ");
+        return body(
+          allIntermediates.filter((m) => needed.has(m.name)),
+          [],
+        ).code;
       })()
     : null;
 
@@ -738,7 +1029,8 @@ export function irToPython(
 
   const rhsString = ir.varNames
     .map(
-      (name) => `${dName.get(name)!} = ${rhsOf(ir, name).toPy(displayNames)}`,
+      (name, i) =>
+        `${dName.get(name)!} = ${rhsBody.outputs[i].toPy(displayNames)}`,
     )
     .join("\n    ");
 
@@ -773,9 +1065,18 @@ derived = selected_derived`
       : `
 derived = all_derived`;
 
+  const dataLines = hasArrays(ir)
+    ? [...ir.data]
+        .map(
+          ([k, v]) =>
+            `${Name(k)} = [${v.map((x) => literal(x, true)).join(", ")}]`,
+        )
+        .join("\n") + "\n"
+    : "";
+
   return `import numpy as np
 import math
-
+${dataLines}
 def model(
     time: float,
     variables: list[float], ${args}

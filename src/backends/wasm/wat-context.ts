@@ -15,4 +15,10 @@ export interface WatContext {
    * user might author (see `adjointLambdaName` in `modelIr.ts`).
    */
   lambdaIndex?: Map<string, number>;
+  /**
+   * Array name -> byte offset in the module's array region (mxl-schemas ADR
+   * 0015), whose base address is the module global `$__arrays`. Only set
+   * for a model with array-valued intermediates; see `ArrayElem.toWat`.
+   */
+  arrays?: Map<string, number>;
 }

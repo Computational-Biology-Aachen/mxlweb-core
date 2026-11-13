@@ -1,5 +1,128 @@
+import { type ArrayData, arrayLengths, scheduleArrays } from "../../arrays.js";
 import type { Base } from "../../mathml/base.js";
 import type { WatContext } from "./wat-context.js";
+
+const DOUBLE = 8;
+
+/**
+ * The body of an exported function: `(local ...)` declarations, the statements
+ * computing `intermediates`, and the WAT of each output expression. For a
+ * model with arrays (mxl-schemas ADR 0015), `module` holds what the module
+ * needs besides: the `$__arrays` global, `arrays_bytes()` and `init(base)`,
+ * which `compileModelWith` calls once to place the data in memory.
+ */
+function watBody(
+  outputs: Base[],
+  ctx: WatContext,
+  intermediates: { name: string; expr: Base }[] = [],
+  data?: ArrayData,
+): { decls: string; sets: string; outputs: string[]; module: string } {
+  // `lower()` only sets data when an array is used
+  if (data === undefined || data.size === 0) {
+    ctx.localNames = new Set(intermediates.map((l) => l.name));
+    return {
+      decls: intermediates.map((l) => `    (local $${l.name} f64)\n`).join(""),
+      sets: intermediates
+        .map((l) => `    (local.set $${l.name} ${l.expr.toWat(ctx)})\n`)
+        .join(""),
+      outputs: outputs.map((o) => o.toWat(ctx)),
+      module: "",
+    };
+  }
+  const lengths = new Map<string, number>([
+    ...[...data].map(([k, v]) => [k, v.length] as [string, number]),
+    ...arrayLengths(intermediates, data),
+  ]);
+  const scheduled = scheduleArrays(intermediates, outputs, lengths);
+  // Array region: the data, then a buffer per array-valued intermediate.
+  const arrays = new Map<string, number>();
+  let end = 0;
+  for (const [name, n] of lengths) {
+    arrays.set(name, end);
+    end += n * DOUBLE;
+  }
+  ctx.arrays = arrays;
+  ctx.localNames = new Set(
+    scheduled.steps.filter((s) => s.kind !== "fill").map((s) => s.name),
+  );
+  const decls = ["    (local $__i i32)\n", "    (local $__v f64)\n"];
+  const sets: string[] = [];
+  const loop = (k: number, n: number, body: string) =>
+    `    (local.set $__i (i32.const 0))\n` +
+    `    (loop $L${k} ${body} (local.set $__i (i32.add (local.get $__i) (i32.const 1))) (br_if $L${k} (i32.lt_u (local.get $__i) (i32.const ${n}))))\n`;
+  scheduled.steps.forEach((step, k) => {
+    const expr = step.expr.toWat(ctx);
+    if (step.kind === "scalar") {
+      decls.push(`    (local $${step.name} f64)\n`);
+      sets.push(`    (local.set $${step.name} ${expr})\n`);
+    } else if (step.kind === "fill") {
+      const addr = `(i32.add (global.get $__arrays) (i32.shl (local.get $__i) (i32.const 3)))`;
+      sets.push(
+        loop(
+          k,
+          step.length,
+          `(f64.store offset=${arrays.get(step.name)!} ${addr} ${expr})`,
+        ),
+      );
+    } else {
+      const acc = `$${step.name}`;
+      decls.push(`    (local ${acc} f64)\n`);
+      if (step.op === "Sum") {
+        sets.push(`    (local.set ${acc} (f64.const 0))\n`);
+        sets.push(
+          loop(
+            k,
+            step.length,
+            `(local.set ${acc} (f64.add (local.get ${acc}) ${expr}))`,
+          ),
+        );
+      } else {
+        // NaN propagates, as in np.max / np.min
+        const [start, cmp] =
+          step.op === "MaxOf" ? ["-inf", "gt"] : ["inf", "lt"];
+        sets.push(`    (local.set ${acc} (f64.const ${start}))\n`);
+        sets.push(
+          loop(
+            k,
+            step.length,
+            `(local.set $__v ${expr}) (local.set ${acc} (select (local.get $__v) (local.get ${acc}) (i32.or (f64.${cmp} (local.get $__v) (local.get ${acc})) (f64.ne (local.get $__v) (local.get $__v)))))`,
+          ),
+        );
+      }
+    }
+  });
+  const stores: string[] = [];
+  for (const [name, values] of data) {
+    const at = arrays.get(name);
+    if (at === undefined) continue;
+    values.forEach((v, i) =>
+      stores.push(
+        `    (f64.store offset=${at + i * DOUBLE} (local.get 0) ${f64(v)})`,
+      ),
+    );
+  }
+  const module = `
+  ;; Array region (mxl-schemas ADR 0015): data, then array buffers
+  (global $__arrays (mut i32) (i32.const 0))
+  (func (export "arrays_bytes") (result i32) (i32.const ${end}))
+  (func (export "init") (param i32)
+    (global.set $__arrays (local.get 0))
+${stores.join("\n")}
+  )
+`;
+  return {
+    decls: decls.join(""),
+    sets: sets.join(""),
+    outputs: scheduled.outputs.map((o) => o.toWat(ctx)),
+    module,
+  };
+}
+
+function f64(v: number): string {
+  if (Number.isNaN(v)) return "(f64.const nan)";
+  if (!Number.isFinite(v)) return `(f64.const ${v < 0 ? "-" : ""}inf)`;
+  return `(f64.const ${v})`;
+}
 
 /**
  * buildWatModule — generate a complete WAT module exporting a single "fcn"
@@ -18,32 +141,26 @@ function buildWatModule(
   parNames: string[],
   timeVar = "time",
   intermediates?: { name: string; expr: Base }[],
+  data?: ArrayData,
 ): string {
-  const localNames = intermediates
-    ? new Set(intermediates.map((l) => l.name))
-    : undefined;
-
   const ctx: WatContext = {
     varIndex: new Map(varNames.map((n, i) => [n, i])),
     parIndex: new Map(parNames.map((n, i) => [n, i])),
     timeVar,
-    localNames,
   };
+  const body = watBody(
+    outputs.map((o) => o.expr),
+    ctx,
+    intermediates,
+    data,
+  );
+  const localDecls = body.decls;
+  const localSets = body.sets;
 
-  const localDecls = intermediates
-    ? intermediates.map((l) => `    (local $${l.name} f64)`).join("\n") + "\n"
-    : "";
-
-  const localSets = intermediates
-    ? intermediates
-        .map((l) => `    (local.set $${l.name} ${l.expr.toWat(ctx)})`)
-        .join("\n") + "\n"
-    : "";
-
-  const stores = outputs
+  const stores = body.outputs
     .map((out, i) => {
       const offset = i * 8;
-      return `    (f64.store (i32.add (local.get 3) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
+      return `    (f64.store (i32.add (local.get 3) (i32.const ${offset})) ${out})`;
     })
     .join("\n");
 
@@ -74,7 +191,7 @@ function buildWatModule(
   (import "math" "min" (func $math_min (param f64 f64) (result f64)))
   (import "math" "rem" (func $math_rem (param f64 f64) (result f64)))
 
-  ;; ODE RHS: void(i32 n, f64 t, i32 y_ptr, i32 f_ptr, i32 rpar_ptr)
+${body.module}  ;; ODE RHS: void(i32 n, f64 t, i32 y_ptr, i32 f_ptr, i32 rpar_ptr)
   ;; Param locals: 0=n, 1=t, 2=y_ptr, 3=f_ptr, 4=rpar_ptr
   (func (export "fcn") (param i32) (param f64) (param i32) (param i32) (param i32)
 ${localDecls}${localSets}${stores}
@@ -101,8 +218,16 @@ export function buildModelWat(
   parNames: string[],
   timeVar = "time",
   intermediates?: { name: string; expr: Base }[],
+  data?: ArrayData,
 ): string {
-  return buildWatModule(equations, varNames, parNames, timeVar, intermediates);
+  return buildWatModule(
+    equations,
+    varNames,
+    parNames,
+    timeVar,
+    intermediates,
+    data,
+  );
 }
 
 /**
@@ -125,8 +250,16 @@ export function buildDerivedWat(
   parNames: string[],
   timeVar = "time",
   intermediates?: { name: string; expr: Base }[],
+  data?: ArrayData,
 ): string {
-  return buildWatModule(outputs, varNames, parNames, timeVar, intermediates);
+  return buildWatModule(
+    outputs,
+    varNames,
+    parNames,
+    timeVar,
+    intermediates,
+    data,
+  );
 }
 
 /**
@@ -164,40 +297,36 @@ export function buildAdjointWat(
   lambdaNames: string[],
   timeVar = "time",
   intermediates?: { name: string; expr: Base }[],
+  data?: ArrayData,
 ): string {
-  const localNames = intermediates
-    ? new Set(intermediates.map((l) => l.name))
-    : undefined;
-
   const ctx: WatContext = {
     varIndex: new Map(varNames.map((n, i) => [n, i])),
     parIndex: new Map(parNames.map((n, i) => [n, i])),
     lambdaIndex: new Map(lambdaNames.map((n, i) => [n, i])),
     timeVar,
-    localNames,
   };
+  const body = watBody(
+    [...dlambda.map((o) => o.expr), ...dtheta.map((o) => o.expr)],
+    ctx,
+    intermediates,
+    data,
+  );
+  const localDecls = body.decls;
+  const localSets = body.sets;
 
-  const localDecls = intermediates
-    ? intermediates.map((l) => `    (local $${l.name} f64)`).join("\n") + "\n"
-    : "";
-
-  const localSets = intermediates
-    ? intermediates
-        .map((l) => `    (local.set $${l.name} ${l.expr.toWat(ctx)})`)
-        .join("\n") + "\n"
-    : "";
-
-  const dlambdaStores = dlambda
+  const dlambdaStores = body.outputs
+    .slice(0, dlambda.length)
     .map((out, i) => {
       const offset = i * 8;
-      return `    (f64.store (i32.add (local.get 5) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
+      return `    (f64.store (i32.add (local.get 5) (i32.const ${offset})) ${out})`;
     })
     .join("\n");
 
-  const dthetaStores = dtheta
+  const dthetaStores = body.outputs
+    .slice(dlambda.length)
     .map((out, i) => {
       const offset = i * 8;
-      return `    (f64.store (i32.add (local.get 6) (i32.const ${offset})) ${out.expr.toWat(ctx)})`;
+      return `    (f64.store (i32.add (local.get 6) (i32.const ${offset})) ${out})`;
     })
     .join("\n");
 
@@ -228,7 +357,7 @@ export function buildAdjointWat(
   (import "math" "min" (func $math_min (param f64 f64) (result f64)))
   (import "math" "rem" (func $math_rem (param f64 f64) (result f64)))
 
-  ;; Adjoint RHS: void(i32 n, f64 t, i32 y_ptr, i32 lambda_ptr, i32 pars_ptr,
+${body.module}  ;; Adjoint RHS: void(i32 n, f64 t, i32 y_ptr, i32 lambda_ptr, i32 pars_ptr,
   ;;                    i32 out_dlambda_ptr, i32 out_dtheta_ptr)
   ;; Param locals: 0=n, 1=t, 2=y_ptr, 3=lambda_ptr, 4=pars_ptr,
   ;;               5=out_dlambda_ptr, 6=out_dtheta_ptr

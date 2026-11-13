@@ -1,5 +1,6 @@
 import type { WatContext } from "../backends/wasm/wat-context.js";
-import { Base, type GradMap, Nary } from "./base.js";
+import { Base, type GradMap, Nary, Num } from "./base.js";
+import { Divide, Eq, Mul, Piecewise } from "./nary.js";
 
 /**
  * Array nodes (mxl-schemas ADR 0014): the operations that reduce a 1-D array
@@ -7,19 +8,36 @@ import { Base, type GradMap, Nary } from "./base.js";
  * over arrays when evaluated by {@link evaluate}; these are the only ones that
  * need an array. Operands are `children`, in the order each class documents.
  *
- * In a model, an array subtree may only reference data and numbers, so it is
- * a constant that {@link ModelBuilderBase.lower} folds to a {@link Num} before
- * any backend sees the model: the JS/WAT/SBML serialisers and gradients below
- * are never reached for a lowered model and throw if they are. `toPy` (the
- * mxlpy export) and `toTex` do emit them.
+ * In a model, an array subtree over data and numbers is a constant that
+ * {@link ModelBuilderBase.lower} folds to a {@link Num}; one that depends on
+ * variables or parameters (ADR 0015) is rewritten by `normaliseArrays` and
+ * scheduled into loops (`arrays.ts`) before any backend sees it. So the
+ * JS/WAT/SBML serialisers below are never reached for a lowered model and
+ * throw if they are. `toPy` (the mxlpy export) and `toTex` do emit them.
+ * Gradients exist for the nodes left after normalisation: `Sum`, `MaxOf`
+ * and `MinOf` (`Index` and `Slice` become masked sums for gradients).
  *
  * @module
  */
 
 function folded(node: string): Error {
   return new Error(
-    `${node} is an array node: it must be folded to a number (model) or evaluated with evaluate() (analysis) before code generation`,
+    `${node} is an array node: it must be folded to a number or scheduled into loops (model) or evaluated with evaluate() (analysis) before code generation`,
   );
+}
+
+/**
+ * `MaxOf`/`MinOf`'s adjoint: on the extreme element, averaged over ties (the
+ * same subgradient convention as MxlPy's sympy derivative).
+ */
+function extremeGradient(
+  node: MaxOf | MinOf,
+  adjoint: Base,
+  grads: GradMap,
+): void {
+  const a = node.children[0];
+  const at = new Piecewise([new Num(1), new Eq([a, node]), new Num(0)]);
+  a.pushGradient(new Mul([adjoint, new Divide([at, new Sum([at])])]), grads);
 }
 
 /** Shared serialisers; subclasses only name themselves and render Python/LaTeX. */
@@ -49,6 +67,10 @@ export class Sum extends ArrayNode {
   readonly nodeType = "Sum";
   constructor(public children: Base[]) {
     super();
+  }
+  /** Linear: every element gets the adjoint (broadcast; see `pushFrom` in `modelIr.ts`). */
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    this.children[0].pushGradient(adjoint, grads);
   }
   toPy(displayNames: Map<string, string>): string {
     return `np.sum(${this.py(displayNames)[0]})`;
@@ -92,6 +114,9 @@ export class MaxOf extends ArrayNode {
   constructor(public children: Base[]) {
     super();
   }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    extremeGradient(this, adjoint, grads);
+  }
   toPy(displayNames: Map<string, string>): string {
     return `np.max(${this.py(displayNames)[0]})`;
   }
@@ -105,6 +130,9 @@ export class MinOf extends ArrayNode {
   readonly nodeType = "MinOf";
   constructor(public children: Base[]) {
     super();
+  }
+  pushGradient(adjoint: Base, grads: GradMap): void {
+    extremeGradient(this, adjoint, grads);
   }
   toPy(displayNames: Map<string, string>): string {
     return `np.min(${this.py(displayNames)[0]})`;
