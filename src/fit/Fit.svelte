@@ -2037,7 +2037,7 @@
         {/if}
         <Button
           variant="secondary"
-          onclick={() => fileInput?.click()}>Upload data</Button
+          onclick={() => fileInput?.click()}>Upload data (csv)</Button
         >
       {/if}
       {#if dataKind === "protocol"}
