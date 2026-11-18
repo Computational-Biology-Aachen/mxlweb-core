@@ -1,5 +1,5 @@
 /**
- * Vendored copy of the canonical mxl-schemas unit registry (`v1/units.json`,
+ * Vendored copy of the canonical mxl-schemas unit registry (`v0/units.json`,
  * https://github.com/Computational-Biology-Aachen/mxl-schemas): the closed
  * vocabulary of unit kinds and SI prefixes shared with mxlpy
  * (`mxlpy.units.REGISTRY`). `unitRegistry.drift.test.ts` fails if this copy
@@ -29,7 +29,7 @@ export const unitRegistry: {
 } = {
   $comment:
     "Canonical unit vocabulary for the mxl* tool family. A unit in a .mxl.json file is a list of factors {kind, prefix?, exponent}; every kind must be an id from `kinds` below or a custom unit declared in the model's own `units` section. `sympy` is an expression over `sympy.physics.units` (imported as `su`) or null, in which case consumers construct `Quantity(id, abbrev=abbrev)`. `sbml` maps the kind onto an SBML Level 3 UnitKind (with a multiplier for non-SI units such as minute); null means the kind has no SBML equivalent and is exported as dimensionless. Consumers vendor this file and must keep their copy in sync (drift tests).",
-  version: "1.1",
+  version: "0.2",
   kinds: [
     {
       id: "ampere",

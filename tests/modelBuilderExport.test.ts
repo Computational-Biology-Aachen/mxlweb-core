@@ -248,12 +248,12 @@ describe("buildMxlJson", () => {
 
     const doc = JSON.parse(m.buildMxlJson("kinetic_demo", "a demo"));
 
-    expect(doc.spec_version).toBe("1.1");
+    expect(doc.spec_version).toBe("0.2");
     expect(doc.kind).toBe("kinetic");
     expect(doc.model_id).toBe("kinetic_demo");
     expect(doc.description).toBe("a demo");
     expect(doc.$schema).toBe(
-      "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/kinetic-model.schema.json",
+      "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/kinetic-model.schema.json",
     );
     expect(Object.keys(doc.model)).toEqual([
       "variables",

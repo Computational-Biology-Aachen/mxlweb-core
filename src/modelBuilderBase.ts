@@ -308,7 +308,7 @@ export type MxlEntity = {
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
 export type MxlJsonDocument = {
   $schema: string;
-  spec_version: "1.0" | "1.1" | "1.2" | "1.3";
+  spec_version: "0.1" | "0.2" | "0.3" | "0.4";
   kind: MxlKind;
   model_id: string;
   description?: string;
@@ -1433,11 +1433,11 @@ ${chains.join("\n")};
       );
     }
     const doc: MxlJsonDocument = {
-      $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/${kind}-model.schema.json`,
-      // 1.2 adds `data_ref`; without data the document stays valid 1.1.
-      // 1.3: arrays that depend on more than data (mxl-schemas ADR 0015).
+      $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/${kind}-model.schema.json`,
+      // 0.3 adds `data_ref`; without data the document stays valid 0.2.
+      // 0.4: arrays that depend on more than data (mxl-schemas ADR 0015).
       spec_version:
-        this.data.size === 0 ? "1.1" : this.hasDynamicArrays() ? "1.3" : "1.2",
+        this.data.size === 0 ? "0.2" : this.hasDynamicArrays() ? "0.4" : "0.3",
       kind,
       model_id: modelId,
       ...(description !== undefined ? { description } : {}),

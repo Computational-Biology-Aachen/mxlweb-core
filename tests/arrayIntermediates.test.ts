@@ -297,9 +297,9 @@ describe.skipIf(fixtures === undefined)(
       }
     });
 
-    it("saves spec_version 1.3 and round-trips", () => {
+    it("saves spec_version 0.4 and round-trips", () => {
       const doc = JSON.parse(builder.buildMxlJson("m")) as MxlJsonDocument;
-      expect(doc.spec_version).toBe("1.3");
+      expect(doc.spec_version).toBe("0.4");
       const again = mxlJsonToModel(doc, new Map(), fx.data);
       const rhs = new Function(`return (${again.buildJs()})`)();
       const p = fx.points[0];

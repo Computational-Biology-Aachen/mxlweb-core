@@ -156,7 +156,7 @@ describe("nodeFromJson", () => {
 describe("mxlJsonToModel errors", () => {
   it("throws on an unknown model kind", () => {
     const doc = JSON.stringify({
-      spec_version: "1.0",
+      spec_version: "0.1",
       kind: "bogus",
       model_id: "m",
       model: {},
@@ -167,7 +167,7 @@ describe("mxlJsonToModel errors", () => {
   it("rejects a document that fails schema validation", () => {
     // Parameter `value` must be a math node, not a bare number.
     const doc = JSON.stringify({
-      spec_version: "1.0",
+      spec_version: "0.1",
       kind: "kinetic",
       model_id: "m",
       model: {

@@ -1,5 +1,5 @@
 /**
- * Canonical identifiers shared with mxlpy (mxl-schemas `v1/identifiers.json`).
+ * Canonical identifiers shared with mxlpy (mxl-schemas `v0/identifiers.json`).
  *
  * Model ids are free-form, but code exports need identifiers. mxlpy maps a
  * model's names through these rules when it emits `model.ts`, and the Python

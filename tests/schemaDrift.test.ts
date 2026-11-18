@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 // (this package lives at `pkg-js/mxlweb-core`). When it is not present (e.g.
 // the standalone mxlweb-core checkout) the comparison is skipped rather than
 // failing the suite.
-const SCHEMA_DIR = resolve(process.cwd(), "../../misc/mxl-schemas/v1");
+const SCHEMA_DIR = resolve(process.cwd(), "../../misc/mxl-schemas/v0");
 
 const CASES: Array<[string, string, Record<string, unknown>]> = [
   ["kinetic", "kinetic-model.schema.json", kineticSchema],

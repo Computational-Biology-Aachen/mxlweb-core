@@ -1,5 +1,5 @@
 /**
- * Vendored copy of the canonical mxl-schemas `v1` JSON Schemas
+ * Vendored copy of the canonical mxl-schemas `v0` JSON Schemas
  * (https://github.com/Computational-Biology-Aachen/mxl-schemas). Used by
  * {@link mxlJsonToModel} to validate an `.mxl.json` document before building.
  *
@@ -15,7 +15,7 @@ export type JsonSchema = Record<string, unknown>;
 
 export const kineticSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/kinetic-model.schema.json",
+  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/kinetic-model.schema.json",
   title: "Mxl kinetic model format",
   description:
     "Version-controllable JSON representation of a kinetic mechanistic model, shared between mxlpy and mxlweb. The time derivative of each variable is computed from the reaction rates and stoichiometry (dx/dt = N*v). Rate expressions are stored as trees of math nodes from the shared MathML node set.",
@@ -29,8 +29,8 @@ export const kineticSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2", "1.3"],
+        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["0.1", "0.2", "0.3", "0.4"],
     },
     kind: {
       type: "string",
@@ -776,7 +776,7 @@ export const kineticSchema: JsonSchema = {
 
 export const odeSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/ode-model.schema.json",
+  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/ode-model.schema.json",
   title: "Mxl ode model format",
   description:
     "Version-controllable JSON representation of an ODE mechanistic model, shared between mxlpy and mxlweb. The time derivative of each variable is encoded directly on the variable (dx/dt) rather than derived from reactions. Rate expressions are stored as trees of math nodes from the shared MathML node set.",
@@ -790,8 +790,8 @@ export const odeSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2", "1.3"],
+        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["0.1", "0.2", "0.3", "0.4"],
     },
     kind: {
       type: "string",
@@ -1501,7 +1501,7 @@ export const odeSchema: JsonSchema = {
 
 export const steadyStateSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/steady-state-model.schema.json",
+  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/steady-state-model.schema.json",
   title: "Mxl steady-state model format",
   description:
     "Version-controllable JSON representation of an algebraic (steady-state) model, shared between mxlpy and mxlweb. There are no state variables and no time integration: the outputs are closed-form derived quantities of the parameters. Expressions are stored as trees of math nodes from the shared MathML node set.",
@@ -1515,8 +1515,8 @@ export const steadyStateSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format. 1.1 adds units, 1.2 adds data (`data_ref`), 1.3 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
-      enum: ["1.0", "1.1", "1.2", "1.3"],
+        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
+      enum: ["0.1", "0.2", "0.3", "0.4"],
     },
     kind: {
       type: "string",
@@ -1828,7 +1828,7 @@ export const steadyStateSchema: JsonSchema = {
 
 export const modelDataSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v1/model-data.schema.json",
+  $id: "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/model-data.schema.json",
   title: "Mxl model data sidecar",
   description:
     "The data of one model, referenced by its `data_ref` (kinetic-model.schema.json / ode-model.schema.json / steady-state-model.schema.json): named 1-D arrays such as spectra (ADR 0014). Kept out of the model file so that file stays small and diffable, as nn weights are (ADR 0008). A table is stored as one array per column; arrays sampled on a shared axis (e.g. wavelength) list that axis as an array of its own.",
