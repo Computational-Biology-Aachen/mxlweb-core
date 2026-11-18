@@ -1741,6 +1741,15 @@
     if (values.length === 0) return undefined;
     return Math.max(...values) * 1.2;
   });
+
+  // The host may open this inside a popover or a modal <dialog> (design
+  // Popover `modal`); close whichever it is.
+  function closeContainer() {
+    const el = document.getElementById(popovertarget);
+    if (el instanceof HTMLDialogElement && el.open && !el.matches(":popover-open"))
+      el.close();
+    else el?.hidePopover();
+  }
 </script>
 
 <div class="fit-panel">
@@ -1757,10 +1766,7 @@
           ? applyFittedParameters
           : applyEnsembleFittedParameters}>Apply fitted parameters</Button
       >
-      <Button
-        popovertarget={popovertarget}
-        popovertargetaction="hide">Close</Button
-      >
+      <Button onclick={closeContainer}>Close</Button>
     </div>
   </Row>
 

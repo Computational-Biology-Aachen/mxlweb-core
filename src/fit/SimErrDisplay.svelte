@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { SimulationError } from "../workers";
-  import { Accordion2 as Accordion } from "@computational-biology-aachen/design";
+  import { Accordion } from "@computational-biology-aachen/design";
 
   let {
     err,
@@ -23,7 +23,7 @@
   {/if}
 
   {#if dxdt || args}
-    <Accordion>
+    <Accordion variant="plain">
       {#snippet header()}
         <h3>Diagnostics</h3>
       {/snippet}
