@@ -47,7 +47,7 @@
  * once, globally, not per fit session (fitWorker.ts's own doc comment). */
 typedef void (*ProgressFn)(int, double);
 static ProgressFn g_progress_fn = NULL;
-void fit_set_progress_fn(int table_idx) {
+void fit_set_progress_fn(intptr_t table_idx) {
   g_progress_fn = (ProgressFn)(intptr_t)table_idx;
 }
 

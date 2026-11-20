@@ -75,21 +75,21 @@ extern void init_output(int capacity, int dim);
  * registered the normal table-index way. */
 typedef void (*AdjointFn)(int, double, double *, double *, double *, double *, double *);
 static AdjointFn g_adjoint_fn = NULL;
-void set_adjoint_fn(int table_idx) { g_adjoint_fn = (AdjointFn)(intptr_t)table_idx; }
+void set_adjoint_fn(intptr_t table_idx) { g_adjoint_fn = (AdjointFn)(intptr_t)table_idx; }
 
 /* The forward model_fn, kept separate from radau5_wrapper.c's g_model_fn:
  * that global gets pointed at adjoint_rhs_dispatch (below) while the
  * backward integration runs, but Hermite interpolation still needs to call
  * the real forward RHS to get f at each bracketing checkpoint. */
 static ModelFn g_forward_model_fn = NULL;
-void set_forward_model_fn(int table_idx) { g_forward_model_fn = (ModelFn)(intptr_t)table_idx; }
+void set_forward_model_fn(intptr_t table_idx) { g_forward_model_fn = (ModelFn)(intptr_t)table_idx; }
 
 /* Fires every `progress_interval` Adam steps from inside adjoint_chunk's
  * own loop — see fit_wrapper.c's identical g_progress_fn doc comment for
  * the full rationale. Registered once, globally. */
 typedef void (*ProgressFn)(int, double);
 static ProgressFn g_progress_fn = NULL;
-void adjoint_set_progress_fn(int table_idx) {
+void adjoint_set_progress_fn(intptr_t table_idx) {
   g_progress_fn = (ProgressFn)(intptr_t)table_idx;
 }
 

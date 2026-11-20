@@ -4,13 +4,16 @@
 #ifndef SOLVER_COMMON_H
 #define SOLVER_COMMON_H
 
+#include <stdint.h>
+
 /* Clean signature: void(int n, double t, double* y, double* dydt, double* pars)
    Emscripten table type string: "vidiii" */
 typedef void (*ModelFn)(int, double, double *, double *, double *);
 
-/* The registered model RHS; set via set_model_fn (JS) or set_model_fn_ptr (C). */
+/* The registered model RHS; set via set_model_fn (a WASM table index from JS, or a function
+   pointer from native C) or set_model_fn_ptr (C). */
 extern ModelFn g_model_fn;
-void set_model_fn(int table_idx);
+void set_model_fn(intptr_t table_idx);
 void set_model_fn_ptr(ModelFn fn);
 ModelFn get_model_fn(void);
 void eval_rhs(int n, double t, double *y, double *dydt, double *pars);

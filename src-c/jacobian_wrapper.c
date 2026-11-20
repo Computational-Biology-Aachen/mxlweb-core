@@ -67,8 +67,8 @@
  * calling convention (this file's own doc comment). */
 static ModelFn g_plain_fn = NULL; /* rhsWat: n_y outputs */
 static ModelFn g_aug_fn = NULL;   /* jacobianWat: n_y*(1+n_theta) outputs */
-void jacobian_set_plain_fn(int table_idx) { g_plain_fn = (ModelFn)(intptr_t)table_idx; }
-void jacobian_set_augmented_fn(int table_idx) { g_aug_fn = (ModelFn)(intptr_t)table_idx; }
+void jacobian_set_plain_fn(intptr_t table_idx) { g_plain_fn = (ModelFn)(intptr_t)table_idx; }
+void jacobian_set_augmented_fn(intptr_t table_idx) { g_aug_fn = (ModelFn)(intptr_t)table_idx; }
 
 /* Fires every `progress_interval` real evaluations from inside
  * jacobian_fcn — see fit_wrapper.c's identical g_progress_fn doc comment
@@ -76,7 +76,7 @@ void jacobian_set_augmented_fn(int table_idx) { g_aug_fn = (ModelFn)(intptr_t)ta
  * chunk's own correctness-mandated budget). Registered once, globally. */
 typedef void (*ProgressFn)(int, double);
 static ProgressFn g_progress_fn = NULL;
-void jacobian_set_progress_fn(int table_idx) {
+void jacobian_set_progress_fn(intptr_t table_idx) {
   g_progress_fn = (ProgressFn)(intptr_t)table_idx;
 }
 

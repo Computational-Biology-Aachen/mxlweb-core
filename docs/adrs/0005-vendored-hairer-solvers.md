@@ -59,6 +59,13 @@ repos vendor from:
   writes `src-c/VENDORED`. `tests/vendoredSolvers.test.ts` checks those hashes, so fix
   solvers in mxl-solvers and re-vendor them instead of editing them here.
 - The wrappers (`*_wrapper.c`), `fit_experiments.*` and `minpack/` stay in this repo.
+  _Superseded (2026-11-20):_ they moved to mxl-solvers as well, so MxlPy's native fitting
+  (mxlpy-native) builds the same Levenberg-Marquardt loop. Only `cvode_wrapper.c` is still
+  written here. Two changes came with the move: function setters take `intptr_t` (still
+  `i32` in wasm, so the bindings are unchanged), and the residual / Jacobian walks read the
+  data points from RADAU5's and LSODA's interpolants (`set_output_grid`) instead of
+  linearly interpolating between accepted steps, which limited time-course fits to about
+  1e-4 relative precision.
 
 mxl-solvers also carries SciPy's C LSODA (`lsoda.c`, with `mxs_lapack.c` standing in
 for BLAS/LAPACK), vendored into `src-c/` too. Unlike the Hairer solvers it isn't f2c
