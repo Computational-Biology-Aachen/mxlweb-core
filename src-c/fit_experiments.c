@@ -13,6 +13,7 @@
 /* ------------------------------------------------------------------ */
 extern void set_model_fn_ptr(ModelFn fn);
 extern void init_output(int capacity, int dim);
+extern void set_output_grid(const double *t, int n);
 extern void free_output(void);
 extern int get_out_n(void);
 extern double *get_out_t(void);
@@ -30,8 +31,8 @@ extern void eval_rhs(int n, double t, double *y, double *dydt, double *pars);
 DerivedFn g_derived_fn = NULL;
 DerivedFn g_derived_grad_fn = NULL;
 
-void set_derived_fn(int table_idx) { g_derived_fn = (DerivedFn)(intptr_t)table_idx; }
-void set_derived_grad_fn(int table_idx) {
+void set_derived_fn(intptr_t table_idx) { g_derived_fn = (DerivedFn)(intptr_t)table_idx; }
+void set_derived_grad_fn(intptr_t table_idx) {
   g_derived_grad_fn = (DerivedFn)(intptr_t)table_idx;
 }
 
@@ -230,6 +231,15 @@ static int walk_time_course(const ExpProblem *P, int e, ModelFn fn, int n, doubl
 
     init_output(2000, n);
     if (t_end > t) {
+      /* RADAU5 and LSODA record the data points of this segment exactly from
+       * their own interpolants. Linear interpolation between accepted steps
+       * is only second-order accurate, which limits fits to ~1e-4 relative
+       * precision. An on_traj caller (the adjoint) needs every step instead. */
+      if (!on_traj && (P->solver_id == SOLVER_RADAU5 || P->solver_id == SOLVER_LSODA)) {
+        int k = j;
+        while (k < n_e && t_data[k] <= t_end) k++;
+        if (k > j) set_output_grid(t_data + j, k - j);
+      }
       int idid = exp_integrate(P, fn, n, t, t_end, y, pars_seg);
       if (idid < 0) {
         free_output();

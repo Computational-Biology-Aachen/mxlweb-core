@@ -245,7 +245,7 @@ function initFit(setup: FitSetup): { rc: number; dispose: () => void } {
   };
 }
 
-function runToConvergence(setup: FitSetup) {
+function runToConvergence(setup: FitSetup, chunkMaxfev = 30) {
   const { rc, dispose } = initFit(setup);
   if (rc !== 0) {
     dispose();
@@ -254,7 +254,7 @@ function runToConvergence(setup: FitSetup) {
   let info = 5;
   let chunks = 0;
   while (info === 5 && chunks < 50) {
-    info = mod._fit_chunk(30);
+    info = mod._fit_chunk(chunkMaxfev);
     chunks++;
   }
   const nPars = setup.pars.length;
@@ -275,6 +275,7 @@ function runFit(
   trueK: number,
   targetResidualNorm = -1,
   solver = 0,
+  chunkMaxfev = 30,
 ) {
   const y0Val = 10;
   const dataT = [0, 1, 2, 3, 4, 5];
@@ -283,24 +284,27 @@ function runFit(
     targetKind === "state"
       ? modelValue(trueK, t)
       : trueK * modelValue(trueK, t);
-  const { params, ...rest } = runToConvergence({
-    rhsWat,
-    derivedWat: targetKind === "derived" ? derivedWat : undefined,
-    y0: [y0Val],
-    pars: [k0],
-    fitIdx: [0],
-    targetKind,
-    targetResidualNorm,
-    solver,
-    experiments: [
-      {
-        kind: EXP_TIME_COURSE,
-        segments: [{ tEnd: dataT[dataT.length - 1], ovr: [] }],
-        dataT,
-        dataY: dataT.map(dataValue),
-      },
-    ],
-  });
+  const { params, ...rest } = runToConvergence(
+    {
+      rhsWat,
+      derivedWat: targetKind === "derived" ? derivedWat : undefined,
+      y0: [y0Val],
+      pars: [k0],
+      fitIdx: [0],
+      targetKind,
+      targetResidualNorm,
+      solver,
+      experiments: [
+        {
+          kind: EXP_TIME_COURSE,
+          segments: [{ tEnd: dataT[dataT.length - 1], ovr: [] }],
+          dataT,
+          dataY: dataT.map(dataValue),
+        },
+      ],
+    },
+    chunkMaxfev,
+  );
   return { kFinal: params[0], ...rest };
 }
 
@@ -321,9 +325,12 @@ describe("fit_wrapper.c: chunked LM fit recovery", () => {
   });
 
   it("resumes correctly across multiple maxfev chunks", () => {
-    // k0=0.1 is known (see ADR 0004 §2.7) to exhaust the first chunk's
-    // budget before converging — exercises the restart-from-x path.
-    const { kFinal, chunks } = runFit("state", 0.1, 0.5);
+    // A budget of 4 evaluations per chunk is too small to converge from
+    // k0=0.1 in one chunk, so this exercises the restart-from-x path. (The
+    // default budget of 30 used to run out too, but since the fit walks read
+    // data points from the solver's interpolant instead of linearly between
+    // steps, lmdif converges within it.)
+    const { kFinal, chunks } = runFit("state", 0.1, 0.5, -1, 0, 4);
     expect(chunks).toBeGreaterThan(1);
     expect(kFinal).toBeCloseTo(0.5, 2);
   });

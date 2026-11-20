@@ -19,7 +19,7 @@ ModelFn g_model_fn = NULL;
  * table_idx comes from Emscripten's addFunction, which is only meaningful
  * for a JS-side callback — a WAT-compiled model function, in every existing
  * caller. */
-void set_model_fn(int table_idx) {
+void set_model_fn(intptr_t table_idx) {
     g_model_fn = (ModelFn)(intptr_t)table_idx;
 }
 

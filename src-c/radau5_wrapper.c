@@ -201,7 +201,10 @@ int run_radau5_fit(int n, double t_start, double t_end,
                    double *y, double *rpar,
                    double rtol, double atol,
                    double h_init, int nmax) {
-    return radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 0);
+    if (grid_t) grid_y = (double *)malloc((size_t)n * sizeof(double));
+    int idid = radau5_impl(n, t_start, t_end, y, rpar, rtol, atol, h_init, nmax, 0);
+    clear_output_grid();
+    return idid;
 }
 
 /* ================================================================== */
