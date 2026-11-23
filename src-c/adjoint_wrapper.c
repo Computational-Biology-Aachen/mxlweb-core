@@ -1,16 +1,15 @@
 /*
- * adjoint_wrapper.c — chunked Adam-over-continuous-adjoint fit driver.
+ * adjoint_wrapper.c — continuous adjoint gradients: a vector-Jacobian product
+ * (adjoint_vjp, used by MxlPy) and a chunked Adam fit driver on top of it
+ * (adjoint_init / adjoint_chunk, used by mxlweb-core).
  *
  * Architecture: ADR 0005 (mxlweb repo), §2.3/§2.3.1-2.3.4/§2.4/§2.5. Summary
  * of what's different from fit_wrapper.c's lmdif driver, and why:
  *
  *   - No new low-level solver code: the backward pass reuses run_radau5/
- *     run_dop853/run_dopri5 (radau5_wrapper.c) completely unchanged, just
- *     with a different RHS registered via set_model_fn_ptr — that entry
- *     point's ModelFn signature (n, t, y, dydt, pars) is generic enough that
- *     the augmented adjoint state [lambda; theta-gradient] is just another
- *     "y" vector as far as the integrator is concerned. Hairer's solvers
- *     already support xend < xstart (integrating in decreasing time), so
+ *     run_dop853/run_dopri5/run_lsoda (radau5_wrapper.c) unchanged, just
+ *     with a different RHS registered via set_model_fn_ptr. Hairer's solvers
+ *     and LSODA support xend < xstart (integrating in decreasing time), so
  *     "backward" needs no special solver support either.
  *
  *   - y(t) during the backward pass comes from Hermite-interpolating the
@@ -20,9 +19,18 @@
  *     specific thing SciMLSensitivity/diffrax document as unstable on
  *     stiff problems, which is exactly what these models are.
  *
- *   - With more than one data point, the adjoint variable lambda needs a
- *     "jump" (additive kick) at each observation time, not just a single
- *     seed at the end — see adam_step's own comment for the derivation.
+ *   - Only lambda (n_y states) is integrated. The parameter gradient
+ *     integral_0^T lambda^T (df/dtheta) dt is a quadrature over the backward
+ *     solve's accepted steps instead (cubic Hermite lambda, 3-point
+ *     Gauss-Legendre per step), so the implicit solvers factor n_y x n_y
+ *     matrices and their finite-difference Jacobians cost n_y adjoint
+ *     evaluations, however many parameters there are. (Integrating
+ *     [lambda; theta-gradient] together made both grow with n_theta, which
+ *     ruled out fits of hundreds of neural-network weights.)
+ *
+ *   - With more than one data point, lambda needs a "jump" (additive kick)
+ *     at each observation time, not just a single seed at the end: lambda
+ *     jumps by the cotangent dLoss/dy(t_j) there (see backward_experiment).
  *
  *   - Experiments (ADR 0009) — the forward pass is fit_experiments.c's
  *     exp_walk, the same as the lm drivers':
@@ -34,53 +42,49 @@
  *       - steady state: the forward windows run until convergence at T*;
  *         the condition is then exactly a one-point time course at T*, so
  *         the gradient is that of y(T*) — the integrate-from-y0 steady
- *         state, conserved moieties included. One that never converges
- *         adds the usual penalty to the loss but no gradient (Adam has no
- *         trust region to back away with);
+ *         state, conserved moieties included. In the Adam driver one that
+ *         never converges adds the usual penalty to the loss but no
+ *         gradient (Adam has no trust region to back away with);
  *       - a fitted parameter must not also be overridden (init returns -4):
  *         the adjoint RHS would still differentiate the overridden value.
  *
  *   - Derived targets d(t, y, p) use g_derived_grad_fn (fit_experiments.h):
- *     the jump is (∂g/∂d)·∂d/∂y and the direct term (∂g/∂d)·∂d/∂θ goes
- *     straight into the theta-gradient accumulator.
+ *     the jump is w·∂d/∂y and the direct term w·∂d/∂θ goes straight into
+ *     the gradient.
  *
- *   - Optimizer is Adam (ADR 0005 §2.4: lr=1e-4, standard beta1/beta2/eps),
- *     not Gauss-Newton: the whole reason this backend exists is that lmdif
- *     needs the full Jacobian of the residual vector, which reverse-mode/
- *     adjoint isn't cheap for. One Adam step = one full forward solve + one
- *     full backward solve per experiment + one parameter update;
- *     "chunking" (adjoint_chunk) runs up to maxIterations *complete* Adam
- *     steps, unlike lmdif's function-evaluation-granularity chunking.
+ *   - The Adam driver (ADR 0005 §2.4: lr=1e-4, standard beta1/beta2/eps)
+ *     exists because lmdif needs the full Jacobian of the residual vector,
+ *     which reverse mode/adjoints aren't cheap for. One Adam step = one full
+ *     forward solve + one full backward solve per experiment + one parameter
+ *     update; "chunking" (adjoint_chunk) runs up to maxIterations *complete*
+ *     Adam steps, unlike lmdif's function-evaluation-granularity chunking.
  *
- *   - The augmented [lambda; theta-gradient] state shares one rtol/atol
- *     (the same ones the forward solve uses) even though lambda and the
- *     theta-gradient accumulator can have very different natural scales —
- *     a known simplification, not revisited here.
+ *   - lambda shares the forward solve's rtol/atol.
  */
 
 #include "fit_experiments.h"
+#include "solver_common.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* Exported from radau5_wrapper.c — called directly, in-process.      */
+/* Registered functions                                               */
 /* ------------------------------------------------------------------ */
-extern void init_output(int capacity, int dim);
 
-/* buildAdjointWat's "fcn" export: void(n, t, y_ptr, lambda_ptr, pars_ptr,
- * out_dlambda_ptr, out_dtheta_ptr) — Emscripten signature "vidiiiii". This
- * one *is* a WAT-compiled JS callback (like the forward model_fn), so it's
- * registered the normal table-index way. */
+/* The adjoint function: void(n, t, y_ptr, lambda_ptr, pars_ptr,
+ * out_dlambda_ptr, out_dtheta_ptr) — Emscripten signature "vidiiiii", a
+ * table index in wasm, a function pointer natively. It writes
+ * dlambda/dt = -(df/dy)^T lambda and -lambda^T (df/dtheta) for the fitted
+ * parameters theta (buildAdjointGraph seeds its reverse walk with -1). */
 typedef void (*AdjointFn)(int, double, double *, double *, double *, double *, double *);
 static AdjointFn g_adjoint_fn = NULL;
 void set_adjoint_fn(intptr_t table_idx) { g_adjoint_fn = (AdjointFn)(intptr_t)table_idx; }
 
 /* The forward model_fn, kept separate from radau5_wrapper.c's g_model_fn:
- * that global gets pointed at adjoint_rhs_dispatch (below) while the
- * backward integration runs, but Hermite interpolation still needs to call
- * the real forward RHS to get f at each bracketing checkpoint. */
+ * that global gets pointed at adjoint_state_rhs (below) while the backward
+ * integration runs. */
 static ModelFn g_forward_model_fn = NULL;
 void set_forward_model_fn(intptr_t table_idx) { g_forward_model_fn = (ModelFn)(intptr_t)table_idx; }
 
@@ -93,21 +97,468 @@ void adjoint_set_progress_fn(intptr_t table_idx) {
   g_progress_fn = (ProgressFn)(intptr_t)table_idx;
 }
 
-/* ------------------------------------------------------------------ */
-/* Adjoint session state — persists across adjoint_chunk() calls.     */
-/* ------------------------------------------------------------------ */
 #define ADJOINT_INFO_CONVERGED_GRADIENT 1
 #define ADJOINT_INFO_PLATEAU 2
 #define ADJOINT_INFO_TARGET_REACHED 3
 #define ADJOINT_INFO_BUDGET_REACHED 4
-/* Negative: genuine failure (allocation, or a solver IDID<0). Unlike
- * fit_fcn's per-trial-parameter-set penalty (lmdif's trust region can
- * reject and shrink away from a bad trial on its own), a single Adam step
- * needs an actual gradient — there's no equivalent "penalize and move on"
- * for a time course's gradient-descent update, so a solver failure there
- * fails the whole chunk. */
+/* Negative: genuine failure (allocation, or a solver IDID<0). */
 #define ADJOINT_INFO_ERROR (-1)
 
+/* ------------------------------------------------------------------ */
+/* Forward-trajectory snapshot + cubic Hermite interpolation.         */
+/*                                                                      */
+/* out_t/out_y (solver_common.c) are a single shared buffer reused by   */
+/* every run_* call, so each forward segment's steps are copied out    */
+/* (snapshot_segment, exp_walk's on_traj) before the next solve, with   */
+/* f at every step for the Hermite slopes.                              */
+/* ------------------------------------------------------------------ */
+static double *fwd_t = NULL, *fwd_y = NULL, *fwd_f = NULL;
+static int fwd_n = 0, fwd_cap = 0, fwd_dim = 0;
+/* Per global segment index: its checkpoints fwd_[t|y|f][seg_start ..
+ * seg_start + seg_count) and the parameter vector it was integrated with. */
+static int *seg_start = NULL, *seg_count = NULL;
+static double *seg_pars = NULL;
+static int snap_n_pars = 0;
+/* The segment hermite_interp currently reads (set_hermite_segment). */
+static int cur_lo = 0, cur_n = 0, cur_i = 0;
+static double *cur_pars = NULL;
+
+static void snapshot_free(void) {
+  free(fwd_t); fwd_t = NULL;
+  free(fwd_y); fwd_y = NULL;
+  free(fwd_f); fwd_f = NULL;
+  free(seg_start); seg_start = NULL;
+  free(seg_count); seg_count = NULL;
+  free(seg_pars); seg_pars = NULL;
+  fwd_n = fwd_cap = fwd_dim = 0;
+}
+
+static int snapshot_alloc(const ExpProblem *P) {
+  snapshot_free();
+  fwd_dim = P->n_y;
+  snap_n_pars = P->n_pars > 0 ? P->n_pars : 1;
+  int n_seg = P->n_seg_total > 0 ? P->n_seg_total : 1;
+  seg_start = (int *)calloc((size_t)n_seg, sizeof(int));
+  seg_count = (int *)calloc((size_t)n_seg, sizeof(int));
+  seg_pars = (double *)calloc((size_t)n_seg * (size_t)snap_n_pars, sizeof(double));
+  return seg_start && seg_count && seg_pars ? 0 : -1;
+}
+
+/* exp_walk's on_traj. */
+static int snapshot_segment(void *vctx, int e, int seg, const double *pars_seg, int out_n,
+                            const double *out_t, const double *out_y) {
+  (void)vctx;
+  (void)e;
+  if (fwd_n + out_n > fwd_cap) {
+    int cap = fwd_cap > 0 ? fwd_cap : 1024;
+    while (cap < fwd_n + out_n) cap *= 2;
+    double *t = (double *)realloc(fwd_t, (size_t)cap * sizeof(double));
+    if (!t) return -1;
+    fwd_t = t;
+    double *y = (double *)realloc(fwd_y, (size_t)cap * (size_t)fwd_dim * sizeof(double));
+    if (!y) return -1;
+    fwd_y = y;
+    double *f = (double *)realloc(fwd_f, (size_t)cap * (size_t)fwd_dim * sizeof(double));
+    if (!f) return -1;
+    fwd_f = f;
+    fwd_cap = cap;
+  }
+  seg_start[seg] = fwd_n;
+  seg_count[seg] = out_n;
+  double *pars = seg_pars + (size_t)seg * snap_n_pars;
+  memcpy(pars, pars_seg, (size_t)snap_n_pars * sizeof(double));
+  memcpy(fwd_t + fwd_n, out_t, (size_t)out_n * sizeof(double));
+  memcpy(fwd_y + (size_t)fwd_n * fwd_dim, out_y, (size_t)out_n * (size_t)fwd_dim * sizeof(double));
+  for (int k = 0; k < out_n; k++) {
+    const size_t off = (size_t)(fwd_n + k) * fwd_dim;
+    g_forward_model_fn(fwd_dim, fwd_t[fwd_n + k], fwd_y + off, fwd_f + off, pars);
+  }
+  fwd_n += out_n;
+  return 0;
+}
+
+static void set_hermite_segment(int seg) {
+  cur_lo = seg_start[seg];
+  cur_n = seg_count[seg];
+  cur_i = 0;
+  cur_pars = seg_pars + (size_t)seg * snap_n_pars;
+}
+
+/* Cubic Hermite interpolation of y and f = dy/dt at both ends of an interval:
+ * the value at local coordinate s in [0, 1] (h signed). */
+static void hermite(int dim, double s, double h, const double *y0, const double *f0,
+                    const double *y1, const double *f1, double *out) {
+  const double s2 = s * s, s3 = s2 * s;
+  const double h00 = 2 * s3 - 3 * s2 + 1;
+  const double h10 = s3 - 2 * s2 + s;
+  const double h01 = -2 * s3 + 3 * s2;
+  const double h11 = s3 - s2;
+  for (int i = 0; i < dim; i++) {
+    out[i] = h00 * y0[i] + h10 * h * f0[i] + h01 * y1[i] + h11 * h * f1[i];
+  }
+}
+
+/* y(t_query) from the current segment's checkpoints. y_out has length fwd_dim. */
+static void hermite_interp(double t_query, double *y_out) {
+  const double *ts = fwd_t + cur_lo;
+  const double *ys = fwd_y + (size_t)cur_lo * fwd_dim;
+  const double *fs = fwd_f + (size_t)cur_lo * fwd_dim;
+  if (cur_n <= 0) { memset(y_out, 0, (size_t)fwd_dim * sizeof(double)); return; }
+  if (cur_n == 1 || t_query <= ts[0]) {
+    memcpy(y_out, ys, (size_t)fwd_dim * sizeof(double));
+    return;
+  }
+  if (t_query >= ts[cur_n - 1]) {
+    memcpy(y_out, ys + (size_t)(cur_n - 1) * fwd_dim, (size_t)fwd_dim * sizeof(double));
+    return;
+  }
+  /* Solvers query neighbouring times, so check the last interval first */
+  int lo = cur_i;
+  if (!(lo < cur_n - 1 && ts[lo] <= t_query && t_query <= ts[lo + 1])) {
+    lo = 0;
+    int hi = cur_n - 1;
+    while (hi - lo > 1) {
+      int mid = (lo + hi) >> 1;
+      if (ts[mid] <= t_query) lo = mid; else hi = mid;
+    }
+    cur_i = lo;
+  }
+  const double h = ts[lo + 1] - ts[lo];
+  const double s = (h > 0.0) ? (t_query - ts[lo]) / h : 0.0;
+  hermite(fwd_dim, s, h, ys + (size_t)lo * fwd_dim, fs + (size_t)lo * fwd_dim,
+          ys + (size_t)(lo + 1) * fwd_dim, fs + (size_t)(lo + 1) * fwd_dim, y_out);
+}
+
+/* ------------------------------------------------------------------ */
+/* One gradient pass: forward and backward solve per experiment.       */
+/* ------------------------------------------------------------------ */
+typedef struct {
+  const ExpProblem *P;
+  int n_theta;
+  double *pred;        /* n_targets * n_points, the model value behind every residual */
+  int *pt_seg;         /* per global point: its segment */
+  double *pt_t;        /* per global point: its time (T* for a steady state) */
+  double *pt_y;        /* per global point: the (interpolated) state, n_y */
+  double *derived_out; /* n_derived */
+  double *grad_out;    /* n_derived * (n_y + n_theta) */
+  /* Scratch of the backward pass */
+  double *y_h, *dtheta, *lam_h, *dlam;
+  double *step_dlam;   /* recorded steps x n_y */
+  int step_cap;
+} Pass;
+
+/* The pass the backward RHS reads its scratch from (one solve at a time). */
+static Pass *g_pass = NULL;
+
+static void pass_free(Pass *c) {
+  free(c->pt_seg);
+  free(c->pt_t);
+  free(c->pt_y);
+  free(c->derived_out);
+  free(c->grad_out);
+  free(c->y_h);
+  free(c->dtheta);
+  free(c->lam_h);
+  free(c->dlam);
+  free(c->step_dlam);
+  memset(c, 0, sizeof(*c));
+  snapshot_free();
+}
+
+/* pred (n_targets * n_points) belongs to the caller. Returns 0 or -1. */
+static int pass_alloc(Pass *c, const ExpProblem *P, int n_theta, double *pred) {
+  memset(c, 0, sizeof(*c));
+  c->P = P;
+  c->n_theta = n_theta;
+  c->pred = pred;
+  const size_t n_y = (size_t)(P->n_y > 0 ? P->n_y : 1);
+  const size_t n_pts = (size_t)(P->n_points > 0 ? P->n_points : 1);
+  const size_t m = (size_t)(n_theta > 0 ? n_theta : 1);
+  c->pt_seg = (int *)malloc(n_pts * sizeof(int));
+  c->pt_t = (double *)malloc(n_pts * sizeof(double));
+  c->pt_y = (double *)malloc(n_pts * n_y * sizeof(double));
+  c->y_h = (double *)malloc(n_y * sizeof(double));
+  c->dtheta = (double *)malloc(m * sizeof(double));
+  c->lam_h = (double *)malloc(n_y * sizeof(double));
+  c->dlam = (double *)malloc(n_y * sizeof(double));
+  int ok = c->pt_seg && c->pt_t && c->pt_y && c->y_h && c->dtheta && c->lam_h && c->dlam;
+  if (P->n_derived > 0) {
+    c->derived_out = (double *)malloc((size_t)P->n_derived * sizeof(double));
+    c->grad_out = (double *)malloc((size_t)P->n_derived * (n_y + (size_t)n_theta) * sizeof(double));
+    ok = ok && c->derived_out && c->grad_out;
+  }
+  if (!ok || snapshot_alloc(P) < 0) {
+    pass_free(c);
+    return -1;
+  }
+  return 0;
+}
+
+/* exp_walk's on_point: the state (Hermite within the segment, as the
+ * backward pass sees y, except a zero-length segment, whose state is exactly
+ * y) and the model value behind every residual of the point. */
+static void forward_point(void *vctx, int e, int seg, int j, double t, const double *y,
+                          const double *pars_seg) {
+  Pass *c = (Pass *)vctx;
+  const ExpProblem *P = c->P;
+  const int n_y = P->n_y;
+  const int gp = P->exp_pt_off[e] + j;
+  double *y_h = c->pt_y + (size_t)gp * n_y;
+  if (seg_count[seg] >= 2) {
+    set_hermite_segment(seg);
+    hermite_interp(t, y_h);
+  } else {
+    memcpy(y_h, y, (size_t)n_y * sizeof(double));
+  }
+  if (P->n_derived > 0) g_derived_fn(n_y, t, y_h, c->derived_out, (double *)pars_seg);
+  c->pt_seg[gp] = seg;
+  c->pt_t[gp] = t;
+  for (int k = 0; k < P->n_targets; k++) {
+    const int ti = P->target_index[k];
+    c->pred[exp_index(P, e, k, j)] =
+        P->target_kind[k] == TARGET_DERIVED ? c->derived_out[ti] : y_h[ti];
+  }
+}
+
+/* Forward solve of experiment e. Returns exp_walk's code. */
+static int forward_experiment(Pass *c, int e, const double *pars, double *y_work) {
+  const ExpProblem *P = c->P;
+  fwd_n = 0;
+  memcpy(y_work, P->y0, (size_t)P->n_y * sizeof(double));
+  return exp_walk(P, e, g_forward_model_fn, P->n_y, y_work, pars, forward_point,
+                  snapshot_segment, c, NULL);
+}
+
+/* dlambda/dt = -(df/dy)^T lambda, with y from the forward checkpoints. */
+static void adjoint_state_rhs(int n, double t, double *lam, double *dlam, double *pars) {
+  Pass *c = g_pass;
+  hermite_interp(t, c->y_h);
+  g_adjoint_fn(n, t, c->y_h, lam, pars, dlam, c->dtheta);
+}
+
+static const double GL3_S[3] = {0.11270166537925831, 0.5, 0.8872983346207417};
+static const double GL3_W[3] = {5.0 / 18.0, 8.0 / 18.0, 5.0 / 18.0};
+
+/* One backward piece within global segment seg, t_hi down to t_lo: lambda
+ * (in place) and the quadrature integral lambda^T (df/dtheta) dt over the
+ * solver's accepted steps, added to grad. */
+static int backward_piece(Pass *c, int seg, double t_hi, double t_lo, double *lam, double *grad) {
+  if (!(t_hi > t_lo)) return 0;
+  const ExpProblem *P = c->P;
+  const int n_y = P->n_y, n_theta = c->n_theta;
+  set_hermite_segment(seg);
+  init_output(64, n_y);
+  int idid = exp_integrate(P, adjoint_state_rhs, n_y, t_hi, t_lo, lam, cur_pars);
+  if (idid < 0) {
+    free_output();
+    return idid;
+  }
+  const int n = get_out_n();
+  const double *ts = get_out_t();
+  const double *ls = get_out_y();
+  if (n > c->step_cap) {
+    double *d = (double *)realloc(c->step_dlam, (size_t)n * (size_t)n_y * sizeof(double));
+    if (!d) {
+      free_output();
+      return EXP_NO_MEMORY;
+    }
+    c->step_dlam = d;
+    c->step_cap = n;
+  }
+  for (int k = 0; k < n; k++) {
+    hermite_interp(ts[k], c->y_h);
+    g_adjoint_fn(n_y, ts[k], c->y_h, (double *)(ls + (size_t)k * n_y),
+                 cur_pars, c->step_dlam + (size_t)k * n_y, c->dtheta);
+  }
+  for (int k = 0; k + 1 < n; k++) {
+    const double h = ts[k + 1] - ts[k]; /* negative: steps run backward */
+    for (int q = 0; q < 3; q++) {
+      const double t = ts[k] + GL3_S[q] * h;
+      hermite(n_y, GL3_S[q], h, ls + (size_t)k * n_y, c->step_dlam + (size_t)k * n_y,
+              ls + (size_t)(k + 1) * n_y, c->step_dlam + (size_t)(k + 1) * n_y, c->lam_h);
+      hermite_interp(t, c->y_h);
+      g_adjoint_fn(n_y, t, c->y_h, c->lam_h, cur_pars, c->dlam, c->dtheta);
+      /* dtheta = -lambda^T df/dtheta, and the step runs backward (h < 0) */
+      for (int i = 0; i < n_theta; i++) grad[i] += GL3_W[q] * h * c->dtheta[i];
+    }
+  }
+  free_output();
+  return 0;
+}
+
+/* lambda += w dmodel/dy for every observation of point gp (w = cot / scale),
+ * and the direct term w dmodel/dtheta of derived targets into grad. */
+static void jump(Pass *c, int e, int j, const double *cot, double scale, double *lam,
+                 double *grad) {
+  const ExpProblem *P = c->P;
+  const int n_y = P->n_y, n_theta = c->n_theta;
+  const int gp = P->exp_pt_off[e] + j;
+  int have_grad = 0;
+  for (int k = 0; k < P->n_targets; k++) {
+    const double w = cot[exp_index(P, e, k, j)] / scale;
+    if (!(w != 0.0) || isnan(w)) continue;
+    const int ti = P->target_index[k];
+    if (P->target_kind[k] != TARGET_DERIVED) {
+      lam[ti] += w;
+      continue;
+    }
+    if (!have_grad) {
+      g_derived_grad_fn(n_y, c->pt_t[gp], c->pt_y + (size_t)gp * n_y, c->grad_out,
+                        seg_pars + (size_t)c->pt_seg[gp] * snap_n_pars);
+      have_grad = 1;
+    }
+    const double *g = c->grad_out + (size_t)ti * (size_t)(n_y + n_theta);
+    for (int i = 0; i < n_y; i++) lam[i] += w * g[i];
+    for (int i = 0; i < n_theta; i++) grad[i] += w * g[n_y + i];
+  }
+}
+
+/* Backward solve of experiment e after its forward solve: adds the gradient
+ * of sum cot * model (cot in data_y's layout, NaN or 0 = no weight) to
+ * grad_out and writes lambda(0) (the gradient w.r.t. y0) to lambda0 if
+ * non-NULL.
+ * Returns 0 or a negative solver code. */
+static int backward_experiment(Pass *c, int e, const double *cot, double *grad_out,
+                               double *lambda0) {
+  const ExpProblem *P = c->P;
+  const int n_y = P->n_y, n_theta = c->n_theta;
+  const int n_e = P->exp_n_points[e];
+  const int off = P->exp_pt_off[e];
+  /* lambda is linear in the cotangents, but integrated with the absolute
+   * tolerance of the states: scaling them to max |cot| = 1 keeps small
+   * cotangents (close to a fit's optimum) as accurate as large ones. */
+  double scale = 0.0;
+  for (int k = 0; k < P->n_targets; k++) {
+    for (int j = 0; j < n_e; j++) {
+      const double w = fabs(cot[exp_index(P, e, k, j)]);
+      if (w > scale) scale = w; /* false for NaN */
+    }
+  }
+  if (lambda0) memset(lambda0, 0, (size_t)n_y * sizeof(double));
+  if (!(scale > 0.0) || !isfinite(scale)) return 0;
+  double *lam = (double *)calloc((size_t)(n_y > 0 ? n_y : 1), sizeof(double));
+  double *grad = (double *)calloc((size_t)(n_theta > 0 ? n_theta : 1), sizeof(double));
+  if (!lam || !grad) {
+    free(lam);
+    free(grad);
+    return EXP_NO_MEMORY;
+  }
+  int rc = 0;
+  g_pass = c;
+  if (n_e > 0) {
+    /* From the last observation down to 0, stopping at every observation
+     * (its jump) and every segment boundary (switching parameters and
+     * Hermite checkpoints) on the way. */
+    int g = c->pt_seg[off + n_e - 1];
+    double t_hi = c->pt_t[off + n_e - 1];
+    for (int j = n_e - 1; j >= 0 && rc == 0; j--) {
+      const int gp = off + j;
+      while (g > c->pt_seg[gp] && rc == 0) {
+        const double lo = exp_seg_start(P, e, g);
+        rc = backward_piece(c, g, t_hi, lo, lam, grad);
+        t_hi = lo;
+        g--;
+      }
+      if (rc == 0) rc = backward_piece(c, g, t_hi, c->pt_t[gp], lam, grad);
+      t_hi = c->pt_t[gp];
+      if (rc == 0) jump(c, e, j, cot, scale, lam, grad);
+    }
+    while (rc == 0 && g > P->exp_seg_off[e]) {
+      const double lo = exp_seg_start(P, e, g);
+      rc = backward_piece(c, g, t_hi, lo, lam, grad);
+      t_hi = lo;
+      g--;
+    }
+    if (rc == 0) rc = backward_piece(c, g, t_hi, 0.0, lam, grad);
+  }
+  if (rc == 0) {
+    for (int i = 0; i < n_theta; i++) grad_out[i] += scale * grad[i];
+    if (lambda0) {
+      for (int i = 0; i < n_y; i++) lambda0[i] = scale * lam[i];
+    }
+  }
+  g_pass = NULL;
+  free(lam);
+  free(grad);
+  return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vector-Jacobian product                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * adjoint_vjp — gradient of sum_{k,j} cotangent[k, j] * model_k(t_j) w.r.t.
+ * the parameters theta_idx and y0, one forward and one backward solve per
+ * experiment. Call set_forward_model_fn() and set_adjoint_fn() (and, with
+ * derived targets, set_derived_fn()/set_derived_grad_fn()) before this; the
+ * adjoint function differentiates w.r.t. theta_idx, in that order.
+ *
+ * The experiment layout is fit_init's (see fit_experiments.h); cotangent has
+ * data_y's layout (n_targets * n_points, NaN or 0 = no weight).
+ *
+ * Writes the model value behind every cotangent to out_pred (n_targets *
+ * n_points), the gradient to out_grad (n_theta) and, per experiment,
+ * lambda(0) = the gradient w.r.t. y0 to out_lambda0 (n_exp * n_y; may be
+ * NULL).
+ *
+ * Returns 0, -1 on allocation failure, -3 if the experiment layout is
+ * inconsistent, -4 if a parameter in theta_idx is also overridden, -5 if
+ * derived targets lack set_derived_fn/set_derived_grad_fn, -7 without the
+ * forward or adjoint function, or a failed experiment's negative solver code
+ * (EXP_NOT_CONVERGED for a steady state that never converged).
+ */
+int adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
+                int n_targets, int *target_kind, int *target_index, int n_ovr, int *ovr_idx,
+                int n_exp, int *exp_kind, int *exp_n_seg, int *exp_n_points, int n_seg_total,
+                double *seg_t_end, double *seg_ovr, int n_points, double *data_t,
+                double *cotangent, int n_derived, int solver_id, double rtol, double atol,
+                double ss_tol, double ss_t_max, double *out_pred, double *out_grad,
+                double *out_lambda0) {
+  if (!g_forward_model_fn || !g_adjoint_fn) return -7;
+  if (n_derived > 0 && (!g_derived_fn || !g_derived_grad_fn)) return -5;
+  double *scale = (double *)malloc((size_t)(n_targets > 0 ? n_targets : 1) * sizeof(double));
+  if (!scale) return -1;
+  for (int k = 0; k < n_targets; k++) scale[k] = 1.0;
+  ExpProblem P;
+  int rc = exp_problem_init(&P, n_y, y0, n_pars, n_targets, target_kind, target_index, scale,
+                            n_derived, n_ovr, ovr_idx, n_exp, exp_kind, exp_n_seg, exp_n_points,
+                            n_seg_total, seg_t_end, seg_ovr, n_points, data_t, cotangent,
+                            solver_id, rtol, atol, ss_tol, ss_t_max);
+  free(scale);
+  if (rc != 0) return rc;
+  if (exp_overrides_fitted(&P, n_theta, theta_idx)) {
+    exp_problem_free(&P);
+    return -4;
+  }
+  for (int i = 0; i < n_theta; i++) out_grad[i] = 0.0;
+  for (int i = 0; i < exp_m(&P); i++) out_pred[i] = NAN;
+
+  Pass c;
+  double *y_work = (double *)malloc((size_t)(n_y > 0 ? n_y : 1) * sizeof(double));
+  if (!y_work || pass_alloc(&c, &P, n_theta, out_pred) < 0) {
+    free(y_work);
+    exp_problem_free(&P);
+    return -1;
+  }
+  for (int e = 0; e < P.n_exp && rc == 0; e++) {
+    rc = forward_experiment(&c, e, pars, y_work);
+    if (rc == EXP_NO_MEMORY) rc = -1;
+    if (rc == 0) {
+      rc = backward_experiment(&c, e, P.data_y, out_grad,
+                               out_lambda0 ? out_lambda0 + (size_t)e * n_y : NULL);
+      if (rc == EXP_NO_MEMORY) rc = -1;
+    }
+  }
+  pass_free(&c);
+  free(y_work);
+  exp_problem_free(&P);
+  return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* Adam fit session — persists across adjoint_chunk() calls.           */
+/* ------------------------------------------------------------------ */
 typedef struct {
   ExpProblem P; /* y0, targets, experiments, solver settings */
 
@@ -135,6 +586,7 @@ typedef struct {
   double last_grad_norm;
   double *last_theta_grad; /* length n_theta — the raw gradient, not just its norm; mainly for tests/debugging */
   double *predictions;     /* length n_targets * n_points, from the last forward pass */
+  double *cotangent;       /* length n_targets * n_points, dLoss/dmodel */
 
   /* Mid-chunk progress reporting — see g_progress_fn's own doc comment.
    * <=0 disables. */
@@ -152,6 +604,7 @@ static void adjoint_session_free(AdjointSession *s) {
   free(s->adam_v);
   free(s->last_theta_grad);
   free(s->predictions);
+  free(s->cotangent);
   free(s);
 }
 
@@ -161,241 +614,11 @@ void adjoint_free(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Forward-trajectory snapshot + cubic Hermite interpolation.         */
-/*                                                                      */
-/* out_t/out_y (radau5_wrapper.c) are a single shared buffer reused by */
-/* every run_* call, so each forward segment's steps are copied out    */
-/* (snapshot_segment, exp_walk's on_traj) before the next solve.       */
-/* ------------------------------------------------------------------ */
-static double *fwd_t = NULL, *fwd_y = NULL;
-static int fwd_n = 0, fwd_cap = 0, fwd_dim = 0;
-/* Per global segment index: its checkpoints fwd_[t|y][seg_start ..
- * seg_start + seg_count) and the parameter vector it was integrated with. */
-static int *seg_start = NULL, *seg_count = NULL;
-static double *seg_pars = NULL;
-/* The segment hermite_interp currently reads (set_hermite_segment). */
-static int cur_lo = 0, cur_n = 0;
-static double *cur_pars = NULL;
-
-static void snapshot_free(void) {
-  free(fwd_t); fwd_t = NULL;
-  free(fwd_y); fwd_y = NULL;
-  free(seg_start); seg_start = NULL;
-  free(seg_count); seg_count = NULL;
-  free(seg_pars); seg_pars = NULL;
-  fwd_n = fwd_cap = fwd_dim = 0;
-}
-
-static int snapshot_alloc(const ExpProblem *P) {
-  snapshot_free();
-  fwd_dim = P->n_y;
-  int n_seg = P->n_seg_total > 0 ? P->n_seg_total : 1;
-  seg_start = (int *)calloc((size_t)n_seg, sizeof(int));
-  seg_count = (int *)calloc((size_t)n_seg, sizeof(int));
-  seg_pars = (double *)malloc((size_t)n_seg * (size_t)(P->n_pars > 0 ? P->n_pars : 1) *
-                              sizeof(double));
-  return seg_start && seg_count && seg_pars ? 0 : -1;
-}
-
-/* exp_walk's on_traj; vctx is adam_step's ForwardCtx, whose first member
- * is the session. */
-static int snapshot_segment(void *vctx, int e, int seg, const double *pars_seg, int out_n,
-                            const double *out_t, const double *out_y) {
-  (void)e;
-  const ExpProblem *P = &(*(AdjointSession **)vctx)->P;
-  if (fwd_n + out_n > fwd_cap) {
-    int cap = fwd_cap > 0 ? fwd_cap : 1024;
-    while (cap < fwd_n + out_n) cap *= 2;
-    double *t = (double *)realloc(fwd_t, (size_t)cap * sizeof(double));
-    if (!t) return -1;
-    fwd_t = t;
-    double *y = (double *)realloc(fwd_y, (size_t)cap * (size_t)fwd_dim * sizeof(double));
-    if (!y) return -1;
-    fwd_y = y;
-    fwd_cap = cap;
-  }
-  seg_start[seg] = fwd_n;
-  seg_count[seg] = out_n;
-  memcpy(seg_pars + (size_t)seg * P->n_pars, pars_seg, (size_t)P->n_pars * sizeof(double));
-  memcpy(fwd_t + fwd_n, out_t, (size_t)out_n * sizeof(double));
-  memcpy(fwd_y + (size_t)fwd_n * fwd_dim, out_y, (size_t)out_n * (size_t)fwd_dim * sizeof(double));
-  fwd_n += out_n;
-  return 0;
-}
-
-static void set_hermite_segment(const ExpProblem *P, int seg) {
-  cur_lo = seg_start[seg];
-  cur_n = seg_count[seg];
-  cur_pars = seg_pars + (size_t)seg * P->n_pars;
-}
-
-/* Cubic Hermite interpolation of y(t_query) from the current segment's
- * checkpoints, using y and f=dy/dt (recomputed via g_forward_model_fn — one
- * extra RHS evaluation per endpoint, ADR 0005 §2.3.1) at both ends of the
- * bracketing interval. y_out must have length fwd_dim.
- */
-static void hermite_interp(double t_query, double *y_out) {
-  const double *ts = fwd_t + cur_lo;
-  const double *ys = fwd_y + (size_t)cur_lo * fwd_dim;
-  if (cur_n <= 0) { memset(y_out, 0, (size_t)fwd_dim * sizeof(double)); return; }
-  if (cur_n == 1 || t_query <= ts[0]) {
-    memcpy(y_out, ys, (size_t)fwd_dim * sizeof(double));
-    return;
-  }
-  if (t_query >= ts[cur_n - 1]) {
-    memcpy(y_out, ys + (size_t)(cur_n - 1) * fwd_dim, (size_t)fwd_dim * sizeof(double));
-    return;
-  }
-  int lo = 0, hi = cur_n - 1;
-  while (hi - lo > 1) {
-    int mid = (lo + hi) >> 1;
-    if (ts[mid] <= t_query) lo = mid; else hi = mid;
-  }
-  const double t0 = ts[lo], t1 = ts[hi];
-  const double *y0 = ys + (size_t)lo * fwd_dim;
-  const double *y1 = ys + (size_t)hi * fwd_dim;
-  const double h = t1 - t0;
-
-  double *f0 = (double *)malloc((size_t)fwd_dim * sizeof(double));
-  double *f1 = (double *)malloc((size_t)fwd_dim * sizeof(double));
-  if (!f0 || !f1) {
-    free(f0); free(f1);
-    memcpy(y_out, y0, (size_t)fwd_dim * sizeof(double));
-    return;
-  }
-  g_forward_model_fn(fwd_dim, t0, (double *)y0, f0, cur_pars);
-  g_forward_model_fn(fwd_dim, t1, (double *)y1, f1, cur_pars);
-
-  const double s = (h > 0.0) ? (t_query - t0) / h : 0.0;
-  const double s2 = s * s, s3 = s2 * s;
-  const double h00 = 2 * s3 - 3 * s2 + 1;
-  const double h10 = s3 - 2 * s2 + s;
-  const double h01 = -2 * s3 + 3 * s2;
-  const double h11 = s3 - s2;
-  for (int i = 0; i < fwd_dim; i++) {
-    y_out[i] = h00 * y0[i] + h10 * h * f0[i] + h01 * y1[i] + h11 * h * f1[i];
-  }
-  free(f0);
-  free(f1);
-}
-
-/* ------------------------------------------------------------------ */
-/* Augmented adjoint RHS — registered via set_model_fn_ptr for each    */
-/* backward run_* call. y_aug = [lambda(n_y); theta_grad(n_theta)].    */
-/* ------------------------------------------------------------------ */
-static int g_aug_n_y = 0;
-
-static void adjoint_rhs_dispatch(int n_aug, double t, double *y_aug, double *dydt_aug,
-                                  double *pars) {
-  (void)n_aug;
-  double *y_interp = (double *)malloc((size_t)fwd_dim * sizeof(double));
-  if (!y_interp) return; /* leaves dydt_aug untouched — caller sees a stalled integration, not silent corruption */
-  hermite_interp(t, y_interp);
-  double *lambda = y_aug; /* first g_aug_n_y entries of the augmented state */
-  g_adjoint_fn(g_aug_n_y, t, y_interp, lambda, pars,
-               dydt_aug /* dlambda out */, dydt_aug + g_aug_n_y /* dtheta out */);
-  free(y_interp);
-}
-
-/* ------------------------------------------------------------------ */
-/* Forward pass: residuals, loss and each observation's jump.          */
-/* ------------------------------------------------------------------ */
-typedef struct {
-  AdjointSession *s; /* first: snapshot_segment reads it */
-  double loss;            /* sum of squared residuals so far */
-  int *pt_seg;            /* per global point: its segment */
-  double *pt_t;           /* per global point: its time (T* for a steady state) */
-  double *jump_lambda;    /* per global point: n_y */
-  double *jump_theta;     /* per global point: n_theta (derived targets' direct term) */
-  double *y_h;            /* n_y scratch */
-  double *derived_out;    /* n_derived */
-  double *grad_out;       /* n_derived * (n_y + n_theta) */
-} ForwardCtx;
-
-/* Loss = sum_obs r^2, r = (model - data) / scale, so an observation's
- * dLoss/dmodel is 2r/scale. A state target's jump is that on its own
- * lambda entry; a derived target's is that times ∂d/∂y, plus that times
- * ∂d/∂θ straight into the theta-gradient. */
-static void adjoint_point(void *vctx, int e, int seg, int j, double t, const double *y,
-                          const double *pars_seg) {
-  ForwardCtx *c = (ForwardCtx *)vctx;
-  AdjointSession *s = c->s;
-  const ExpProblem *P = &s->P;
-  const int n_y = P->n_y, n_theta = s->n_theta;
-  const int gp = P->exp_pt_off[e] + j;
-
-  /* Hermite within the segment, as the backward pass sees y — except a
-   * zero-length segment, whose state is exactly y. */
-  if (seg_count[seg] >= 2) {
-    set_hermite_segment(P, seg);
-    hermite_interp(t, c->y_h);
-  } else {
-    memcpy(c->y_h, y, (size_t)n_y * sizeof(double));
-  }
-  if (P->n_derived > 0) {
-    g_derived_fn(n_y, t, c->y_h, c->derived_out, (double *)pars_seg);
-    g_derived_grad_fn(n_y, t, c->y_h, c->grad_out, (double *)pars_seg);
-  }
-
-  c->pt_seg[gp] = seg;
-  c->pt_t[gp] = t;
-  double *jl = c->jump_lambda + (size_t)gp * n_y;
-  double *jt = c->jump_theta + (size_t)gp * n_theta;
-  memset(jl, 0, (size_t)n_y * sizeof(double));
-  memset(jt, 0, (size_t)n_theta * sizeof(double));
-  for (int k = 0; k < P->n_targets; k++) {
-    const int derived = P->target_kind[k] == TARGET_DERIVED;
-    const int ti = P->target_index[k];
-    const double model_v = derived ? c->derived_out[ti] : c->y_h[ti];
-    const size_t idx = exp_index(P, e, k, j);
-    s->predictions[idx] = model_v;
-    const double data_v = P->data_y[idx];
-    if (isnan(data_v)) continue;
-    const double r = (model_v - data_v) / P->target_scale[k];
-    c->loss += r * r;
-    const double w = 2.0 * r / P->target_scale[k];
-    if (!derived) {
-      jl[ti] += w;
-    } else {
-      const double *grad = c->grad_out + (size_t)ti * (size_t)(n_y + n_theta);
-      for (int m = 0; m < n_y; m++) jl[m] += w * grad[m];
-      for (int col = 0; col < n_theta; col++) jt[col] += w * grad[n_y + col];
-    }
-  }
-}
-
-/* One backward piece within global segment seg, t_hi down to t_lo. */
-static int backward(AdjointSession *s, int seg, double t_hi, double t_lo, double *y_aug) {
-  if (!(t_hi > t_lo)) return 0;
-  const ExpProblem *P = &s->P;
-  set_hermite_segment(P, seg);
-  init_output(0, P->n_y + s->n_theta);
-  int idid = exp_integrate(P, adjoint_rhs_dispatch, P->n_y + s->n_theta, t_hi, t_lo, y_aug,
-                           cur_pars);
-  return idid < 0 ? idid : 0;
-}
-
-/* ------------------------------------------------------------------ */
 /* One Adam step: per experiment a full forward solve, then a backward  */
 /* solve accumulating dLoss/dtheta, then the parameter update.          */
 /*                                                                      */
-/* Derivation of the jump, and why no extra sign-flip is needed here:  */
-/* Loss = sum_j g_j(y(t_j)), g_j = sum_k ((y_{idx_k}(t_j)-data_k)/      */
-/* scale_k)^2. Standard continuous-adjoint theory: dlambda/dt =        */
-/* -(df/dy)^T lambda between data points, with a jump                  */
-/* lambda(t_j-) = lambda(t_j+) + (dg_j/dy)^T applied *at* t_j when      */
-/* integrating backward *through* it, lambda(t_end+) = 0.              */
-/* dLoss/dtheta = integral_0^t_end lambda^T (df/dtheta) dt (+ the       */
-/* direct dg_j/dtheta of a derived target).                            */
-/*                                                                      */
-/* buildAdjointGraph (modelIr.ts) already seeds its reverse walk with   */
-/* -1, so the compiled adjoint fcn's dtheta output *is*                */
-/* -lambda^T(df/dtheta) at an instant. Accumulating a state Q with      */
-/* dQ/dt = dtheta(t), integrated *backward* from Q(t_end)=0 down to     */
-/* t=0, gives Q(0) = 0 - integral_0^t_end dtheta(t) dt =                */
-/* integral_0^t_end lambda^T(df/dtheta) dt = dLoss/dtheta directly —    */
-/* no extra negation anywhere in this file. Q simply keeps accumulating */
-/* across experiments; lambda restarts at 0 for each.                   */
+/* Loss = sum_obs r^2, r = (model - data) / scale, so the cotangent of  */
+/* an observation is dLoss/dmodel = 2r/scale.                          */
 /*                                                                      */
 /* Returns 0 on success (writing *out_loss and *out_grad_norm), or a    */
 /* negative IDID-style value from whichever run_* call failed, or       */
@@ -403,39 +626,21 @@ static int backward(AdjointSession *s, int seg, double t_hi, double t_lo, double
 /* ------------------------------------------------------------------ */
 static int adam_step(AdjointSession *s, double *out_loss, double *out_grad_norm) {
   const ExpProblem *P = &s->P;
-  const int n_y = P->n_y, n_theta = s->n_theta;
-  const int n_aug = n_y + n_theta;
-  const int n_pts = P->n_points > 0 ? P->n_points : 1;
-
-  ForwardCtx c;
-  memset(&c, 0, sizeof(c));
-  c.s = s;
-  double *y_work = (double *)malloc((size_t)n_y * sizeof(double));
-  double *y_aug = (double *)calloc((size_t)n_aug, sizeof(double)); /* lambda=0, theta_grad=0 */
-  c.pt_seg = (int *)malloc((size_t)n_pts * sizeof(int));
-  c.pt_t = (double *)malloc((size_t)n_pts * sizeof(double));
-  c.jump_lambda = (double *)malloc((size_t)n_pts * (size_t)n_y * sizeof(double));
-  c.jump_theta = (double *)malloc((size_t)n_pts * (size_t)(n_theta > 0 ? n_theta : 1) * sizeof(double));
-  c.y_h = (double *)malloc((size_t)n_y * sizeof(double));
-  if (P->n_derived > 0) {
-    c.derived_out = (double *)malloc((size_t)P->n_derived * sizeof(double));
-    c.grad_out = (double *)malloc((size_t)P->n_derived * (size_t)n_aug * sizeof(double));
+  const int n_theta = s->n_theta;
+  Pass c;
+  double *y_work = (double *)malloc((size_t)(P->n_y > 0 ? P->n_y : 1) * sizeof(double));
+  double *grad = s->last_theta_grad;
+  if (!y_work || pass_alloc(&c, P, n_theta, s->predictions) < 0) {
+    free(y_work);
+    return ADJOINT_INFO_ERROR;
   }
+  memset(grad, 0, (size_t)n_theta * sizeof(double));
+  double loss = 0.0;
   int rc = 0;
-  if (!y_work || !y_aug || !c.pt_seg || !c.pt_t || !c.jump_lambda || !c.jump_theta || !c.y_h ||
-      (P->n_derived > 0 && (!c.derived_out || !c.grad_out)) || snapshot_alloc(P) < 0) {
-    rc = ADJOINT_INFO_ERROR;
-    goto done;
-  }
-  g_aug_n_y = n_y;
 
   for (int e = 0; e < P->n_exp && rc == 0; e++) {
     const int n_e = P->exp_n_points[e];
-    const int off = P->exp_pt_off[e];
-    fwd_n = 0;
-    memcpy(y_work, P->y0, (size_t)n_y * sizeof(double));
-    int ok = exp_walk(P, e, g_forward_model_fn, n_y, y_work, s->pars, adjoint_point,
-                      snapshot_segment, &c, NULL);
+    int ok = forward_experiment(&c, e, s->pars, y_work);
     if (ok == EXP_NO_MEMORY) {
       rc = ADJOINT_INFO_ERROR;
       break;
@@ -449,80 +654,47 @@ static int adam_step(AdjointSession *s, double *out_loss, double *out_grad_norm)
         for (int j = 0; j < n_e; j++) {
           size_t idx = exp_index(P, e, k, j);
           s->predictions[idx] = NAN;
-          if (!isnan(P->data_y[idx])) c.loss += EXP_PENALTY * EXP_PENALTY;
+          if (!isnan(P->data_y[idx])) loss += EXP_PENALTY * EXP_PENALTY;
         }
       }
       continue;
     }
-    if (n_e == 0) continue;
-
-    /* Backward pass: from the last observation down to 0, stopping at
-     * every observation (its jump) and every segment boundary (switching
-     * parameters and Hermite checkpoints) on the way. */
-    memset(y_aug, 0, (size_t)n_y * sizeof(double));
-    int g = c.pt_seg[off + n_e - 1];
-    double t_hi = c.pt_t[off + n_e - 1];
-    for (int j = n_e - 1; j >= 0 && rc == 0; j--) {
-      const int gp = off + j;
-      while (g > c.pt_seg[gp] && rc == 0) {
-        const double lo = exp_seg_start(P, e, g);
-        rc = backward(s, g, t_hi, lo, y_aug);
-        t_hi = lo;
-        g--;
+    for (int k = 0; k < P->n_targets; k++) {
+      for (int j = 0; j < n_e; j++) {
+        const size_t idx = exp_index(P, e, k, j);
+        const double data_v = P->data_y[idx];
+        s->cotangent[idx] = 0.0;
+        if (isnan(data_v)) continue;
+        const double r = (s->predictions[idx] - data_v) / P->target_scale[k];
+        loss += r * r;
+        s->cotangent[idx] = 2.0 * r / P->target_scale[k];
       }
-      if (rc == 0) rc = backward(s, g, t_hi, c.pt_t[gp], y_aug);
-      t_hi = c.pt_t[gp];
-      const double *jl = c.jump_lambda + (size_t)gp * n_y;
-      const double *jt = c.jump_theta + (size_t)gp * n_theta;
-      for (int i = 0; i < n_y; i++) y_aug[i] += jl[i];
-      for (int col = 0; col < n_theta; col++) y_aug[n_y + col] += jt[col];
     }
-    while (rc == 0 && g > P->exp_seg_off[e]) {
-      const double lo = exp_seg_start(P, e, g);
-      rc = backward(s, g, t_hi, lo, y_aug);
-      t_hi = lo;
-      g--;
-    }
-    if (rc == 0) rc = backward(s, g, t_hi, 0.0, y_aug);
+    rc = backward_experiment(&c, e, s->cotangent, grad, NULL);
+    if (rc == EXP_NO_MEMORY) rc = ADJOINT_INFO_ERROR;
   }
-  if (rc != 0) goto done;
-
-  {
-    /* y_aug[n_y..) is theta_grad = dLoss/dtheta, per this function's own
-     * derivation comment. */
-    double *theta_grad = y_aug + n_y;
-    double grad_norm_sq = 0.0;
-    for (int k = 0; k < n_theta; k++) grad_norm_sq += theta_grad[k] * theta_grad[k];
-    *out_grad_norm = sqrt(grad_norm_sq);
-    *out_loss = sqrt(c.loss);
-    memcpy(s->last_theta_grad, theta_grad, (size_t)n_theta * sizeof(double));
-
-    /* Adam update. */
-    s->adam_t += 1;
-    const double bc1 = 1.0 - pow(s->beta1, (double)s->adam_t);
-    const double bc2 = 1.0 - pow(s->beta2, (double)s->adam_t);
-    for (int k = 0; k < n_theta; k++) {
-      const double gk = theta_grad[k];
-      s->adam_m[k] = s->beta1 * s->adam_m[k] + (1.0 - s->beta1) * gk;
-      s->adam_v[k] = s->beta2 * s->adam_v[k] + (1.0 - s->beta2) * gk * gk;
-      const double mhat = s->adam_m[k] / bc1;
-      const double vhat = s->adam_v[k] / bc2;
-      s->pars[s->theta_idx[k]] -= s->lr * mhat / (sqrt(vhat) + s->eps);
-    }
-  }
-
-done:
-  snapshot_free();
+  pass_free(&c);
   free(y_work);
-  free(y_aug);
-  free(c.pt_seg);
-  free(c.pt_t);
-  free(c.jump_lambda);
-  free(c.jump_theta);
-  free(c.y_h);
-  free(c.derived_out);
-  free(c.grad_out);
-  return rc;
+  if (rc != 0) return rc;
+
+  double grad_norm_sq = 0.0;
+  for (int k = 0; k < n_theta; k++) grad_norm_sq += grad[k] * grad[k];
+  *out_grad_norm = sqrt(grad_norm_sq);
+  *out_loss = sqrt(loss);
+
+  /* Adam update. */
+  s->adam_t += 1;
+  const double bc1 = 1.0 - pow(s->beta1, (double)s->adam_t);
+  const double bc2 = 1.0 - pow(s->beta2, (double)s->adam_t);
+  for (int k = 0; k < n_theta; k++) {
+    const double gk = grad[k];
+    s->adam_m[k] = s->beta1 * s->adam_m[k] + (1.0 - s->beta1) * gk;
+    s->adam_v[k] = s->beta2 * s->adam_v[k] + (1.0 - s->beta2) * gk * gk;
+    const double mhat = s->adam_m[k] / bc1;
+    const double vhat = s->adam_v[k] / bc2;
+    s->pars[s->theta_idx[k]] -= s->lr * mhat / (sqrt(vhat) + s->eps);
+  }
+  return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -592,9 +764,10 @@ int adjoint_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int
   s->adam_v = (double *)calloc((size_t)(n_theta > 0 ? n_theta : 1), sizeof(double));
   s->last_theta_grad = (double *)calloc((size_t)(n_theta > 0 ? n_theta : 1), sizeof(double));
   s->predictions = (double *)malloc((m > 0 ? m : 1) * sizeof(double));
+  s->cotangent = (double *)calloc(m > 0 ? m : 1, sizeof(double));
 
   if (!s->pars || !s->theta_idx || !s->adam_m || !s->adam_v || !s->last_theta_grad ||
-      !s->predictions) {
+      !s->predictions || !s->cotangent) {
     adjoint_session_free(s);
     return -1;
   }
