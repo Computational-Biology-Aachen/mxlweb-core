@@ -1,0 +1,349 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/kinetic-model.schema.json",
+  "spec_version": "0.5",
+  "kind": "kinetic",
+  "model_id": "kinetic",
+  "description": "",
+  "model": {
+    "variables": {
+      "S": {
+        "value": {
+          "type": "Num",
+          "value": 2.0
+        }
+      },
+      "P": {
+        "value": {
+          "type": "Num",
+          "value": 0.5
+        }
+      }
+    },
+    "parameters": {
+      "k1": {
+        "value": {
+          "type": "Num",
+          "value": 1.2
+        }
+      },
+      "k2": {
+        "value": {
+          "type": "Num",
+          "value": 0.4
+        }
+      },
+      "k3": {
+        "value": {
+          "type": "Num",
+          "value": 0.3
+        }
+      },
+      "c": {
+        "value": {
+          "type": "Num",
+          "value": 0.5
+        }
+      }
+    },
+    "reactions": {
+      "v1": {
+        "fn": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "S"
+            },
+            {
+              "type": "Name",
+              "value": "k1"
+            }
+          ]
+        },
+        "stoichiometry": {
+          "S": {
+            "type": "Num",
+            "value": -1.0
+          },
+          "P": {
+            "type": "Num",
+            "value": 1.0
+          }
+        }
+      },
+      "v2": {
+        "fn": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "P"
+            },
+            {
+              "type": "Name",
+              "value": "k2"
+            }
+          ]
+        },
+        "stoichiometry": {
+          "P": {
+            "type": "Num",
+            "value": -1.0
+          }
+        }
+      }
+    },
+    "derived": {},
+    "readouts": {},
+    "nn_blocks": {
+      "aug": {
+        "inputs": ["S", "P"],
+        "layers": [
+          {
+            "type": "dense",
+            "width": 3,
+            "activation": {
+              "name": "tanh",
+              "expression": {
+                "type": "Tanh",
+                "child": {
+                  "type": "Name",
+                  "value": "x"
+                }
+              }
+            }
+          },
+          {
+            "type": "dense",
+            "width": 2
+          }
+        ],
+        "seed": 1,
+        "target_kind": "variable",
+        "targets": ["S", "P"],
+        "trained": true,
+        "weights_ref": "aug.weights.json",
+        "mechanism": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "ode"
+            },
+            {
+              "type": "Add",
+              "children": [
+                {
+                  "type": "Num",
+                  "value": 1.0
+                },
+                {
+                  "type": "Name",
+                  "value": "nde"
+                }
+              ]
+            }
+          ]
+        },
+        "hidden_states": 2,
+        "input_scales": [2.0, 1.0],
+        "output_scales": [1.0, 0.25]
+      },
+      "rx": {
+        "inputs": ["P", "time"],
+        "layers": [
+          {
+            "type": "dense",
+            "width": 2,
+            "activation": {
+              "name": "softplus",
+              "expression": {
+                "type": "Add",
+                "children": [
+                  {
+                    "type": "Max",
+                    "children": [
+                      {
+                        "type": "Num",
+                        "value": 0.0
+                      },
+                      {
+                        "type": "Name",
+                        "value": "x"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Ln",
+                    "child": {
+                      "type": "Add",
+                      "children": [
+                        {
+                          "type": "Num",
+                          "value": 1.0
+                        },
+                        {
+                          "type": "Exp",
+                          "child": {
+                            "type": "Minus",
+                            "children": [
+                              {
+                                "type": "Abs",
+                                "child": {
+                                  "type": "Name",
+                                  "value": "x"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "dense",
+            "width": 1
+          }
+        ],
+        "seed": 2,
+        "target_kind": "reaction",
+        "targets": ["v2"],
+        "trained": true,
+        "weights_ref": "rx.weights.json",
+        "mechanism": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Name",
+              "value": "nde"
+            },
+            {
+              "type": "Name",
+              "value": "ode"
+            }
+          ]
+        },
+        "hidden_states": 1
+      }
+    },
+    "terms": {
+      "t_S": {
+        "fn": {
+          "type": "Minus",
+          "children": [
+            {
+              "type": "Mul",
+              "children": [
+                {
+                  "type": "Name",
+                  "value": "S"
+                },
+                {
+                  "type": "Name",
+                  "value": "k3"
+                }
+              ]
+            }
+          ]
+        },
+        "target": "S",
+        "target_kind": "variable",
+        "mechanism": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Name",
+              "value": "nde"
+            },
+            {
+              "type": "Name",
+              "value": "ode"
+            }
+          ]
+        }
+      },
+      "t_v1": {
+        "fn": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "P"
+            },
+            {
+              "type": "Name",
+              "value": "c"
+            }
+          ]
+        },
+        "target": "v1",
+        "target_kind": "reaction",
+        "mechanism": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "ode"
+            },
+            {
+              "type": "Add",
+              "children": [
+                {
+                  "type": "Num",
+                  "value": 1.0
+                },
+                {
+                  "type": "Name",
+                  "value": "nde"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "t_S2": {
+        "fn": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Num",
+              "value": 0.2
+            },
+            {
+              "type": "Name",
+              "value": "P"
+            }
+          ]
+        },
+        "target": "S",
+        "target_kind": "variable",
+        "mechanism": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "ode"
+            },
+            {
+              "type": "Add",
+              "children": [
+                {
+                  "type": "Num",
+                  "value": 1.0
+                },
+                {
+                  "type": "Name",
+                  "value": "nde"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

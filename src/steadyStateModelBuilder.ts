@@ -68,6 +68,13 @@ export class SteadyStateModelBuilder extends ModelBuilderBase {
   }
   protected unwireNNBlockOutputs(): void {}
 
+  /** Terms rewrite dynamics, and there are none here — same reasoning as {@link wireNNBlockOutputs}. */
+  protected checkTermTarget(): void {
+    throw new Error(
+      "Terms aren't supported on SteadyStateModelBuilder — there's no differential equation or reaction for a term to rewrite",
+    );
+  }
+
   protected mxlKind(): MxlKind {
     return "steady-state";
   }

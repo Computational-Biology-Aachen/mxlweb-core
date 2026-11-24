@@ -1,6 +1,7 @@
 import {
   Add,
   Base,
+  Divide,
   Exp,
   Ln,
   Max,
@@ -100,11 +101,11 @@ export function softplusActivation(): NNBlockActivation {
 
 /** Architecture and identity of one NN block. */
 export type NNBlockSpec = {
-  /** Unique-within-model name; every generated weight/bias is namespaced under it (`${name}_w{layer}_{i}_{j}`, `${name}_b{layer}_{i}`). */
+  /** Unique-within-model name; every generated weight/bias is namespaced under it (`${name}_w{layer}_{i}_{j}`, `${name}_b{layer}_{i}`, readout `${name}_W_{k}_{i}`). */
   name: string;
   /** Names of existing variables/parameters/derived quantities the block reads. */
   inputs: string[];
-  /** Layer stack, input-to-output order — each layer's own optional `activation` (see {@link NNBlockLayer}) applies elementwise to it; the last layer's width is the block's output count. */
+  /** Layer stack, input-to-output order — each layer's own optional `activation` (see {@link NNBlockLayer}) applies elementwise to it; the last layer's width is the block's output count (or, with `hiddenStates`, the number of hidden states). */
   layers: NNBlockLayer[];
   /** Seed for reproducible Glorot-uniform weight initialization. */
   seed: number;
@@ -115,19 +116,42 @@ export type NNBlockSpec = {
    * raw output can be large enough to blow up the very first fit iteration
    * on a bigger block; starting small (mxl-web defaults this to `0.1`) and
    * letting the scale itself train fixes that without capping the
-   * network's own expressiveness.
+   * network's own expressiveness. Optional only with `hiddenStates`
+   * (absent: no scaling), where the readout `W` already sets the magnitude.
    */
-  scale: number;
+  scale?: number;
+  /**
+   * Number of hidden states `${name}_h{i}` the block owns (mxl-schemas 0.5,
+   * ADR 0008 §6): `dh/dt = NN(inputs / inputScales, h)`, the last layer has
+   * this width, and target `k` gets `(W h)_k` as its output.
+   */
+  hiddenStates?: number;
+  /** Number of targets, i.e. rows of the readout `W` — required with `hiddenStates`. */
+  nTargets?: number;
+  /** Constants the inputs are divided by, one per input (absent: 1). */
+  inputScales?: number[];
+  /** Constants each output is multiplied by, one per target (absent: 1). */
+  outputScales?: number[];
 };
 
 export type NNBlockResult = {
-  /** Every generated weight/bias value, keyed by its generated name. Internal-only: `ModelBuilderBase.nnWeights` makes these `Name`-addressable for codegen without ever putting them in `parameters`. */
+  /** Every generated weight/bias (and readout) value, keyed by its generated name. Internal-only: `ModelBuilderBase.nnWeights` makes these `Name`-addressable for codegen without ever putting them in `parameters`. */
   weights: Map<string, number>;
-  /** The block's single trainable output-scaling factor — unlike weights, an ordinary `Parameter` (meaningful on its own, `addNNBlock` adds it under `${name}_scale`). */
-  scale: Parameter;
-  /** One expression per output, `layers[layers.length - 1].width` long, in order. */
+  /** The block's single trainable output-scaling factor — unlike weights, an ordinary `Parameter` (meaningful on its own, `addNNBlock` adds it under `${name}_scale`). Undefined for a hidden-state block without `scale`. */
+  scale: Parameter | undefined;
+  /** One expression per target, in order: the block's `nde`. */
   outputs: Base[];
+  /** `dh_i/dt` per hidden state `${name}_h{i}`, in order; empty without hidden states. */
+  hiddenDerivatives: Base[];
 };
+
+/** The state names `${name}_h0 … ${name}_h{n-1}` a block with `n` hidden states owns. */
+export function hiddenStateNames(
+  name: string,
+  n: number | undefined,
+): string[] {
+  return Array.from({ length: n ?? 0 }, (_, i) => `${name}_h${i}`);
+}
 
 /**
  * mulberry32 — a small, fast, seedable PRNG. Not cryptographic, not needed
@@ -190,16 +214,33 @@ function buildLayer(
  * combination. Every weight is Glorot-uniform-initialized from `spec.seed`;
  * every bias starts at zero. Throws if `spec.layers` is empty — a block
  * needs at least an output layer.
+ *
+ * With `hiddenStates` the network reads `inputs / inputScales` followed by
+ * the block's own states, its outputs are the states' derivatives, and each
+ * target reads out `(W h)_k`; `W` is drawn Glorot-uniform after the layers,
+ * so a block's layer weights don't depend on whether it has hidden states.
  */
 export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
   if (spec.layers.length === 0) {
     throw new Error(`buildNNBlock: "${spec.name}" has no layers`);
   }
 
+  const states = hiddenStateNames(spec.name, spec.hiddenStates);
+  if (states.length > 0 && spec.nTargets === undefined) {
+    throw new Error(
+      `buildNNBlock: "${spec.name}" has hidden states but no nTargets`,
+    );
+  }
   const weights = new Map<string, number>();
   const rng = mulberry32(spec.seed);
 
-  let layerInputs: Base[] = spec.inputs.map((name) => new Name(name));
+  let layerInputs: Base[] = spec.inputs.map((name, i) => {
+    const scale = spec.inputScales?.[i] ?? 1;
+    return scale === 1
+      ? new Name(name)
+      : new Divide([new Name(name), new Num(scale)]);
+  });
+  layerInputs.push(...states.map((h) => new Name(h)));
 
   spec.layers.forEach((layer, layerIdx) => {
     const preActivations = buildLayer(
@@ -218,19 +259,40 @@ export function buildNNBlock(spec: NNBlockSpec): NNBlockResult {
           );
   });
 
+  let raw = layerInputs;
+  let hiddenDerivatives: Base[] = [];
+  if (states.length > 0) {
+    hiddenDerivatives = layerInputs;
+    raw = Array.from({ length: spec.nTargets ?? 0 }, (_, k) => {
+      const terms = states.map((h, i) => {
+        const name = `${spec.name}_W_${k}_${i}`;
+        weights.set(name, glorotUniform(rng, states.length, spec.nTargets!));
+        return new Mul([new Name(name), new Name(h)]);
+      });
+      return terms.length === 1 ? terms[0] : new Add(terms);
+    });
+  }
+
   // Single trainable factor shared across every output (NNBlockSpec.scale's
   // doc comment) — an ordinary Parameter, unlike weights, since it's a
   // meaningful, user-facing knob on its own.
   const scaleName = `${spec.name}_scale`;
   const scaleDisplayName = `${spec.name}: output scale`;
-  const scale: Parameter = {
-    value: spec.scale,
-    displayName: scaleDisplayName,
-    texName: defaultTexName(scaleDisplayName),
-  };
-  const outputs = layerInputs.map(
-    (output) => new Mul([new Name(scaleName), output]),
-  );
+  const scale: Parameter | undefined =
+    spec.scale === undefined
+      ? undefined
+      : {
+          value: spec.scale,
+          displayName: scaleDisplayName,
+          texName: defaultTexName(scaleDisplayName),
+        };
+  const outputs = raw.map((output, k) => {
+    const factors: Base[] = [];
+    if (scale !== undefined) factors.push(new Name(scaleName));
+    const outScale = spec.outputScales?.[k] ?? 1;
+    if (outScale !== 1) factors.push(new Num(outScale));
+    return factors.length === 0 ? output : new Mul([...factors, output]);
+  });
 
-  return { weights, scale, outputs };
+  return { weights, scale, outputs, hiddenDerivatives };
 }

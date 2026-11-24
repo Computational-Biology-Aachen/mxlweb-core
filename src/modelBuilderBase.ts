@@ -3,6 +3,7 @@ import {
   ARRAY_NODE_TYPES,
   Base,
   evaluate,
+  Minus,
   nameRenamer,
   substituteName,
   type JsonNode,
@@ -22,7 +23,12 @@ import {
   renameIR,
   type ModelIR,
 } from "./modelIr.js";
-import { buildNNBlock, type NNBlockLayer } from "./nnBlock.js";
+import {
+  buildNNBlock,
+  hiddenStateNames,
+  type NNBlockLayer,
+  type NNBlockSpec,
+} from "./nnBlock.js";
 import { type DataSet, foldData, type MxlDataDocument } from "./data.js";
 import { canonicalIdentifierMap } from "./identifiers.js";
 import { pyFloat, pyMetaKwargs } from "./pyString.js";
@@ -122,9 +128,25 @@ export type NNBlockConfig = {
    * network's own expressiveness. Like `seed`, this is only the value
    * `addNNBlock` seeds the generated `${key}_scale` Parameter with — from
    * then on the live value in `this.parameters` is authoritative (fitting
-   * or a direct edit updates it there, same as any weight/bias).
+   * or a direct edit updates it there, same as any weight/bias). Required
+   * without `hiddenStates`; optional with them (absent: no scaling, no
+   * `${key}_scale` parameter).
    */
-  scale: number;
+  scale?: number;
+  /**
+   * Number of hidden states `${key}_h{i}` the block owns (mxl-schemas 0.5,
+   * ADR 0008 §6). They're appended to the state vector after the model's
+   * variables ({@link ModelBuilderBase.getNames}), evolve as `dh/dt =
+   * NN(inputs / inputScales, h)` (the last layer's width is this number),
+   * and target `k` gets `(W h)_k` (times `scale`, if given) as `nde`. The
+   * readout `W` lives in `nnWeights` as `${key}_W_{k}_{i}`; the initial
+   * values in {@link ModelBuilderBase.nnHiddenInitials}.
+   */
+  hiddenStates?: number;
+  /** Constants the inputs are divided by before the first layer, one per input (absent: 1). */
+  inputScales?: number[];
+  /** Constants each target's `nde` is multiplied by, one per target (absent: 1). */
+  outputScales?: number[];
   /**
    * How this block's (scaled) output composes onto its target(s)'
    * mechanistic dx/dt (grill-me follow-up to ADR 0005 §2.1, generalized
@@ -154,6 +176,25 @@ export type NNBlockConfig = {
 };
 
 /**
+ * A term rewriting a variable's dx/dt or (kinetic only) a reaction's rate
+ * (mxl-schemas 0.5, ADR 0008 §6): `mechanism` over the placeholders `ode`
+ * (the target's value so far) and `nde` (this term's `fn`). Terms on one
+ * target compose in insertion order, all before any NN block. A variable
+ * term acts on the assembled dx/dt; a reaction term rewrites the rate
+ * before the stoichiometry fans it out. Its contribution `mechanism(prev,
+ * fn) − prev` is a derived output named after the term.
+ */
+export type Term = {
+  fn: Base;
+  target: string;
+  targetKind: "variable" | "reaction";
+  mechanism: Base;
+  unit?: Unit;
+  displayName?: string;
+  texName?: string;
+};
+
+/**
  * Whether `name` is a weight or bias generated for NN block `blockKey` —
  * the generator's naming convention is `${blockKey}_w${layerIdx}_${i}_${j}`,
  * `${blockKey}_b${layerIdx}_${i}` (`nnBlock.ts`), so a bare `startsWith`
@@ -173,7 +214,7 @@ export function isNNBlockOwnedWeightName(
   name: string,
   blockKey: string,
 ): boolean {
-  for (const infix of ["_w", "_b"]) {
+  for (const infix of ["_w", "_b", "_W_"]) {
     const prefix = `${blockKey}${infix}`;
     if (name.startsWith(prefix) && /^\d/.test(name.slice(prefix.length))) {
       return true;
@@ -206,7 +247,7 @@ export function nnBlockWeightMatrices(
   nnWeights: Map<string, number>,
 ): NNBlockWeightMatrix[] {
   const out: NNBlockWeightMatrix[] = [];
-  let fanIn = config.inputs.length;
+  let fanIn = config.inputs.length + (config.hiddenStates ?? 0);
   config.layers.forEach((layer, layerIdx) => {
     const fanOut = layer.width;
     const w: number[][] = [];
@@ -223,6 +264,68 @@ export function nnBlockWeightMatrices(
     fanIn = fanOut;
   });
   return out;
+}
+
+/** The readout `W` (`[targets, hiddenStates]`) of a hidden-state block, from {@link ModelBuilderBase.nnWeights}; empty without hidden states. */
+export function nnBlockReadout(
+  key: string,
+  config: NNBlockConfig,
+  nnWeights: Map<string, number>,
+): number[][] {
+  const n = config.hiddenStates ?? 0;
+  if (n === 0) return [];
+  return config.targets.map((_, k) =>
+    Array.from(
+      { length: n },
+      (_, i) => nnWeights.get(`${key}_W_${k}_${i}`) ?? 0,
+    ),
+  );
+}
+
+/** The {@link buildNNBlock} spec of block `key`. */
+export function nnBlockSpec(key: string, config: NNBlockConfig): NNBlockSpec {
+  return {
+    name: key,
+    inputs: config.inputs,
+    layers: config.layers,
+    seed: config.seed,
+    scale: config.scale,
+    hiddenStates: config.hiddenStates,
+    nTargets: config.targets.length,
+    inputScales: config.inputScales,
+    outputScales: config.outputScales,
+  };
+}
+
+/** Throws for a block config the schema (or the math) can't represent. */
+function checkNNBlockConfig(key: string, config: NNBlockConfig): void {
+  const fail = (msg: string) => {
+    throw new Error(`addNNBlock: "${key}" ${msg}`);
+  };
+  const n = config.hiddenStates;
+  if (n !== undefined && (!Number.isInteger(n) || n < 1)) {
+    fail(`needs a positive integer hiddenStates (got ${n})`);
+  }
+  if (n === undefined && config.scale === undefined) {
+    fail("needs a scale (only blocks with hidden states may omit it)");
+  }
+  const last = config.layers[config.layers.length - 1];
+  const width = n ?? config.targets.length;
+  if (last !== undefined && last.width !== width) {
+    fail(
+      `has a last layer of width ${last.width}, expected ${width} (${n === undefined ? "one per target" : "one per hidden state"})`,
+    );
+  }
+  for (const [field, scales, count] of [
+    ["inputScales", config.inputScales, config.inputs.length],
+    ["outputScales", config.outputScales, config.targets.length],
+  ] as const) {
+    if (scales === undefined) continue;
+    if (scales.length !== count) {
+      fail(`has ${scales.length} ${field} for ${count} entries`);
+    }
+    if (scales.some((v) => !(v > 0))) fail(`needs positive ${field}`);
+  }
 }
 
 /**
@@ -299,6 +402,11 @@ export type MxlEntity = {
   weights_ref?: string;
   scale?: number;
   mechanism?: JsonNode;
+  hidden_states?: number;
+  input_scales?: number[];
+  output_scales?: number[];
+  /** `terms` entries only (with `fn`, `target_kind`, `mechanism`). */
+  target?: string;
   /** `units` (custom unit) entries only — see {@link CustomUnit}. */
   symbol?: string;
   tex?: string;
@@ -308,7 +416,7 @@ export type MxlEntity = {
 /** A complete `.mxl.json` document, as emitted by {@link ModelBuilderBase.buildMxlJson}. */
 export type MxlJsonDocument = {
   $schema: string;
-  spec_version: "0.1" | "0.2" | "0.3" | "0.4";
+  spec_version: "0.1" | "0.2" | "0.3" | "0.4" | "0.5";
   kind: MxlKind;
   model_id: string;
   description?: string;
@@ -363,6 +471,14 @@ export abstract class ModelBuilderBase {
    * resolve every `Name` against that merged, flat array).
    */
   nnWeights: SvelteMap<string, number> = new SvelteMap();
+  /**
+   * Initial values of every hidden-state block's states, keyed by state name
+   * (`${key}_h{i}`, `NNBlockConfig.hiddenStates`): the sidecar's `h0`, 0 for
+   * an untrained block. Not addressable (not fittable) for now.
+   */
+  nnHiddenInitials: SvelteMap<string, number> = new SvelteMap();
+  /** Terms in composition order — see {@link Term}. */
+  terms: SvelteMap<string, Term> = new SvelteMap();
   /**
    * Model-specific unit kinds with no entry in the shared registry (e.g.
    * `OD600`), serialised as `.mxl.json` `model.units`. Declare one before any
@@ -431,6 +547,24 @@ export abstract class ModelBuilderBase {
   /** Inverse of {@link wireNNBlockOutputs}, called by {@link removeNNBlock}. Default no-op for the same reason. */
   protected unwireNNBlockOutputs(): void {}
 
+  /**
+   * Throws unless `term`'s target exists. The base class knows variables
+   * only; `KineticModelBuilder` adds reactions, `SteadyStateModelBuilder`
+   * rejects every term (no dynamics to rewrite).
+   */
+  protected checkTermTarget(key: string, term: Term): void {
+    if (term.targetKind !== "variable") {
+      throw new Error(
+        `addTerm: "${key}" targets a reaction, but this model has no reactions`,
+      );
+    }
+    if (!this.variables.has(term.target)) {
+      throw new Error(
+        `addTerm: "${key}" targets unknown variable "${term.target}"`,
+      );
+    }
+  }
+
   /** Render the model's equations as LaTeX (formulation-specific). */
   abstract buildTex(): string;
 
@@ -483,6 +617,9 @@ export abstract class ModelBuilderBase {
     for (const [id, def] of this.extraReadouts()) {
       if (def.unit !== undefined) yield [id, def.unit];
     }
+    for (const [id, term] of this.terms) {
+      if (term.unit !== undefined) yield [id, term.unit];
+    }
   }
 
   /** Normalise an `add*`/`update*` argument: parse a string unit, validate a `Unit` against the registry and {@link customUnits}. */
@@ -506,9 +643,45 @@ export abstract class ModelBuilderBase {
     this.variables.set(key, this.withUnit(value));
     return this;
   }
+  /** Also removes the terms targeting the variable, like MxlPy. */
   removeVariable(key: string) {
     this.variables.delete(key);
+    this.removeTermsTargeting(key, "variable");
     return this;
+  }
+
+  /** Drop every term targeting `target` — its target is gone. */
+  protected removeTermsTargeting(
+    target: string,
+    kind: "variable" | "reaction",
+  ): void {
+    for (const [key, term] of this.terms) {
+      if (term.target === target && term.targetKind === kind) {
+        this.terms.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Every id already in use: entities, reactions, readouts, terms, hidden
+   * states and block contributions. New terms and blocks must not reuse one,
+   * since their generated outputs share one namespace with them.
+   */
+  protected takenIds(): Set<string> {
+    return new Set([
+      "time",
+      ...this.variables.keys(),
+      ...this.parameters.keys(),
+      ...this.assignments.keys(),
+      ...this.extraIntermediates().keys(),
+      ...this.extraReadouts().keys(),
+      ...this.terms.keys(),
+      ...this.data.keys(),
+      ...this.getHiddenStateNames(),
+      ...[...this.nnBlocks].flatMap(([key, config]) =>
+        config.targets.map((target) => `${key}_${target}`),
+      ),
+    ]);
   }
 
   // Parameters
@@ -580,21 +753,17 @@ export abstract class ModelBuilderBase {
     key: string,
     config: NNBlockConfig,
     trainedWeights?: Map<string, number>,
+    h0?: number[],
   ) {
     if (key === "time") throw new Error('"time" is a reserved identifier');
+    checkNNBlockConfig(key, config);
     // Only the generated shape is needed here now: `wireNNBlockOutputs` no
     // longer takes the generated output expressions (composeNNBlocks
     // regenerates them fresh at lower() time instead — NNBlockConfig.
     // mechanism's doc comment), so there's nothing left to build for
     // `wireNNBlockOutputs` to consume, only for it to run as a
     // builder-specific validation hook (SteadyStateModelBuilder's throw).
-    const { weights, scale } = buildNNBlock({
-      name: key,
-      inputs: config.inputs,
-      layers: config.layers,
-      seed: config.seed,
-      scale: config.scale,
-    });
+    const { weights, scale } = buildNNBlock(nnBlockSpec(key, config));
     if (trainedWeights !== undefined) {
       const expected = new Set(weights.keys());
       const provided = new Set(trainedWeights.keys());
@@ -607,6 +776,22 @@ export abstract class ModelBuilderBase {
         );
       }
     }
+    const states = hiddenStateNames(key, config.hiddenStates);
+    const taken = this.takenIds();
+    const clash = [
+      ...states,
+      ...config.targets.map((target) => `${key}_${target}`),
+    ].filter((id) => taken.has(id));
+    if (clash.length > 0) {
+      throw new Error(
+        `addNNBlock: "${key}" would generate ids that are already taken: ${clash.join(", ")}`,
+      );
+    }
+    if (h0 !== undefined && h0.length !== states.length) {
+      throw new Error(
+        `addNNBlock: "${key}" has ${states.length} hidden states but ${h0.length} initial values`,
+      );
+    }
     // Wire first, mutate second: SteadyStateModelBuilder's override throws
     // (no dx/dt for a correction term to feed into) — calling it before
     // touching `nnWeights`/`parameters`/`nnBlocks` means that throw leaves
@@ -615,7 +800,8 @@ export abstract class ModelBuilderBase {
     for (const [name, value] of trainedWeights ?? weights) {
       this.nnWeights.set(name, value);
     }
-    this.addParameter(`${key}_scale`, scale);
+    states.forEach((h, i) => this.nnHiddenInitials.set(h, h0?.[i] ?? 0));
+    if (scale !== undefined) this.addParameter(`${key}_scale`, scale);
     this.nnBlocks.set(key, config);
     return this;
   }
@@ -627,6 +813,8 @@ export abstract class ModelBuilderBase {
    * meaningful to carry over).
    */
   updateNNBlock(key: string, config: NNBlockConfig) {
+    // Validate first, so an invalid config leaves the old block in place.
+    checkNNBlockConfig(key, config);
     this.removeNNBlock(key);
     return this.addNNBlock(key, config);
   }
@@ -639,8 +827,43 @@ export abstract class ModelBuilderBase {
         this.nnWeights.delete(name);
       }
     }
+    for (const h of hiddenStateNames(key, config.hiddenStates)) {
+      this.nnHiddenInitials.delete(h);
+    }
     this.removeParameter(`${key}_scale`);
     this.nnBlocks.delete(key);
+    return this;
+  }
+
+  /** Every hidden state of every block, in block order — appended to the state vector after the variables. */
+  getHiddenStateNames(): string[] {
+    return [...this.nnBlocks].flatMap(([key, config]) =>
+      hiddenStateNames(key, config.hiddenStates),
+    );
+  }
+
+  // Terms (mxl-schemas 0.5)
+  addTerm(key: string, term: WithUnitInput<Term>) {
+    if (this.takenIds().has(key)) {
+      throw new Error(`addTerm: "${key}" is already taken`);
+    }
+    const t = this.withUnit(term);
+    this.checkTermTarget(key, t);
+    this.terms.set(key, t);
+    return this;
+  }
+  /** Replaces an existing term in place, keeping its position in the composition order. */
+  updateTerm(key: string, term: WithUnitInput<Term>) {
+    if (!this.terms.has(key)) {
+      throw new Error(`updateTerm: no term "${key}"`);
+    }
+    const t = this.withUnit(term);
+    this.checkTermTarget(key, t);
+    this.terms.set(key, t);
+    return this;
+  }
+  removeTerm(key: string) {
+    this.terms.delete(key);
     return this;
   }
 
@@ -654,7 +877,11 @@ export abstract class ModelBuilderBase {
    * reimplementing the naming-convention match itself.
    */
   nnBlockScaleParameterNames(): Set<string> {
-    return new Set([...this.nnBlocks.keys()].map((key) => `${key}_scale`));
+    return new Set(
+      [...this.nnBlocks]
+        .filter(([, config]) => config.scale !== undefined)
+        .map(([key]) => `${key}_scale`),
+    );
   }
 
   /** Every current {@link nnWeights} name generated by NN block `key` — a thin, memoized-nothing convenience over {@link isNNBlockOwnedWeightName} for callers (e.g. `Fit.svelte`) that need a trained block's full fittable weight set. */
@@ -703,9 +930,28 @@ export abstract class ModelBuilderBase {
    * scale as a trainable, user-facing knob rather than baking it silently
    * into the network.
    */
-  protected nnBlockTexTerm(blockKey: string): string {
+  protected nnBlockTexTerm(blockKey: string, targetIdx = 0): string {
     const escaped = texEscape(blockKey);
-    return `s_{${escaped}} \\cdot NN_{${escaped}}(\\vec{x})`;
+    const config = this.nnBlocks.get(blockKey);
+    if (config?.hiddenStates === undefined) {
+      return `s_{${escaped}} \\cdot NN_{${escaped}}(\\vec{x})`;
+    }
+    // Hidden-state blocks: the readout, not the network (its own row is
+    // `hiddenStateTexRows`).
+    const readout = `(W_{${escaped}} \\vec{h}_{${escaped}})_{${targetIdx}}`;
+    return config.scale === undefined
+      ? readout
+      : `s_{${escaped}} \\cdot ${readout}`;
+  }
+
+  /** One `dh/dt = NN(x, h)` row per hidden-state block, for `buildTex`. */
+  protected hiddenStateTexRows(): string[] {
+    return [...this.nnBlocks]
+      .filter(([, config]) => config.hiddenStates !== undefined)
+      .map(([key]) => {
+        const escaped = texEscape(key);
+        return `\\frac{d \\vec{h}_{${escaped}}}{dt} &= NN_{${escaped}}(\\vec{x}, \\vec{h}_{${escaped}})`;
+      });
   }
 
   /**
@@ -735,8 +981,17 @@ export abstract class ModelBuilderBase {
    * `mechanism` can be classified into any more (same reasoning as
    * `composeNNBlocks`'s move to sequential threading).
    */
-  protected composeNNBlockTex(varName: string, mechanisticTex: string): string {
-    return this.composeNNBlockTexByKind(varName, mechanisticTex, "variable");
+  protected composeNNBlockTex(
+    varName: string,
+    mechanisticTex: string,
+    texNames: Map<string, string> = new Map(),
+  ): string {
+    return this.composeNNBlockTexByKind(
+      varName,
+      mechanisticTex,
+      "variable",
+      texNames,
+    );
   }
 
   /**
@@ -750,27 +1005,47 @@ export abstract class ModelBuilderBase {
   protected composeReactionNNBlockTex(
     rxnName: string,
     mechanisticTex: string,
+    texNames: Map<string, string> = new Map(),
   ): string {
-    return this.composeNNBlockTexByKind(rxnName, mechanisticTex, "reaction");
+    return this.composeNNBlockTexByKind(
+      rxnName,
+      mechanisticTex,
+      "reaction",
+      texNames,
+    );
   }
 
   private composeNNBlockTexByKind(
     targetName: string,
     mechanisticTex: string,
     kind: "variable" | "reaction",
+    texNames: Map<string, string>,
   ): string {
-    const targeting = [...this.nnBlocks.entries()].filter(
-      ([, config]) =>
-        config.targetKind === kind && config.targets.includes(targetName),
-    );
-    if (targeting.length === 0) return mechanisticTex;
+    // Same order as composeNNBlocksByKind: terms, then blocks.
+    const steps: { mechanism: Base; nde: string }[] = [];
+    for (const term of this.terms.values()) {
+      if (term.targetKind !== kind || term.target !== targetName) continue;
+      steps.push({
+        mechanism: term.mechanism,
+        nde: term.fn.toTex(texNames),
+      });
+    }
+    for (const [key, config] of this.nnBlocks) {
+      if (config.targetKind !== kind) continue;
+      const idx = config.targets.indexOf(targetName);
+      if (idx < 0) continue;
+      steps.push({
+        mechanism: config.mechanism,
+        nde: this.nnBlockTexTerm(key, idx),
+      });
+    }
 
     let running = mechanisticTex;
-    for (const [key, config] of targeting) {
-      running = config.mechanism.toTex(
+    for (const { mechanism, nde } of steps) {
+      running = mechanism.toTex(
         new Map([
           ["ode", `(${running})`],
-          ["nde", `(${this.nnBlockTexTerm(key)})`],
+          ["nde", `(${nde})`],
         ]),
       );
     }
@@ -836,51 +1111,98 @@ export abstract class ModelBuilderBase {
   private composeNNBlocksByKind(
     mechanistic: Map<string, Base>,
     kind: "variable" | "reaction",
+    contributions?: Map<string, Base>,
   ): Map<string, Base> {
-    const relevant = [...this.nnBlocks.entries()].filter(
-      ([, config]) => config.targetKind === kind,
-    );
-    if (relevant.length === 0) return mechanistic;
-
-    const outputsByTarget = new Map<
-      string,
-      { output: Base; mechanism: Base }[]
-    >();
-    for (const [key, config] of relevant) {
-      const { outputs } = buildNNBlock({
-        name: key,
-        inputs: config.inputs,
-        layers: config.layers,
-        seed: config.seed,
-        scale: config.scale,
-      });
+    // Per target, every term first (insertion order), then every block.
+    type Step = { name: string; nde: Base; mechanism: Base };
+    const steps = new Map<string, Step[]>();
+    const push = (target: string, step: Step) => {
+      const existing = steps.get(target);
+      if (existing) existing.push(step);
+      else steps.set(target, [step]);
+    };
+    for (const [key, term] of this.terms) {
+      if (term.targetKind !== kind) continue;
+      push(term.target, { name: key, nde: term.fn, mechanism: term.mechanism });
+    }
+    for (const [key, config] of this.nnBlocks) {
+      if (config.targetKind !== kind) continue;
+      const { outputs } = buildNNBlock(nnBlockSpec(key, config));
       outputs.forEach((output, i) => {
         const target = config.targets[i];
-        const entry = { output, mechanism: config.mechanism };
-        const existing = outputsByTarget.get(target);
-        if (existing) existing.push(entry);
-        else outputsByTarget.set(target, [entry]);
+        push(target, {
+          name: `${key}_${target}`,
+          nde: output,
+          mechanism: config.mechanism,
+        });
       });
     }
+    if (steps.size === 0) return mechanistic;
 
     const composed = new Map<string, Base>();
     for (const [name, expr] of mechanistic) {
-      const contributions = outputsByTarget.get(name);
-      if (!contributions) {
-        composed.set(name, expr);
-        continue;
-      }
       let result = expr;
-      for (const { output, mechanism } of contributions) {
-        result = substituteName(
-          substituteName(mechanism, "ode", result),
+      for (const step of steps.get(name) ?? []) {
+        const next = substituteName(
+          substituteName(step.mechanism, "ode", result),
           "nde",
-          output,
+          step.nde,
         );
+        contributions?.set(step.name, new Minus([next, result]));
+        result = next;
       }
       composed.set(name, result);
     }
     return composed;
+  }
+
+  /**
+   * Raw (uncorrected) reaction rate laws — the `ode` a reaction-targeted
+   * term or block first composes onto. Empty for builders without reactions.
+   */
+  protected rawReactionFns(): Map<string, Base> {
+    return new Map();
+  }
+
+  /**
+   * Every term's and block target's contribution `mechanism(prev, nde) −
+   * prev` (mxl-schemas 0.5), as report-only outputs: a term's is named after
+   * the term, a block's `${block}_${target}` (MxlPy's naming).
+   */
+  private contributionReadouts(): Map<string, IntermediateDef> {
+    if (this.terms.size === 0 && this.nnBlocks.size === 0) return new Map();
+    const contributions = new Map<string, Base>();
+    this.composeNNBlocksByKind(
+      this.rawReactionFns(),
+      "reaction",
+      contributions,
+    );
+    this.composeNNBlocksByKind(
+      new Map([...this.variables.keys()].map((k) => [k, this.dxdtExpr(k)])),
+      "variable",
+      contributions,
+    );
+    return new Map(
+      [...contributions].map(([name, fn]) => {
+        const term = this.terms.get(name);
+        return [
+          name,
+          {
+            fn,
+            ...(term?.unit !== undefined ? { unit: term.unit } : {}),
+            ...(term?.displayName !== undefined
+              ? { displayName: term.displayName }
+              : {}),
+            ...(term?.texName !== undefined ? { texName: term.texName } : {}),
+          },
+        ];
+      }),
+    );
+  }
+
+  /** {@link extraReadouts} plus the term/block contributions: every report-only output. */
+  private allReadouts(): Map<string, IntermediateDef> {
+    return new Map([...this.extraReadouts(), ...this.contributionReadouts()]);
   }
 
   private intermediateDefs(): Map<string, IntermediateDef> {
@@ -904,7 +1226,7 @@ export abstract class ModelBuilderBase {
 
   /** {@link extraReadouts} with data folded. */
   private foldedReadouts(): Map<string, IntermediateDef> {
-    const defs = this.extraReadouts();
+    const defs = this.allReadouts();
     if (this.data.size === 0) return defs;
     return new Map(
       [...defs].map(([id, def]) => [
@@ -972,13 +1294,18 @@ export abstract class ModelBuilderBase {
       if (waiting.length === pending.length) break;
       pending = waiting;
     }
-    return [...this.variables.keys()].map((id) => {
-      const value = known.get(names.get(id)!);
-      if (value === undefined) {
-        throw new Error(`Can't resolve the initial value of "${id}"`);
-      }
-      return value;
-    });
+    return [
+      ...[...this.variables.keys()].map((id) => {
+        const value = known.get(names.get(id)!);
+        if (value === undefined) {
+          throw new Error(`Can't resolve the initial value of "${id}"`);
+        }
+        return value;
+      }),
+      ...this.getHiddenStateNames().map(
+        (h) => this.nnHiddenInitials.get(h) ?? 0,
+      ),
+    ];
   }
 
   /**
@@ -1037,6 +1364,7 @@ export abstract class ModelBuilderBase {
       // `parameters`, so they'd otherwise never resolve and topoSort would
       // throw.
       ...this.nnWeights.keys(),
+      ...this.getHiddenStateNames(),
       // Arrays over variables or parameters keep their data (ADR 0015).
       ...this.data.keys(),
     ]);
@@ -1063,6 +1391,8 @@ export abstract class ModelBuilderBase {
       ...this.parameters.keys(),
       ...this.variables.keys(),
       ...this.intermediateDefs().keys(),
+      ...this.nnWeights.keys(),
+      ...this.getHiddenStateNames(),
       ...this.data.keys(),
     ]);
     const toSort = [...this.foldedReadouts().entries()].map(([key, val]) => ({
@@ -1092,8 +1422,9 @@ export abstract class ModelBuilderBase {
     return order.filter((k) => !arrays.has(k));
   }
 
+  /** The state vector: the variables, then every block's hidden states. */
   getNames(): Array<string> {
-    return [...this.variables.keys()];
+    return [...this.variables.keys(), ...this.getHiddenStateNames()];
   }
 
   getDisplayNames(): Map<string, string> {
@@ -1107,9 +1438,10 @@ export abstract class ModelBuilderBase {
     for (const [id, def] of this.intermediateDefs()) {
       names.set(id, def.displayName || id);
     }
-    for (const [id, def] of this.extraReadouts()) {
+    for (const [id, def] of this.allReadouts()) {
       names.set(id, def.displayName || id);
     }
+    for (const h of this.getHiddenStateNames()) names.set(h, h);
     return names;
   }
 
@@ -1168,6 +1500,13 @@ export abstract class ModelBuilderBase {
       ]),
     );
     let dxdt = this.composeNNBlocks(mechanistic);
+    for (const [key, config] of this.nnBlocks) {
+      if (config.hiddenStates === undefined) continue;
+      const { hiddenDerivatives } = buildNNBlock(nnBlockSpec(key, config));
+      hiddenStateNames(key, config.hiddenStates).forEach((h, i) => {
+        dxdt.set(h, hiddenDerivatives[i]);
+      });
+    }
     const initialValues = this.resolveInitialValues();
     // Arrays that depend on more than data (mxl-schemas ADR 0015): check the
     // rules and rewrite the array nodes for the loop-emitting backends.
@@ -1212,8 +1551,9 @@ export abstract class ModelBuilderBase {
         data = normal.data;
       }
     }
+    const varNames = this.getNames();
     return {
-      varNames: [...this.variables.keys()],
+      varNames,
       // `parameters` first, then `nnWeights` — every WAT/adjoint `Name`
       // resolution (`modelIr.ts`) is positional against this array, and
       // `getAllAddressableNames()`/`resolveAllAddressableValues()` must
@@ -1227,9 +1567,7 @@ export abstract class ModelBuilderBase {
         ...this.nnWeights.entries(),
       ]),
       // Resolved here: an initial value may depend on assignments.
-      initialValues: new Map(
-        [...this.variables.keys()].map((k, i) => [k, initialValues[i]]),
-      ),
+      initialValues: new Map(varNames.map((k, i) => [k, initialValues[i]])),
       intermediates,
       // Post-simulation-only report outputs — never folded into
       // `intermediates`/`dxdt` above, so `irToJs`/`irToWat` (the actual RHS
@@ -1352,8 +1690,12 @@ export abstract class ModelBuilderBase {
     // so the parameter loop's `.addParameter()` call for that same key
     // overwrites it back to the live value afterward.
     for (const [id, b] of this.nnBlocks) {
+      const h0 =
+        b.hiddenStates === undefined
+          ? ""
+          : `, ${JSON.stringify(hiddenStateNames(id, b.hiddenStates).map((h) => this.nnHiddenInitials.get(h) ?? 0))}`;
       chains.push(
-        `    .addNNBlock(${JSON.stringify(id)}, ${this.tsNNBlock(b, collect)}, ${this.tsNNBlockWeights(id)})`,
+        `    .addNNBlock(${JSON.stringify(id)}, ${this.tsNNBlock(b, collect)}, ${this.tsNNBlockWeights(id)}${h0})`,
       );
     }
     for (const [id, p] of this.parameters) {
@@ -1374,6 +1716,21 @@ export abstract class ModelBuilderBase {
       );
     }
     chains.push(...this.extraMxlwebChains(collect));
+    // Terms last: their targets (variables, reactions) must exist.
+    for (const [id, t] of this.terms) {
+      collect(t.fn);
+      collect(t.mechanism);
+      const opts = this.tsFields([
+        ["fn", t.fn.toTs()],
+        ["target", JSON.stringify(t.target)],
+        ["targetKind", JSON.stringify(t.targetKind)],
+        ["mechanism", t.mechanism.toTs()],
+        ["unit", t.unit?.toTs()],
+        ["displayName", this.tsString(t.displayName)],
+        ["texName", this.tsString(t.texName)],
+      ]);
+      chains.push(`    .addTerm(${JSON.stringify(id)}, ${opts})`);
+    }
 
     const className = this.builderType;
     const coreNames =
@@ -1436,8 +1793,14 @@ ${chains.join("\n")};
       $schema: `https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/${kind}-model.schema.json`,
       // 0.3 adds `data_ref`; without data the document stays valid 0.2.
       // 0.4: arrays that depend on more than data (mxl-schemas ADR 0015).
-      spec_version:
-        this.data.size === 0 ? "0.2" : this.hasDynamicArrays() ? "0.4" : "0.3",
+      // 0.5: terms, hidden-state blocks, input/output scales (ADR 0008 §6).
+      spec_version: this.usesSpec05()
+        ? "0.5"
+        : this.data.size === 0
+          ? "0.2"
+          : this.hasDynamicArrays()
+            ? "0.4"
+            : "0.3",
       kind,
       model_id: modelId,
       ...(description !== undefined ? { description } : {}),
@@ -1445,6 +1808,32 @@ ${chains.join("\n")};
       model,
     };
     return JSON.stringify(doc, null, 2);
+  }
+
+  /** Whether the model needs mxl-schemas 0.5: terms, or a block with hidden states or input/output scales. */
+  private usesSpec05(): boolean {
+    return (
+      this.terms.size > 0 ||
+      [...this.nnBlocks.values()].some(
+        (b) =>
+          b.hiddenStates !== undefined ||
+          b.inputScales !== undefined ||
+          b.outputScales !== undefined,
+      )
+    );
+  }
+
+  /**
+   * Throws for what MxlPy code generation (and SBML) can't represent yet:
+   * terms and hidden-state/scaled blocks. MxlPy loads such models from
+   * `.mxl.json` directly.
+   */
+  protected assertNoSpec05(target: string): void {
+    if (this.usesSpec05()) {
+      throw new Error(
+        `${target}: terms, hidden-state NN blocks and input/output scales can't be exported this way yet — export as .mxl.json instead (MxlPy reads it with mxlpy.serialize.load)`,
+      );
+    }
   }
 
   /**
@@ -1608,10 +1997,39 @@ ${chains.join("\n")};
         target_kind: b.targetKind,
         targets: b.targets,
         trained: b.trained,
-        scale: b.scale,
         mechanism: b.mechanism.toJson(),
       };
+      if (b.scale !== undefined) entry.scale = b.scale;
+      if (b.hiddenStates !== undefined) entry.hidden_states = b.hiddenStates;
+      if (b.inputScales !== undefined) entry.input_scales = b.inputScales;
+      if (b.outputScales !== undefined) entry.output_scales = b.outputScales;
       if (b.trained) entry.weights_ref = `${id}.weights.json`;
+      out[id] = entry;
+    }
+    return out;
+  }
+
+  /** `{ terms }` for spreading into a `model` section, or `{}` without terms. */
+  protected mxlTermsSection(): { terms?: Record<string, MxlEntity> } {
+    const terms = this.mxlTerms();
+    return terms === undefined ? {} : { terms };
+  }
+
+  /**
+   * Serialise `terms` (mxl-schemas 0.5), or undefined without terms so a
+   * model without them keeps a pre-0.5 `model` section.
+   */
+  protected mxlTerms(): Record<string, MxlEntity> | undefined {
+    if (this.terms.size === 0) return undefined;
+    const out: Record<string, MxlEntity> = {};
+    for (const [id, t] of this.terms) {
+      const entry: MxlEntity = {
+        fn: t.fn.toJson(),
+        target: t.target,
+        target_kind: t.targetKind,
+        mechanism: t.mechanism.toJson(),
+      };
+      this.mxlApplyMeta(entry, t.unit, t.displayName, t.texName);
       out[id] = entry;
     }
     return out;
@@ -1640,6 +2058,12 @@ ${chains.join("\n")};
         out[`b${layerIdx + 1}`] = b;
       },
     );
+    if (config.hiddenStates !== undefined) {
+      out.W = nnBlockReadout(key, config, this.nnWeights);
+      out.h0 = hiddenStateNames(key, config.hiddenStates).map(
+        (h) => this.nnHiddenInitials.get(h) ?? 0,
+      );
+    }
     return JSON.stringify(out, null, 2);
   }
 
@@ -1758,9 +2182,11 @@ ${chains.join("\n")};
 
     const emitReadouts = () => {
       const readouts = this.extraReadouts();
+      // Term/block contributions are mxlweb-side outputs, not model readouts.
       for (const id of this.sortReadoutDependencies()) {
+        const readout = readouts.get(id);
+        if (readout === undefined) continue;
         const fnName = `_readout_${name(id)}`;
-        const readout = readouts.get(id)!;
         const args = emitFn(fnName, readout.fn);
         body.push(
           `m.add_readout("${name(id)}", ${fnName}, args=[${argList(args)}]${pyMetaKwargs(readout)})`,
@@ -1853,8 +2279,22 @@ ${chains.join("\n")};
       ["targetKind", JSON.stringify(b.targetKind)],
       ["targets", JSON.stringify(b.targets)],
       ["trained", `${b.trained}`],
-      ["scale", `${b.scale}`],
+      ["scale", b.scale === undefined ? undefined : `${b.scale}`],
       ["mechanism", b.mechanism.toTs()],
+      [
+        "hiddenStates",
+        b.hiddenStates === undefined ? undefined : `${b.hiddenStates}`,
+      ],
+      [
+        "inputScales",
+        b.inputScales === undefined ? undefined : JSON.stringify(b.inputScales),
+      ],
+      [
+        "outputScales",
+        b.outputScales === undefined
+          ? undefined
+          : JSON.stringify(b.outputScales),
+      ],
     ]);
   }
 

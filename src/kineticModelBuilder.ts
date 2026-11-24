@@ -18,6 +18,7 @@ import {
   type MxlKind,
   nnBlockWeightMatrices,
   type Parameter,
+  type Term,
   type Variable,
   type WithUnitInput,
 } from "./modelBuilderBase.js";
@@ -230,6 +231,8 @@ export class KineticModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.nnHiddenInitials = new SvelteMap(this.nnHiddenInitials);
+    cl.terms = new SvelteMap(this.terms);
     cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
@@ -284,8 +287,10 @@ export class KineticModelBuilder extends ModelBuilderBase {
     this.reactions.set(key, this.withUnit(reaction));
     return this;
   }
+  /** Also removes the terms targeting the reaction, like MxlPy. */
   removeReaction(key: string) {
     this.reactions.delete(key);
+    this.removeTermsTargeting(key, "reaction");
     return this;
   }
 
@@ -322,15 +327,28 @@ export class KineticModelBuilder extends ModelBuilderBase {
     return new Set(this.reactions.keys());
   }
 
-  protected extraIntermediates(): Map<string, IntermediateDef> {
-    // Reaction-mode NN blocks correct a reaction's rate law here, before
-    // dxdtExpr's stoichiometry sum ever runs — see NNBlockConfig.
-    // targetKind's doc comment. Variable-mode blocks are unaffected: they
-    // compose later, in ModelBuilderBase.lower(), onto dxdtExpr's output.
-    const rawFns = new Map(
+  protected rawReactionFns(): Map<string, Base> {
+    return new Map(
       [...this.reactions.entries()].map(([key, rxn]) => [key, rxn.fn]),
     );
-    const composedFns = this.composeReactionNNBlocks(rawFns);
+  }
+
+  protected checkTermTarget(key: string, term: Term): void {
+    if (term.targetKind === "variable") {
+      super.checkTermTarget(key, term);
+    } else if (!this.reactions.has(term.target)) {
+      throw new Error(
+        `addTerm: "${key}" targets unknown reaction "${term.target}"`,
+      );
+    }
+  }
+
+  protected extraIntermediates(): Map<string, IntermediateDef> {
+    // Reaction-mode terms and NN blocks correct a reaction's rate law here,
+    // before dxdtExpr's stoichiometry sum ever runs — see NNBlockConfig.
+    // targetKind's doc comment. Variable-mode ones are unaffected: they
+    // compose later, in ModelBuilderBase.lower(), onto dxdtExpr's output.
+    const composedFns = this.composeReactionNNBlocks(this.rawReactionFns());
     return new Map(
       [...this.reactions.entries()].map(([key, rxn]) => [
         key,
@@ -355,6 +373,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       derived: this.mxlDerived(),
       readouts: this.mxlReadouts(),
       nn_blocks: this.mxlNNBlocks(),
+      ...this.mxlTermsSection(),
     };
   }
 
@@ -410,6 +429,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
       const composedRxnTex = this.composeReactionNNBlockTex(
         rxnKey,
         mechanisticRxnTex,
+        texNames,
       );
       // renderTerms below builds `coeff \cdot term`/`- term` by string
       // interpolation, not through Base.toTex's own precedence-aware
@@ -438,9 +458,10 @@ export class KineticModelBuilder extends ModelBuilderBase {
       .map(([name, terms]) => {
         const lines = renderTerms(terms, texNames);
         const mechanisticTex = lines.join(" \\\\\n  & ");
-        const rendered = this.composeNNBlockTex(name, mechanisticTex);
+        const rendered = this.composeNNBlockTex(name, mechanisticTex, texNames);
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rendered}`;
       })
+      .concat(this.hiddenStateTexRows())
       .join(" \\\\ \n  ");
 
     return String.raw`\begin{align*}
@@ -462,6 +483,7 @@ export class KineticModelBuilder extends ModelBuilderBase {
    * argument placed first.
    */
   buildMxlpy(): string {
+    this.assertNoSpec05("buildMxlpy");
     const nnPlan = planNNBlockMxlpy(
       this.nnBlocks,
       [...this.variables.keys()],
