@@ -29,8 +29,8 @@ export const kineticSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
-      enum: ["0.1", "0.2", "0.3", "0.4"],
+        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015), 0.5 terms and hidden-state nn_blocks (ADR 0008 §6); earlier files remain valid.",
+      enum: ["0.1", "0.2", "0.3", "0.4", "0.5"],
     },
     kind: {
       type: "string",
@@ -95,7 +95,7 @@ export const kineticSchema: JsonSchema = {
         nn_blocks: {
           type: "object",
           description:
-            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it. On one target, all terms apply before any nn_blocks entry, each section in its own order.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
           },
@@ -109,6 +109,14 @@ export const kineticSchema: JsonSchema = {
           },
           additionalProperties: {
             $ref: "#/$defs/customUnit",
+          },
+        },
+        terms: {
+          type: "object",
+          description:
+            "Terms keyed by name, in composition order (spec_version 0.5). Like nn_blocks, a consumer must interpret them to simulate the model.",
+          additionalProperties: {
+            $ref: "#/$defs/term",
           },
         },
       },
@@ -126,7 +134,6 @@ export const kineticSchema: JsonSchema = {
         "target_kind",
         "targets",
         "trained",
-        "scale",
         "mechanism",
       ],
       additionalProperties: false,
@@ -180,12 +187,36 @@ export const kineticSchema: JsonSchema = {
         scale: {
           type: "number",
           description:
-            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs.",
+            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs. Required without hidden_states; optional with them (absent: no scaling).",
         },
         mechanism: {
           $ref: "#/$defs/mechanismNode",
           description:
             "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
+        },
+        hidden_states: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Number of hidden states h owned by the block (spec_version 0.5, ADR 0008 §6). With hidden states the network is dh/dt = NN(inputs / input_scales, h): it reads the block's own states after `inputs`, and its final layer's width is hidden_states, not the number of targets. Each target k then gets the readout (W h)_k, times `scale` if given, as `nde`. The states are named `{block}_h{i}` (0-indexed), are part of the state vector after the model's variables, and start at the sidecar's `h0` (0 for an untrained block). Without hidden states the block is a Markovian correction and `scale` is required.",
+        },
+        input_scales: {
+          type: "array",
+          items: {
+            type: "number",
+            exclusiveMinimum: 0,
+          },
+          description:
+            "Constants the inputs are divided by before the first layer, one per entry of `inputs` (spec_version 0.5). Absent means 1 for every input.",
+        },
+        output_scales: {
+          type: "array",
+          items: {
+            type: "number",
+            exclusiveMinimum: 0,
+          },
+          description:
+            "Constants each target's `nde` is multiplied by, one per entry of `targets` (spec_version 0.5), e.g. a characteristic rate so that the weights stay dimensionless. Absent means 1 for every target.",
         },
       },
       allOf: [
@@ -213,6 +244,16 @@ export const kineticSchema: JsonSchema = {
             not: {
               required: ["weights_ref"],
             },
+          },
+        },
+        {
+          if: {
+            not: {
+              required: ["hidden_states"],
+            },
+          },
+          then: {
+            required: ["scale"],
           },
         },
       ],
@@ -771,6 +812,45 @@ export const kineticSchema: JsonSchema = {
         },
       },
     },
+    term: {
+      type: "object",
+      description:
+        "A term rewriting a variable's dx/dt or (kinetic only) a reaction's rate through `mechanism` (spec_version 0.5, ADR 0008 §6). Terms on the same target compose in section order, each taking the previous result as `ode`; all terms of a target apply before its nn_blocks. A variable term acts on the assembled dx/dt (all reaction rates, including those corrected by reaction terms, times their stoichiometry); a reaction term rewrites the rate before the stoichiometry fans it out. Terms never enter the stoichiometric matrix. The term's contribution, mechanism(prev, term) - prev, is a quantity named after the term that readouts can read.",
+      required: ["fn", "target", "target_kind", "mechanism"],
+      additionalProperties: false,
+      properties: {
+        fn: {
+          $ref: "#/$defs/node",
+          description: "Expression of the term value, the `nde` of mechanism.",
+        },
+        target: {
+          type: "string",
+          description: "Name of the variable or reaction the term acts on.",
+        },
+        target_kind: {
+          type: "string",
+          enum: ["variable", "reaction"],
+          description: "What target names.",
+        },
+        mechanism: {
+          $ref: "#/$defs/mechanismNode",
+          description:
+            "How the term combines with its target, over the placeholders `ode` (the target's value so far) and `nde` (the term value). E.g. additive: Add(ode, nde); relative: Mul(ode, Add(1, nde)).",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the term value.",
+        },
+        displayName: {
+          type: "string",
+          description: "Human-readable label for UI and code generation.",
+        },
+        texName: {
+          type: "string",
+          description: "LaTeX rendering of the symbol.",
+        },
+      },
+    },
   },
 };
 
@@ -790,8 +870,8 @@ export const odeSchema: JsonSchema = {
     spec_version: {
       type: "string",
       description:
-        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015); earlier files remain valid.",
-      enum: ["0.1", "0.2", "0.3", "0.4"],
+        "Version of the .mxl.json format (pre-1.0: a minor bump may break, see ADR 0011). 0.2 adds units, 0.3 adds data (`data_ref`), 0.4 array-valued derived quantities that depend on parameters, variables or time (ADR 0015), 0.5 terms and hidden-state nn_blocks (ADR 0008 §6); earlier files remain valid.",
+      enum: ["0.1", "0.2", "0.3", "0.4", "0.5"],
     },
     kind: {
       type: "string",
@@ -849,7 +929,7 @@ export const odeSchema: JsonSchema = {
         nn_blocks: {
           type: "object",
           description:
-            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it.",
+            "UDE/NODE correction terms keyed by name (mxlweb ADR 0005, v2 layout). Trained weight/bias values are never stored as ordinary parameters or inline here — they live in an external per-block JSON sidecar file (see nn-weights.schema.json) referenced by each block's weights_ref, keeping numeric weights structurally separate from parameters that carry kinetic/biological meaning. This section records the architecture and composition needed to regenerate, re-edit, or evaluate a block, and is optional — a document with no NN blocks simply omits it. On one target, all terms apply before any nn_blocks entry, each section in its own order.",
           additionalProperties: {
             $ref: "#/$defs/nnBlock",
           },
@@ -863,6 +943,14 @@ export const odeSchema: JsonSchema = {
           },
           additionalProperties: {
             $ref: "#/$defs/customUnit",
+          },
+        },
+        terms: {
+          type: "object",
+          description:
+            "Terms keyed by name, in composition order (spec_version 0.5). Like nn_blocks, a consumer must interpret them to simulate the model.",
+          additionalProperties: {
+            $ref: "#/$defs/term",
           },
         },
       },
@@ -880,7 +968,6 @@ export const odeSchema: JsonSchema = {
         "target_kind",
         "targets",
         "trained",
-        "scale",
         "mechanism",
       ],
       additionalProperties: false,
@@ -934,12 +1021,36 @@ export const odeSchema: JsonSchema = {
         scale: {
           type: "number",
           description:
-            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs.",
+            "Initial value for the block's single trainable output-scaling factor, referenced as `nde` inside mechanism after being applied: NN(x,θ) is scaled by this factor before mechanism composes it onto the mechanistic term, shared across all of the block's outputs. Required without hidden_states; optional with them (absent: no scaling).",
         },
         mechanism: {
           $ref: "#/$defs/mechanismNode",
           description:
             "How this block's (scaled) output composes onto the mechanistic dynamics of its target(s), as a math expression over exactly two named placeholders: `ode` (the pre-existing dx/dt term for this target) and `nde` (this block's scaled network output). E.g. additive: Add(ode, nde) -- dx/dt = f(x,p,t) + scale*NN(x,θ). relative_multiply: Mul(ode, Add(1, nde)) -- dx/dt = f(x,p,t) * (1 + scale*NN(x,θ)); a near-zero/untrained network leaves f unchanged. multiply: Mul(ode, nde) -- dx/dt = f(x,p,t) * scale*NN(x,θ); a bare product with no such safeguard, a near-zero/untrained network zeroes out both f and the gradient w.r.t. every mechanistic parameter. When a variable has multiple blocks, they compose sequentially in insertion order: the first block's mechanism takes the purely mechanistic dx/dt as ode; each subsequent block's mechanism takes the previous block's already-composed result as its ode. This is the only well-defined generalization once mechanism is an arbitrary expression rather than a fixed set of categories -- unlike the old closed enum, block order is now numerically significant whenever more than one block targets the same variable.",
+        },
+        hidden_states: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Number of hidden states h owned by the block (spec_version 0.5, ADR 0008 §6). With hidden states the network is dh/dt = NN(inputs / input_scales, h): it reads the block's own states after `inputs`, and its final layer's width is hidden_states, not the number of targets. Each target k then gets the readout (W h)_k, times `scale` if given, as `nde`. The states are named `{block}_h{i}` (0-indexed), are part of the state vector after the model's variables, and start at the sidecar's `h0` (0 for an untrained block). Without hidden states the block is a Markovian correction and `scale` is required.",
+        },
+        input_scales: {
+          type: "array",
+          items: {
+            type: "number",
+            exclusiveMinimum: 0,
+          },
+          description:
+            "Constants the inputs are divided by before the first layer, one per entry of `inputs` (spec_version 0.5). Absent means 1 for every input.",
+        },
+        output_scales: {
+          type: "array",
+          items: {
+            type: "number",
+            exclusiveMinimum: 0,
+          },
+          description:
+            "Constants each target's `nde` is multiplied by, one per entry of `targets` (spec_version 0.5), e.g. a characteristic rate so that the weights stay dimensionless. Absent means 1 for every target.",
         },
       },
       allOf: [
@@ -967,6 +1078,16 @@ export const odeSchema: JsonSchema = {
             not: {
               required: ["weights_ref"],
             },
+          },
+        },
+        {
+          if: {
+            not: {
+              required: ["hidden_states"],
+            },
+          },
+          then: {
+            required: ["scale"],
           },
         },
       ],
@@ -1493,6 +1614,45 @@ export const odeSchema: JsonSchema = {
         },
         description: {
           type: "string",
+        },
+      },
+    },
+    term: {
+      type: "object",
+      description:
+        "A term rewriting a variable's dx/dt or (kinetic only) a reaction's rate through `mechanism` (spec_version 0.5, ADR 0008 §6). Terms on the same target compose in section order, each taking the previous result as `ode`; all terms of a target apply before its nn_blocks. A variable term acts on the assembled dx/dt (all reaction rates, including those corrected by reaction terms, times their stoichiometry); a reaction term rewrites the rate before the stoichiometry fans it out. Terms never enter the stoichiometric matrix. The term's contribution, mechanism(prev, term) - prev, is a quantity named after the term that readouts can read.",
+      required: ["fn", "target", "target_kind", "mechanism"],
+      additionalProperties: false,
+      properties: {
+        fn: {
+          $ref: "#/$defs/node",
+          description: "Expression of the term value, the `nde` of mechanism.",
+        },
+        target: {
+          type: "string",
+          description: "Name of the variable or reaction the term acts on.",
+        },
+        target_kind: {
+          type: "string",
+          enum: ["variable"],
+          description: "What target names.",
+        },
+        mechanism: {
+          $ref: "#/$defs/mechanismNode",
+          description:
+            "How the term combines with its target, over the placeholders `ode` (the target's value so far) and `nde` (the term value). E.g. additive: Add(ode, nde); relative: Mul(ode, Add(1, nde)).",
+        },
+        unit: {
+          $ref: "#/$defs/unit",
+          description: "Physical unit of the term value.",
+        },
+        displayName: {
+          type: "string",
+          description: "Human-readable label for UI and code generation.",
+        },
+        texName: {
+          type: "string",
+          description: "LaTeX rendering of the symbol.",
         },
       },
     },
