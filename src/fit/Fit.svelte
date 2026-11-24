@@ -27,7 +27,11 @@
     Row,
   } from "@computational-biology-aachen/design";
   import H2 from "@computational-biology-aachen/design/H2.svelte";
-  import { buildNNBlock, type ModelBuilderBase } from "../index";
+  import {
+    buildNNBlock,
+    nnBlockSpec,
+    type ModelBuilderBase,
+  } from "../index";
   import { parseCsvFile, type ParsedCsv } from "./csvParse";
   import {
     defaultCurriculum,
@@ -352,7 +356,10 @@
   // cost, not block count.
   let trainedNNParamCount = $derived(
     trainedBlockKeys.reduce(
-      (sum, key) => sum + 1 + model.nnBlockWeightNames(key).size,
+      (sum, key) =>
+        sum +
+        (model.nnBlocks.get(key)?.scale === undefined ? 0 : 1) +
+        model.nnBlockWeightNames(key).size,
       0,
     ),
   );
@@ -1377,11 +1384,8 @@
         for (const [key, blockConfig] of config.nnBlockConfigs) {
           const seed = Math.floor(rng() * 2 ** 31);
           const result = buildNNBlock({
-            name: key,
-            inputs: blockConfig.inputs,
-            layers: blockConfig.layers,
+            ...nnBlockSpec(key, blockConfig),
             seed,
-            scale: blockConfig.scale,
           });
           for (const [name, value] of result.weights) weights.set(name, value);
         }

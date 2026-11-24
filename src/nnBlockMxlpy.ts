@@ -199,7 +199,8 @@ export function buildNNBlockMxlpySource(
     );
     values.push(matrixLiteral(w), vectorLiteral(b));
   });
-  const scale = vectorLiteral([plan.config.scale]);
+  // buildMxlpy rejects hidden-state blocks first, and every other block has a scale.
+  const scale = vectorLiteral([plan.config.scale ?? 1]);
   const opLiteral = JSON.stringify(plan.op);
 
   if (plan.kind === "ude") {

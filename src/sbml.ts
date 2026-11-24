@@ -491,6 +491,12 @@ export function modelToSbml(model: KineticModelBuilder, name: string): string {
         ".mxl.json / mxlweb TS source instead.",
     );
   }
+  if (model.terms.size > 0) {
+    throw new Error(
+      "modelToSbml: terms are not representable in SBML export — export as " +
+        ".mxl.json / mxlweb TS source instead.",
+    );
+  }
   const modelId = name.replace(/[^A-Za-z0-9_]/g, "_") || "model";
 
   // One <unitDefinition> per distinct parameter unit, in first-use order.

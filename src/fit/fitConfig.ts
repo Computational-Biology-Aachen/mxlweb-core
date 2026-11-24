@@ -269,9 +269,12 @@ export function buildFitConfig(params: {
   for (const [key, config] of model.nnBlocks) {
     if (!config.trained) continue;
     nnBlockConfigs.set(key, config);
-    const scaleName = `${key}_scale`;
-    nnBlockParamNames.push(scaleName);
-    nnBlockOwner.set(scaleName, key);
+    // A hidden-state block may have no scale (NNBlockConfig.scale).
+    if (config.scale !== undefined) {
+      const scaleName = `${key}_scale`;
+      nnBlockParamNames.push(scaleName);
+      nnBlockOwner.set(scaleName, key);
+    }
     for (const name of model.nnBlockWeightNames(key)) {
       nnBlockParamNames.push(name);
       nnBlockOwner.set(name, key);

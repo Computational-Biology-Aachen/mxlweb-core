@@ -18,6 +18,7 @@ import {
   type MxlJsonDocument,
   type MxlNNLayer,
   type ModelBuilderBase,
+  type NNBlockConfig,
   type SliderArgs,
 } from "./modelBuilderBase.js";
 import type { MxlDataDocument } from "./data.js";
@@ -145,6 +146,18 @@ function addReadouts(
  */
 export type NNWeightsFile = Record<string, number[][] | number[]>;
 
+/** The readout `W` of a hidden-state block's sidecar as flat `${blockKey}_W_{k}_{i}` names (empty without one). */
+function flattenNNReadout(
+  blockKey: string,
+  sidecar: NNWeightsFile,
+): Map<string, number> {
+  const flat = new Map<string, number>();
+  ((sidecar.W ?? []) as number[][]).forEach((row, k) => {
+    row.forEach((value, i) => flat.set(`${blockKey}_W_${k}_${i}`, value));
+  });
+  return flat;
+}
+
 /**
  * Reshape a `weights_ref` sidecar's nested per-layer matrices back into the
  * flat `Name`-addressable naming `buildNNBlock`/`ModelBuilderBase.nnWeights`
@@ -214,17 +227,27 @@ function addNNBlocks(
     // buildOde) — non-null assertions are safe here, same as elsewhere in
     // this file (e.g. entry.fn!). Per-layer `activation` is the one
     // genuinely optional exception, handled by `nnBlockLayer`.
-    const config = {
+    const config: NNBlockConfig = {
       inputs: entry.inputs!,
       layers: entry.layers!.map((layer) => nnBlockLayer(layer)),
       seed: entry.seed!,
       targetKind: entry.target_kind!,
       targets: entry.targets!,
       trained: entry.trained!,
-      scale: entry.scale!,
       mechanism: nodeFromJson(entry.mechanism!),
+      ...(entry.scale !== undefined ? { scale: entry.scale } : {}),
+      ...(entry.hidden_states !== undefined
+        ? { hiddenStates: entry.hidden_states }
+        : {}),
+      ...(entry.input_scales !== undefined
+        ? { inputScales: entry.input_scales }
+        : {}),
+      ...(entry.output_scales !== undefined
+        ? { outputScales: entry.output_scales }
+        : {}),
     };
     let trainedWeights: Map<string, number> | undefined;
+    let h0: number[] | undefined;
     if (entry.trained) {
       if (entry.weights_ref === undefined) {
         throw new Error(
@@ -237,9 +260,36 @@ function addNNBlocks(
           `nn_block "${id}": no weights file supplied for weights_ref "${entry.weights_ref}"`,
         );
       }
-      trainedWeights = flattenNNWeights(id, sidecar);
+      trainedWeights = new Map([
+        ...flattenNNWeights(id, sidecar),
+        ...flattenNNReadout(id, sidecar),
+      ]);
+      if (config.hiddenStates !== undefined) {
+        if (!Array.isArray(sidecar.W) || !Array.isArray(sidecar.h0)) {
+          throw new Error(
+            `nn_block "${id}": weights file "${entry.weights_ref}" needs "W" and "h0" for a block with hidden states`,
+          );
+        }
+        h0 = sidecar.h0 as number[];
+      }
     }
-    builder.addNNBlock(id, config, trainedWeights);
+    builder.addNNBlock(id, config, trainedWeights, h0);
+  }
+}
+
+/** Revive `terms` (mxl-schemas 0.5) — after the variables/reactions they target. */
+function addTerms(
+  builder: KineticModelBuilder | OdeModelBuilder,
+  doc: MxlJsonDocument,
+): void {
+  for (const [id, entry] of Object.entries(section(doc, "terms"))) {
+    builder.addTerm(id, {
+      fn: nodeFromJson(entry.fn!),
+      target: entry.target!,
+      targetKind: entry.target_kind!,
+      mechanism: nodeFromJson(entry.mechanism!),
+      ...meta(entry),
+    });
   }
 }
 
@@ -297,6 +347,7 @@ function buildKinetic(
     };
     builder.addReaction(id, reaction);
   }
+  addTerms(builder, doc);
   addDerived(builder, doc);
   addReadouts(builder, doc);
   return builder;
@@ -318,6 +369,7 @@ function buildOde(
       builder.setDifferential(id, nodeFromJson(entry.fn));
     }
   }
+  addTerms(builder, doc);
   addDerived(builder, doc);
   addReadouts(builder, doc);
   return builder;

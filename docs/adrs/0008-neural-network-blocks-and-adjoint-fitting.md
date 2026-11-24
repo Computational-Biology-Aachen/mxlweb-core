@@ -373,3 +373,28 @@ disagreement with that recommendation.
   authoring, the `logSpace` fitting default, the backend-selection trigger, and
   stopping-criteria display — including that ADR's own open item, an uncalibrated
   auto-selection time-budget for purely mechanistic many-parameter fits.
+
+## 5. Hidden-state blocks and terms (mxl-schemas 0.5, #51)
+
+mxl-schemas 0.5 (its ADR 0008 §6, MxlPy #229) adds hidden-state blocks, input/output
+scales and generic terms. mxlweb-core implements them with these choices:
+
+- **Hidden states are owned by their block**, not entries of `variables`: `getNames()`,
+  `resolveInitialValues()` and `lower()` append `{block}_h{i}` after the variables, so
+  every backend, the fit and the plots see them as states, while variable tables,
+  sliders and the `.mxl.json` `variables` section don't. Their initial values live in
+  `nnHiddenInitials` (the sidecar's `h0`, 0 for an untrained block).
+- **The readout `W` is a weight** (`{block}_W_{k}_{i}` in `nnWeights`): fittable with the
+  block's other weights. `h0` is not addressable yet: none of the gradient backends has
+  initial-value sensitivities, so fitting it is a follow-up.
+- **Untrained init**: `W` Glorot-uniform from the block's seeded RNG, drawn after the
+  layers (so a block's layer weights don't depend on whether it has hidden states), zero
+  biases, `h0 = 0`. Bit-equality with MxlPy's init isn't a goal (different RNGs).
+- **Terms** (`addTerm`) compose per target in insertion order, all before the blocks,
+  in both the numeric path and `buildTex`. Contributions of terms and of each block
+  target are report-only derived outputs (computed like readouts, never in the RHS).
+- **Exports**: `.mxl.json` + sidecars (spec 0.5 only when used), TS source and a compact
+  LaTeX form (`(W h)_k` readout and one `dh/dt = NN(x, h)` row per block). `buildMxlpy`
+  and SBML export throw: MxlPy loads the `.mxl.json` directly.
+- **Parity** with MxlPy is pinned by `tests/termsParity.test.ts` against fixtures
+  written by MxlPy (`scripts/gen-term-fixtures.py`).

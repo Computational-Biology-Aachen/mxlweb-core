@@ -1,0 +1,261 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Computational-Biology-Aachen/mxl-schemas/main/v0/ode-model.schema.json",
+  "spec_version": "0.5",
+  "kind": "ode",
+  "model_id": "ode",
+  "description": "",
+  "model": {
+    "variables": {
+      "x": {
+        "value": {
+          "type": "Num",
+          "value": 1.0
+        },
+        "fn": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Mul",
+              "children": [
+                {
+                  "type": "Name",
+                  "value": "a"
+                },
+                {
+                  "type": "Name",
+                  "value": "x"
+                }
+              ]
+            },
+            {
+              "type": "Minus",
+              "children": [
+                {
+                  "type": "Mul",
+                  "children": [
+                    {
+                      "type": "Name",
+                      "value": "x"
+                    },
+                    {
+                      "type": "Name",
+                      "value": "y"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "y": {
+        "value": {
+          "type": "Num",
+          "value": 0.7
+        },
+        "fn": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Mul",
+              "children": [
+                {
+                  "type": "Name",
+                  "value": "x"
+                },
+                {
+                  "type": "Name",
+                  "value": "y"
+                }
+              ]
+            },
+            {
+              "type": "Minus",
+              "children": [
+                {
+                  "type": "Mul",
+                  "children": [
+                    {
+                      "type": "Name",
+                      "value": "b"
+                    },
+                    {
+                      "type": "Name",
+                      "value": "y"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "parameters": {
+      "a": {
+        "value": {
+          "type": "Num",
+          "value": 0.8
+        }
+      },
+      "b": {
+        "value": {
+          "type": "Num",
+          "value": 0.3
+        }
+      }
+    },
+    "derived": {},
+    "readouts": {},
+    "nn_blocks": {
+      "mem": {
+        "inputs": ["x", "y"],
+        "layers": [
+          {
+            "type": "dense",
+            "width": 4,
+            "activation": {
+              "name": "sigmoid",
+              "expression": {
+                "type": "Divide",
+                "children": [
+                  {
+                    "type": "Num",
+                    "value": 1.0
+                  },
+                  {
+                    "type": "Add",
+                    "children": [
+                      {
+                        "type": "Num",
+                        "value": 1.0
+                      },
+                      {
+                        "type": "Exp",
+                        "child": {
+                          "type": "Minus",
+                          "children": [
+                            {
+                              "type": "Name",
+                              "value": "x"
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "dense",
+            "width": 3,
+            "activation": {
+              "name": "sigmoid",
+              "expression": {
+                "type": "Divide",
+                "children": [
+                  {
+                    "type": "Num",
+                    "value": 1.0
+                  },
+                  {
+                    "type": "Add",
+                    "children": [
+                      {
+                        "type": "Num",
+                        "value": 1.0
+                      },
+                      {
+                        "type": "Exp",
+                        "child": {
+                          "type": "Minus",
+                          "children": [
+                            {
+                              "type": "Name",
+                              "value": "x"
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "dense",
+            "width": 2
+          }
+        ],
+        "seed": 4,
+        "target_kind": "variable",
+        "targets": ["x"],
+        "trained": true,
+        "weights_ref": "mem.weights.json",
+        "mechanism": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Name",
+              "value": "nde"
+            },
+            {
+              "type": "Name",
+              "value": "ode"
+            }
+          ]
+        },
+        "hidden_states": 2
+      }
+    },
+    "terms": {
+      "damp": {
+        "fn": {
+          "type": "Mul",
+          "children": [
+            {
+              "type": "Name",
+              "value": "a"
+            },
+            {
+              "type": "Name",
+              "value": "y"
+            }
+          ]
+        },
+        "target": "y",
+        "target_kind": "variable",
+        "mechanism": {
+          "type": "Add",
+          "children": [
+            {
+              "type": "Name",
+              "value": "ode"
+            },
+            {
+              "type": "Minus",
+              "children": [
+                {
+                  "type": "Mul",
+                  "children": [
+                    {
+                      "type": "Name",
+                      "value": "nde"
+                    },
+                    {
+                      "type": "Name",
+                      "value": "ode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -47,6 +47,8 @@ export class OdeModelBuilder extends ModelBuilderBase {
     cl.readouts = new SvelteMap(this.readouts);
     cl.nnBlocks = new SvelteMap(this.nnBlocks);
     cl.nnWeights = new SvelteMap(this.nnWeights);
+    cl.nnHiddenInitials = new SvelteMap(this.nnHiddenInitials);
+    cl.terms = new SvelteMap(this.terms);
     cl.customUnits = new SvelteMap(this.customUnits);
     return cl;
   }
@@ -155,6 +157,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
       derived: this.mxlDerived(),
       readouts: this.mxlReadouts(),
       nn_blocks: this.mxlNNBlocks(),
+      ...this.mxlTermsSection(),
     };
   }
 
@@ -177,9 +180,10 @@ export class OdeModelBuilder extends ModelBuilderBase {
         // fully expanded sum, which is what buildJs()/buildWat() need but is
         // unreadable to render.
         const own = this.differentials.get(name) ?? new Num(0);
-        const rhs = this.composeNNBlockTex(name, own.toTex(texNames));
+        const rhs = this.composeNNBlockTex(name, own.toTex(texNames), texNames);
         return `\\frac{d ${texNames.get(name) || name}}{dt} &= ${rhs}`;
       })
+      .concat(this.hiddenStateTexRows())
       .join(" \\\\ \n  ");
 
     return String.raw`\begin{align*}
@@ -200,6 +204,7 @@ export class OdeModelBuilder extends ModelBuilderBase {
    * `add_diff_eq` call instead of a `add_variable`/`add_reaction` pair.
    */
   buildMxlpy(): string {
+    this.assertNoSpec05("buildMxlpy");
     const nnPlan = planNNBlockMxlpy(
       this.nnBlocks,
       [...this.variables.keys()],
