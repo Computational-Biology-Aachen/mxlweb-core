@@ -54,6 +54,10 @@
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     if (*n == 1) {
 	goto L70;
@@ -239,6 +243,10 @@ L50:
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     if (*n == 1) {
 	goto L70;
@@ -435,6 +443,10 @@ L50:
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     if (*n == 1) {
 	goto L70;
@@ -691,6 +703,10 @@ L50:
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     if (*lb == 0) {
 	goto L70;
@@ -957,6 +973,10 @@ L50:
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     md = *ml + *mu + 1;
     md1 = md + 1;
@@ -1208,6 +1228,10 @@ L50:
 
     /* Function Body */
     *ier = 0;
+/* n = 0 (an empty system): nothing to factor, and ip[n] would be ip(0). */
+    if (*n <= 0) {
+    	return 0;
+    }
     ip[*n] = 1;
     md = *ml + *mu + 1;
     md1 = md + 1;

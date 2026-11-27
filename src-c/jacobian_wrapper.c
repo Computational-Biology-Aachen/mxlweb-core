@@ -305,10 +305,13 @@ static int jacobian_fcn(void *p, int m, int n, const double *x, double *fvec,
  * exactly fit_init's arguments — see its doc comment for the experiment
  * layout — with theta_idx in place of fit_idx.
  *
- * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
- * parameter's initial value is <= 0, -3 if the experiment layout is
- * inconsistent, -4 if a fitted parameter is also a protocol/condition
- * override, -5 if derived targets lack set_derived_fn/set_derived_grad_fn.
+ * Returns 0 on success, -1 on allocation failure, -2 if a fit parameter's
+ * initial value is non-finite or, in log space, <= 0, -3 if the experiment
+ * layout is inconsistent, -4 if a fitted parameter is also a
+ * protocol/condition override, -5 if derived targets lack
+ * set_derived_fn/set_derived_grad_fn, -6 if theta_idx has an index out of
+ * range or a repeated one, -7 if there are fewer residuals than fitted
+ * parameters.
  */
 int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
                   int *theta_idx, int *log_flags, int n_targets, int *target_kind,
@@ -332,6 +335,12 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
                             ss_t_max);
   if (rc != 0) {
     free(s);
+    return rc;
+  }
+  rc = exp_check_fit_idx(&s->P, n_theta, theta_idx);
+  if (rc == 0 && exp_m(&s->P) < n_theta) rc = -7; /* lmder needs m >= n */
+  if (rc != 0) {
+    jacobian_session_free(s);
     return rc;
   }
   if (exp_overrides_fitted(&s->P, n_theta, theta_idx)) {
@@ -362,11 +371,11 @@ int jacobian_init(int n_y, double *y0, int n_pars, double *pars, int n_theta,
 
   for (int i = 0; i < n_theta; i++) {
     double v = pars[theta_idx[i]];
+    if (!isfinite(v) || (log_flags[i] && v <= 0.0)) {
+      jacobian_session_free(s);
+      return -2;
+    }
     if (log_flags[i]) {
-      if (v <= 0.0) {
-        jacobian_session_free(s);
-        return -2;
-      }
       s->x[i] = log(v);
     } else {
       s->x[i] = v;
@@ -418,16 +427,18 @@ int jacobian_chunk(int maxfev) {
   const int n = s->n_theta;
   const int m = exp_m(&s->P);
 
-  double *fvec = (double *)malloc((size_t)m * sizeof(double));
-  double *fjac = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
-  double *diag = (double *)malloc((size_t)n * sizeof(double));
-  double *qtf = (double *)malloc((size_t)n * sizeof(double));
-  double *wa1 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa2 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa3 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa4 = (double *)malloc((size_t)m * sizeof(double));
-  int *ipvt = (int *)malloc((size_t)n * sizeof(int));
-  double *xPrev = (double *)malloc((size_t)n * sizeof(double));
+  /* At least one element each: malloc(0) may return NULL, which isn't a failure. */
+  const size_t mm = (size_t)(m > 0 ? m : 1), nn = (size_t)(n > 0 ? n : 1);
+  double *fvec = (double *)malloc(mm * sizeof(double));
+  double *fjac = (double *)malloc(mm * nn * sizeof(double));
+  double *diag = (double *)malloc(nn * sizeof(double));
+  double *qtf = (double *)malloc(nn * sizeof(double));
+  double *wa1 = (double *)malloc(nn * sizeof(double));
+  double *wa2 = (double *)malloc(nn * sizeof(double));
+  double *wa3 = (double *)malloc(nn * sizeof(double));
+  double *wa4 = (double *)malloc(mm * sizeof(double));
+  int *ipvt = (int *)malloc(nn * sizeof(int));
+  double *xPrev = (double *)malloc(nn * sizeof(double));
 
   if (!fvec || !fjac || !diag || !qtf || !wa1 || !wa2 || !wa3 || !wa4 || !ipvt || !xPrev) {
     free(fvec); free(fjac); free(diag); free(qtf);

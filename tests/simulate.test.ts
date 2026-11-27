@@ -137,10 +137,13 @@ describe("simulate", () => {
     ).rejects.toThrow(/No steady state/);
   });
 
-  it("rejects tEval for a solver without dense output", async () => {
-    await expect(run({ method: "dop853", tEval: [0, 1] })).rejects.toThrow(
-      /RADAU5, LSODA and CVODE/,
-    );
+  it("rejects an unknown method instead of running another solver", async () => {
+    const mod = runtimes.radau5;
+    await expect(
+      simulate(mod, { ...baseReq, method: "radau" }, (wat) =>
+        compileModelNode(wat, mod),
+      ),
+    ).rejects.toThrow(/Unknown WASM method "radau"/);
   });
 
   it("returns dy/dt per output point", async () => {
@@ -191,7 +194,7 @@ describe.each([
   });
 });
 
-describe.each(["lsoda", "cvode_bdf", "cvode_adams"])(
+describe.each(["lsoda", "dop853", "dopri5", "cvode_bdf", "cvode_adams"])(
   "simulate with %s",
   (method) => {
     it("outputs exactly the requested times", async () => {
@@ -291,6 +294,6 @@ describe("cvode runtime", () => {
     expect(runtimeFor("cvode_bdf")).toBe("cvode");
     expect(runtimeFor("cvode_adams")).toBe("cvode");
     expect(runtimeFor("lsoda")).toBe("radau5");
-    expect(runtimeFor("unknown")).toBe("radau5");
+    expect(() => runtimeFor("unknown")).toThrow(/Unknown WASM method/);
   });
 });

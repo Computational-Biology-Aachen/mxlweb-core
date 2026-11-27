@@ -90,4 +90,8 @@ lsoda(
     lsoda_common_struct_t* S
 );
 
+/* Local addition: the solution (k = 0) or its k-th derivative at t, inside the last step taken
+ * (iflag -2 outside it). For callers stepping with ITASK = 5. */
+void lsoda_intdy(const double t, const int k, double* rwork, double* dky, int* iflag, lsoda_common_struct_t* S);
+
 #endif

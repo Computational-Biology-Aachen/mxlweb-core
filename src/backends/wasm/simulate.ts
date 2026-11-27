@@ -20,19 +20,16 @@ const WASM_SOLVERS = [
   "cvode_adams",
 ] as const;
 type WasmSolver = (typeof WASM_SOLVERS)[number];
-/** Solvers that can output exactly the requested `tEval` times. */
-const DENSE_SOLVERS: ReadonlySet<WasmSolver> = new Set([
-  "radau5",
-  "lsoda",
-  "cvode_bdf",
-  "cvode_adams",
-]);
 
-/** The solver a request's `method` picks; anything unknown runs RADAU5. */
+/** The solver a request's `method` names. Throws for anything else, rather
+ * than quietly running a different solver than the one asked for. */
 export function wasmSolver(method: string): WasmSolver {
-  return (WASM_SOLVERS as readonly string[]).includes(method)
-    ? (method as WasmSolver)
-    : "radau5";
+  if (!(WASM_SOLVERS as readonly string[]).includes(method)) {
+    throw new Error(
+      `Unknown WASM method "${method}" (one of ${WASM_SOLVERS.join(", ")})`,
+    );
+  }
+  return method as WasmSolver;
 }
 
 /** Which Emscripten runtime (static/wasm/<runtime>.wasm) a method runs in. */
@@ -180,10 +177,13 @@ function runSegment(
     y.set(mod.HEAPF64.subarray(yPtr / 8, yPtr / 8 + n));
 
     if (grid) {
-      // A grid time rounded just past the solver's final x is still the endpoint.
-      for (const t of grid.slice(time.length)) {
-        time.push(t);
-        yOut.push(Array.from(y));
+      // The solvers record every grid time (inside the span, checked in C), so
+      // a short output means the run stopped early: never paper over it with
+      // copies of the final state.
+      if (time.length !== grid.length) {
+        throw new Error(
+          `${solver.toUpperCase()} returned ${time.length} of ${grid.length} requested times (t=[${tStart},${tEnd}])`,
+        );
       }
     } else {
       // Append the true endpoint if the buffer stopped short of tEnd.
@@ -282,11 +282,6 @@ export async function simulate(
   } = req;
 
   const solver = wasmSolver(method);
-  if (tEval && !DENSE_SOLVERS.has(solver)) {
-    throw new Error(
-      `tEval is only supported by RADAU5, LSODA and CVODE, not ${solver}`,
-    );
-  }
   if (!rhsWat) throw new Error("rhsWat missing for WASM solver");
 
   // Compile model WASM and register in function table

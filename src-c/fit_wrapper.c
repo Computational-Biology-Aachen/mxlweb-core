@@ -226,11 +226,15 @@ static int fit_fcn(void *p, int m, int n, const double *x, double *fvec, int ifl
  * of fit_chunk's own maxfev budget, see g_progress_fn's own doc comment.
  * <=0 disables mid-chunk reporting entirely.
  *
- * Returns 0 on success, -1 on allocation failure, -2 if a log-space fit
- * parameter's initial value is <= 0 (log undefined), -3 if the experiment
- * layout is inconsistent (time-course data past its last segment, a
- * steady-state experiment without exactly one segment, or segment/point
- * counts that don't sum to n_seg_total/n_points).
+ * Returns 0 on success, -1 on allocation failure, -2 if a fit parameter's
+ * initial value is non-finite or, in log space, <= 0 (log undefined), -3 if
+ * the experiment layout is inconsistent (time-course data past its last
+ * segment, a steady-state experiment without exactly one segment,
+ * segment/point counts that don't sum to n_seg_total/n_points, a target or
+ * override index out of range, or a zero or non-finite target scale), -6 if
+ * fit_idx has an index out of range or a repeated one, -7 if there are fewer
+ * residuals (n_targets * n_points) than fitted parameters, which lmdif
+ * refuses.
  */
 int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_idx,
              int *log_flags, int n_targets, int *target_kind, int *target_index,
@@ -250,6 +254,13 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
                             n_points, data_t, data_y, solver_id, rtol, atol, ss_tol,
                             ss_t_max);
   if (rc != 0) {
+    free(s);
+    return rc;
+  }
+  rc = exp_check_fit_idx(&s->P, n_fit, fit_idx);
+  if (rc == 0 && exp_m(&s->P) < n_fit) rc = -7; /* lmdif needs m >= n */
+  if (rc != 0) {
+    exp_problem_free(&s->P);
     free(s);
     return rc;
   }
@@ -278,11 +289,11 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
 
   for (int i = 0; i < n_fit; i++) {
     double v = pars[fit_idx[i]];
+    if (!isfinite(v) || (log_flags[i] && v <= 0.0)) {
+      fit_session_free(s);
+      return -2;
+    }
     if (log_flags[i]) {
-      if (v <= 0.0) {
-        fit_session_free(s);
-        return -2;
-      }
       s->x[i] = log(v);
     } else {
       s->x[i] = v;
@@ -312,7 +323,7 @@ int fit_init(int n_y, double *y0, int n_pars, double *pars, int n_fit, int *fit_
 }
 
 /*
- * fit_chunk — run lmdif for at most maxfev more function evaluations,
+ * fit_chunk — run lmdif for at most maxfev (at least n_fit + 2) more function evaluations,
  * seeded from the parameter vector the previous chunk left off at.
  *
  * A single lmdif call whose *first* trust-region step overshoots a long way
@@ -348,16 +359,18 @@ int fit_chunk(int maxfev) {
   const int n = s->n_fit;
   const int m = exp_m(&s->P);
 
-  double *fvec = (double *)malloc((size_t)m * sizeof(double));
-  double *fjac = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
-  double *diag = (double *)malloc((size_t)n * sizeof(double));
-  double *qtf = (double *)malloc((size_t)n * sizeof(double));
-  double *wa1 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa2 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa3 = (double *)malloc((size_t)n * sizeof(double));
-  double *wa4 = (double *)malloc((size_t)m * sizeof(double));
-  int *ipvt = (int *)malloc((size_t)n * sizeof(int));
-  double *xPrev = (double *)malloc((size_t)n * sizeof(double));
+  /* At least one element each: malloc(0) may return NULL, which isn't a failure. */
+  const size_t mm = (size_t)(m > 0 ? m : 1), nn = (size_t)(n > 0 ? n : 1);
+  double *fvec = (double *)malloc(mm * sizeof(double));
+  double *fjac = (double *)malloc(mm * nn * sizeof(double));
+  double *diag = (double *)malloc(nn * sizeof(double));
+  double *qtf = (double *)malloc(nn * sizeof(double));
+  double *wa1 = (double *)malloc(nn * sizeof(double));
+  double *wa2 = (double *)malloc(nn * sizeof(double));
+  double *wa3 = (double *)malloc(nn * sizeof(double));
+  double *wa4 = (double *)malloc(mm * sizeof(double));
+  int *ipvt = (int *)malloc(nn * sizeof(int));
+  double *xPrev = (double *)malloc(nn * sizeof(double));
 
   if (!fvec || !fjac || !diag || !qtf || !wa1 || !wa2 || !wa3 || !wa4 || !ipvt || !xPrev) {
     free(fvec);
@@ -388,7 +401,10 @@ int fit_chunk(int maxfev) {
   const double factor = 100.0;
   const int mode = 1; /* auto variable scaling */
 
-  int budgetLeft = maxfev;
+  /* One lmdif iteration needs n + 2 evaluations: the start point, n for the finite-difference
+   * Jacobian and one trial step. A smaller budget used to return 0 ("improper input") on every
+   * call without evaluating anything; such a chunk gets n + 2 instead. */
+  int budgetLeft = maxfev >= n + 2 ? maxfev : n + 2;
   int info = 0;
   int totalNfev = 0;
   for (int attempt = 0; attempt < 5 && budgetLeft > n; attempt++) {

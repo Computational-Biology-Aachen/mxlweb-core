@@ -68,14 +68,23 @@ export function backwardEuler(
 
   const tOut = [t];
   const yOut = [y.slice()];
+  const dir = tEnd >= tStart ? 1 : -1;
 
-  for (let step = 0; step < maxSteps && t < tEnd; step++) {
-    let h = stepSize;
-    if (t + h > tEnd) h = tEnd - t;
+  for (let step = 0; dir * (tEnd - t) > 0; step++) {
+    if (step >= maxSteps) {
+      return {
+        time: tOut,
+        values: yOut,
+        err: `Backward Euler: maximum number of steps (${maxSteps}) reached at t=${t}`,
+      };
+    }
+    const last = stepSize >= Math.abs(tEnd - t);
+    const h = dir * (last ? Math.abs(tEnd - t) : stepSize);
 
     // Newton-Raphson iteration for backward Euler: y_{n+1} = y_n + h * f(t_{n+1}, y_{n+1})
     // Solve: y_{n+1} - y_n - h * f(t_{n+1}, y_{n+1}) = 0
     const yNext = y.slice(); // Initial guess
+    let converged = false;
 
     for (let iter = 0; iter < maxIter; iter++) {
       const fEval = model(t + h, yNext, pars);
@@ -88,8 +97,10 @@ export function backwardEuler(
 
       const resNorm = maxNorm(residual);
       if (resNorm < atol + rtol * maxNorm(yNext)) {
-        break; // Converged
+        converged = true;
+        break;
       }
+      if (!Number.isFinite(resNorm)) break;
 
       // Jacobian of residual: J = I - h * J_f
       const Jf = approxJacobian(model, t + h, yNext, pars);
@@ -99,19 +110,29 @@ export function backwardEuler(
 
       // Solve J * dy = -residual
       const negResidual = residual.map((r) => -r);
-      const dy = solveLinear(J, negResidual);
+      let dy: number[];
+      try {
+        dy = solveLinear(J, negResidual);
+      } catch {
+        break; // singular
+      }
 
       // Update yNext
       for (let i = 0; i < n; i++) {
         yNext[i] += dy[i];
       }
-
-      if (iter === maxIter - 1) {
-        console.warn("Backward Euler Newton-Raphson did not converge");
-      }
+    }
+    // A fixed-step method can't retry with a smaller step: report the failure
+    // instead of carrying an unconverged state on.
+    if (!converged) {
+      return {
+        time: tOut,
+        values: yOut,
+        err: `Backward Euler: Newton iteration did not converge at t=${t}`,
+      };
     }
 
-    t += h;
+    t = last ? tEnd : t + h;
     y = yNext;
     tOut.push(t);
     yOut.push(y.slice());

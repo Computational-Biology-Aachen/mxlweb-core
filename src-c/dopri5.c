@@ -740,6 +740,20 @@ L1:
 	}
     }
     err = sqrt(err / *n);
+/* --- A NaN error estimate fails "err <= 1" but makes the new step size NaN too, so the
+ * solver spins until NMAX. A non-finite step must be rejected like any other large error
+ * (same patch as radau5.c), so the step size shrinks until it is too small (IDID = -3). */
+    i__1 = *n;
+    for (i__ = 1; i__ <= i__1; ++i__) {
+	d__1 = y1[i__];
+	if (d__1 - d__1 != 0.) {
+	    err = 1e6;
+	    break;
+	}
+    }
+    if (err != err) {
+	err = 1e6;
+    }
 /* --- COMPUTATION OF HNEW */
     fac11 = pow_dd(&err, &expo1);
 /* --- LUND-STABILIZATION */

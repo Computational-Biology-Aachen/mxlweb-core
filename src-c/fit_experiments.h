@@ -83,7 +83,8 @@ typedef struct {
 } ExpProblem;
 
 /* Copies every array. Returns 0, -1 on allocation failure, -3 if the
- * experiment layout is inconsistent (fit_init's doc comment). */
+ * experiment layout is inconsistent (fit_init's doc comment) or a target or
+ * override index, or a target scale (zero, non-finite), is invalid. */
 int exp_problem_init(ExpProblem *P, int n_y, const double *y0, int n_pars, int n_targets,
                      const int *target_kind, const int *target_index,
                      const double *target_scale, int n_derived, int n_ovr, const int *ovr_idx,
@@ -101,6 +102,10 @@ static inline int exp_m(const ExpProblem *P) { return P->n_targets * P->n_points
 static inline size_t exp_index(const ExpProblem *P, int e, int k, int j) {
   return (size_t)P->n_targets * P->exp_pt_off[e] + (size_t)k * P->exp_n_points[e] + j;
 }
+
+/* 0, or -6 if a fitted parameter index is out of range or repeated (a
+ * repeated one would give lmdif / lmder a zero Jacobian column). */
+int exp_check_fit_idx(const ExpProblem *P, int n_fit, const int *fit_idx);
 
 /* 1 if some segment overrides one of the n_fit parameters fit_idx — the
  * gradient backends can't differentiate through an override. */

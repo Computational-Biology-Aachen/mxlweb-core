@@ -109,7 +109,11 @@ vmnorm(const int n, double* restrict v, double* restrict w)
     double vm = 0.0;
     for (int i = 0; i < n; i++)
     {
-        vm = fmax(vm, fabs(v[i]) * w[i]);
+        /* fmax drops a NaN operand, which made a non-finite state look converged and accurate.
+         * A NaN must reach the convergence and error tests, which then reject the step. */
+        const double a = fabs(v[i]) * w[i];
+        if (a != a) { return a; }
+        vm = fmax(vm, a);
     }
     return vm;
 }
@@ -1056,8 +1060,8 @@ stoda(
             dsm = vmnorm(S->n, acor, ewt) / S->tesco[1 + (S->nq - 1)*3];
         }
 
-        // Local error test
-        if (dsm > 1.0) {
+        // Local error test (written so that a NaN estimate fails it)
+        if (!(dsm <= 1.0)) {
             // The error test failed. kflag keeps track of multiple failures.
             // restore tn and the yh array to their previous values, and prepare
             // to try the step again. Compute the optimum step size for this or
@@ -1518,6 +1522,15 @@ intdy(const double t, const int k, double* yh, const int nyh, double* dky, int* 
 
     return;
 
+}
+
+
+/* Local addition (mxl-solvers): LSODA's own interpolant over the last step, for callers that
+ * step with ITASK = 5 and need the solution at times inside that step. */
+void
+lsoda_intdy(const double t, const int k, double* rwork, double* dky, int* iflag, lsoda_common_struct_t* S)
+{
+    intdy(t, k, &rwork[S->lyh], S->nyh, dky, iflag, S);
 }
 
 

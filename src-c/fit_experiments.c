@@ -105,6 +105,23 @@ int exp_problem_init(ExpProblem *P, int n_y, const double *y0, int n_pars, int n
   P->ss_tol = ss_tol;
   P->ss_t_max = ss_t_max;
 
+  /* Every target must index an existing state or derived output and have a finite, nonzero
+   * scale (it divides the residual); every override must name a parameter. */
+  for (int k = 0; k < n_targets; k++) {
+    const int bound = target_kind[k] == TARGET_STATE ? n_y : n_derived;
+    if (target_index[k] < 0 || target_index[k] >= bound || !isfinite(target_scale[k]) ||
+        target_scale[k] == 0.0) {
+      exp_problem_free(P);
+      return -3;
+    }
+  }
+  for (int i = 0; i < n_ovr; i++) {
+    if (ovr_idx[i] < 0 || ovr_idx[i] >= n_pars) {
+      exp_problem_free(P);
+      return -3;
+    }
+  }
+
   int seg_off = 0, pt_off = 0;
   for (int e = 0; e < n_exp; e++) {
     P->exp_seg_off[e] = seg_off;
@@ -128,6 +145,15 @@ int exp_problem_init(ExpProblem *P, int n_y, const double *y0, int n_pars, int n
   if (seg_off != n_seg_total || pt_off != n_points) {
     exp_problem_free(P);
     return -3;
+  }
+  return 0;
+}
+
+int exp_check_fit_idx(const ExpProblem *P, int n_fit, const int *fit_idx) {
+  for (int i = 0; i < n_fit; i++) {
+    if (fit_idx[i] < 0 || fit_idx[i] >= P->n_pars) return -6;
+    for (int j = 0; j < i; j++)
+      if (fit_idx[j] == fit_idx[i]) return -6;
   }
   return 0;
 }
@@ -231,11 +257,12 @@ static int walk_time_course(const ExpProblem *P, int e, ModelFn fn, int n, doubl
 
     init_output(2000, n);
     if (t_end > t) {
-      /* RADAU5 and LSODA record the data points of this segment exactly from
-       * their own interpolants. Linear interpolation between accepted steps
-       * is only second-order accurate, which limits fits to ~1e-4 relative
-       * precision. An on_traj caller (the adjoint) needs every step instead. */
-      if (!on_traj && (P->solver_id == SOLVER_RADAU5 || P->solver_id == SOLVER_LSODA)) {
+      /* Every solver records the data points of this segment exactly from its
+       * own interpolant (dense output). Linear interpolation between accepted
+       * steps is only second-order accurate, which limits fits to ~1e-4
+       * relative precision. An on_traj caller (the adjoint) needs every step
+       * instead. */
+      if (!on_traj) {
         int k = j;
         while (k < n_e && t_data[k] <= t_end) k++;
         if (k > j) set_output_grid(t_data + j, k - j);
@@ -345,7 +372,12 @@ static void residual_point(void *vctx, int e, int seg, int j, double t, const do
                                                         : c->derived_out[P->target_index[k]];
     size_t idx = exp_index(P, e, k, j);
     double data_v = P->data_y[idx];
-    c->fvec[idx] = isnan(data_v) ? 0.0 : (model_v - data_v) / P->target_scale[k];
+    /* A non-finite model value (e.g. a derived target at log(0)) gets the same penalty as a
+     * failed integration: NaN or Inf in fvec would break lmdif's / lmder's QR and every
+     * convergence test after it. */
+    c->fvec[idx] = isnan(data_v)        ? 0.0
+                   : !isfinite(model_v) ? EXP_PENALTY
+                                        : (model_v - data_v) / P->target_scale[k];
     if (c->model_out) c->model_out[idx] = model_v;
   }
 }

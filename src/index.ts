@@ -60,8 +60,9 @@ export interface SimulationRequest {
   /** Absolute solver tolerance. Defaults per backend if omitted. */
   atol?: number;
   /**
-   * Output exactly these ascending times from the solver's own dense output,
-   * instead of `nTimePoints` interpolated ones. WASM RADAU5 and LSODA only.
+   * Output exactly these ascending times, inside [0, tEnd], from the solver's
+   * own dense output, instead of `nTimePoints` interpolated ones. Every WASM
+   * method; times outside the span or out of order are an error.
    */
   tEval?: number[];
   /** Integrate until steady, returning that one state. WASM only. */

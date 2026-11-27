@@ -106,6 +106,9 @@ void adjoint_set_progress_fn(intptr_t table_idx) {
 /* adjoint_vjp returns a failed solve's code (negative IDID or EXP_NOT_CONVERGED)
  * offset by this, so it can't collide with its own setup errors (-1 .. -7). */
 #define ADJOINT_VJP_SOLVE_FAILED (-1000)
+/* adjoint_chunk: the loss or the gradient came out NaN / Inf. The step is
+ * not applied, so the parameters and Adam's moments stay usable. */
+#define ADJOINT_INFO_NONFINITE (-1100)
 
 /* ------------------------------------------------------------------ */
 /* Forward-trajectory snapshot + cubic Hermite interpolation.         */
@@ -687,6 +690,9 @@ static int adam_step(AdjointSession *s, double *out_loss, double *out_grad_norm)
   for (int k = 0; k < n_theta; k++) grad_norm_sq += grad[k] * grad[k];
   *out_grad_norm = sqrt(grad_norm_sq);
   *out_loss = sqrt(loss);
+  /* A NaN gradient would poison adam_m / adam_v (and through them every later step) and the
+   * parameters themselves. Refuse the step instead. */
+  if (!isfinite(grad_norm_sq) || !isfinite(loss)) return ADJOINT_INFO_NONFINITE;
 
   /* Adam update. */
   s->adam_t += 1;
@@ -830,6 +836,8 @@ int adjoint_init(int n_y, double *y0, int n_pars, double *pars, int n_theta, int
  *          ADJOINT_INFO_TARGET_REACHED (3) = residual norm crossed
  *            target_residual_norm;
  *          ADJOINT_INFO_ERROR (-1) = allocation failure;
+ *          ADJOINT_INFO_NONFINITE (-1100) = the loss or gradient was NaN/Inf
+ *            (the step was not applied, the parameters are those before it);
  *          any other negative value = a solver IDID failure from adam_step.
  */
 int adjoint_chunk(int maxIterations) {
