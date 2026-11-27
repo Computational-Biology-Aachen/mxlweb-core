@@ -34,6 +34,24 @@
 #include <sunnonlinsol/sunnonlinsol_newton.h>
 
 #include "cvode_impl.h"
+#include "nordsieck_tape.h" /* mxl-solvers */
+
+/* mxl-solvers: report an operation on zn to the discrete-adjoint tape, if set */
+#define MXS_TAPE(op, ...)                                       \
+  do {                                                          \
+    if (cv_mem->mxs_tape)                                       \
+    {                                                           \
+      cv_mem->mxs_tape->op(cv_mem->mxs_tape->ctx, __VA_ARGS__); \
+    }                                                           \
+  } while (0)
+
+/* mxl-solvers: set (or with NULL clear) the discrete-adjoint tape hooks */
+int CVodeSetNordsieckTape(void* cvode_mem, const NtHooks* hooks)
+{
+  if (cvode_mem == NULL) { return (CV_MEM_NULL); }
+  ((CVodeMem)cvode_mem)->mxs_tape = hooks;
+  return (CV_SUCCESS);
+}
 #include "cvode_ls_impl.h"
 #include "sundials_utils.h"
 
@@ -1225,6 +1243,7 @@ int CVode(void* cvode_mem, sunrealtype tout, N_Vector yout, sunrealtype* tret,
     cv_mem->cv_hprime = cv_mem->cv_h;
 
     N_VScale(cv_mem->cv_h, cv_mem->cv_zn[1], cv_mem->cv_zn[1]);
+    MXS_TAPE(init, cv_mem->cv_tn, cv_mem->cv_h, N_VGetArrayPointer(cv_mem->cv_zn[0]));
 
     /* Check for zeros of root function g at and near t0. */
 
@@ -2587,6 +2606,7 @@ static void cvAdjustAdams(CVodeMem cv_mem, int deltaq)
   if (deltaq == 1)
   {
     N_VConst(ZERO, cv_mem->cv_zn[cv_mem->cv_L]);
+    MXS_TAPE(set_zero, cv_mem->cv_L);
     return;
   }
 
@@ -2627,6 +2647,7 @@ static void cvAdjustAdams(CVodeMem cv_mem, int deltaq)
     (void)N_VScaleAddMulti(cv_mem->cv_q - 2, cv_mem->cv_cvals,
                            cv_mem->cv_zn[cv_mem->cv_q], cv_mem->cv_zn + 2,
                            cv_mem->cv_zn + 2);
+    MXS_TAPE(axpy_multi, cv_mem->cv_q, 2, cv_mem->cv_q - 2, cv_mem->cv_cvals);
   }
 }
 
@@ -2687,6 +2708,7 @@ static void cvIncreaseBDF(CVodeMem cv_mem)
   }
   A1 = (-alpha0 - alpha1) / prod;
   N_VScale(A1, cv_mem->cv_zn[cv_mem->cv_indx_acor], cv_mem->cv_zn[cv_mem->cv_L]);
+  MXS_TAPE(set_col, cv_mem->cv_L, cv_mem->cv_indx_acor, A1);
 
   /* for (j=2; j <= cv_mem->cv_q; j++) */
   if (cv_mem->cv_q > 1)
@@ -2694,6 +2716,7 @@ static void cvIncreaseBDF(CVodeMem cv_mem)
     (void)N_VScaleAddMulti(cv_mem->cv_q - 1, cv_mem->cv_l + 2,
                            cv_mem->cv_zn[cv_mem->cv_L], cv_mem->cv_zn + 2,
                            cv_mem->cv_zn + 2);
+    MXS_TAPE(axpy_multi, cv_mem->cv_L, 2, cv_mem->cv_q - 1, cv_mem->cv_l + 2);
   }
 }
 
@@ -2735,6 +2758,7 @@ static void cvDecreaseBDF(CVodeMem cv_mem)
     (void)N_VScaleAddMulti(cv_mem->cv_q - 2, cv_mem->cv_cvals,
                            cv_mem->cv_zn[cv_mem->cv_q], cv_mem->cv_zn + 2,
                            cv_mem->cv_zn + 2);
+    MXS_TAPE(axpy_multi, cv_mem->cv_q, 2, cv_mem->cv_q - 2, cv_mem->cv_cvals);
   }
 }
 
@@ -2759,6 +2783,7 @@ void cvRescale(CVodeMem cv_mem)
 
   (void)N_VScaleVectorArray(cv_mem->cv_q, cv_mem->cv_cvals, cv_mem->cv_zn + 1,
                             cv_mem->cv_zn + 1);
+  MXS_TAPE(scale, cv_mem->cv_q, cv_mem->cv_eta);
 
   cv_mem->cv_h      = cv_mem->cv_hscale * cv_mem->cv_eta;
   cv_mem->cv_next_h = cv_mem->cv_h;
@@ -2797,6 +2822,7 @@ static void cvPredict(CVodeMem cv_mem)
                    cv_mem->cv_zn[j - 1]);
     }
   }
+  MXS_TAPE(predict, cv_mem->cv_q);
 
   SUNLogExtraDebugVec(CV_LOGGER, "predictor", cv_mem->cv_zn[0],
                       "y_predicted(:) =");
@@ -3161,6 +3187,9 @@ static int cvNls(CVodeMem cv_mem, int nflag)
 
   /* update the state based on the final correction from the nonlinear solver */
   N_VLinearSum(ONE, cv_mem->cv_zn[0], ONE, cv_mem->cv_acor, cv_mem->cv_y);
+  /* acor solves rl1 zn1 + acor - gamma f(tn, zn0 + acor) = 0 (predicted zn) */
+  MXS_TAPE(correct, cv_mem->cv_tn, cv_mem->cv_rl1, cv_mem->cv_gamma, ONE,
+           N_VGetArrayPointer(cv_mem->cv_acor), N_VGetArrayPointer(cv_mem->cv_y));
 
   SUNLogExtraDebugVec(CV_LOGGER, "corrector", cv_mem->cv_y, "y_corrected(:) =");
 
@@ -3418,6 +3447,7 @@ void cvRestore(CVodeMem cv_mem, sunrealtype saved_t)
                    cv_mem->cv_zn[j - 1]);
     }
   }
+  MXS_TAPE(retract, cv_mem->cv_q);
 }
 
 /*
@@ -3528,6 +3558,7 @@ static int cvDoErrorTest(CVodeMem cv_mem, int* nflagPtr, sunrealtype saved_t,
   if (retval > 0) { return (CV_UNREC_RHSFUNC_ERR); }
 
   N_VScale(cv_mem->cv_h, cv_mem->cv_tempv, cv_mem->cv_zn[1]);
+  MXS_TAPE(deriv, cv_mem->cv_tn, cv_mem->cv_h, N_VGetArrayPointer(cv_mem->cv_zn[0]));
 
   SUNLogDebug(CV_LOGGER, "new-step-eta-mxnef1-q1", "eta = " SUN_FORMAT_G,
               cv_mem->cv_eta);
@@ -3577,6 +3608,7 @@ static void cvCompleteStep(CVodeMem cv_mem)
   /* Apply correction to column j of zn: l_j * Delta_n */
   (void)N_VScaleAddMulti(cv_mem->cv_q + 1, cv_mem->cv_l, cv_mem->cv_acor,
                          cv_mem->cv_zn, cv_mem->cv_zn);
+  MXS_TAPE(update, cv_mem->cv_q, cv_mem->cv_l);
 
   /* Apply the projection correction to column j of zn: p_j * Delta_n */
   if (cv_mem->proj_applied)
@@ -3590,6 +3622,7 @@ static void cvCompleteStep(CVodeMem cv_mem)
   if ((cv_mem->cv_qwait == 1) && (cv_mem->cv_q != cv_mem->cv_qmax))
   {
     N_VScale(ONE, cv_mem->cv_acor, cv_mem->cv_zn[cv_mem->cv_qmax]);
+    MXS_TAPE(set_acor, cv_mem->cv_qmax, ONE);
     cv_mem->cv_saved_tq5 = cv_mem->cv_tq[5];
     cv_mem->cv_indx_acor = cv_mem->cv_qmax;
   }
@@ -3793,6 +3826,7 @@ static void cvChooseEta(CVodeMem cv_mem)
          */
 
         N_VScale(ONE, cv_mem->cv_acor, cv_mem->cv_zn[cv_mem->cv_qmax]);
+        MXS_TAPE(set_acor, cv_mem->cv_qmax, ONE);
       }
     }
   }

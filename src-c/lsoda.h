@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include "blaslapack_declarations.h"
+#include "nordsieck_tape.h"
 
 
 /**
@@ -35,6 +36,13 @@ typedef struct {
         icf, ierpj, iersl, jcur, jstart, kflag, l, meth, miter, maxord,
         maxcor, msbp, mxncf, n, nq, nst, nfe, nje, nqu, /* lsa001 part*/ insufr,
         insufi, ixpr, icount, irflag, jtyp, mused, mxordn, mxords;
+
+    /* Not part of the Fortran state (and not serialized): hooks recording every
+     * operation on yh for discrete adjoints (nordsieck_tape.h), NULL if unused. */
+    const NtHooks* tape;
+    /* Factor on the corrector's convergence constant (conit), 0 = 1: smaller
+     * converges the corrector further, e.g. for discrete adjoints. */
+    double conit_scale;
 } lsoda_common_struct_t;
 
 #define LSODA_STATE_DOUBLE_SIZE 240

@@ -474,6 +474,10 @@ typedef struct CVodeMemRec
 
   sunbooleantype first_step_after_resize; /* Flag to signal a resize happened */
 
+  /* mxl-solvers: hooks recording every operation on zn for discrete adjoints
+   * (nordsieck_tape.h), NULL unless set with CVodeSetNordsieckTape. */
+  const struct NtHooks* mxs_tape;
+
 }* CVodeMem;
 
 /*

@@ -596,6 +596,7 @@ stoda_reset(lsoda_common_struct_t* S)
         S->rc = S->rc* S->el[0] / S->el0;
         S->el0 = S->el[0];
         S->conit = 0.5 / (S->nq + 2);
+        if (S->conit_scale > 0.0) { S->conit *= S->conit_scale; }
 }
 
 
@@ -637,6 +638,7 @@ stoda_adjust_step_size(lsoda_common_struct_t* S, double* rh, double* yh, int nyh
     S->h = S->h * (*rh);
     S->rc = S->rc * (*rh);
     S->ialth = S->l;
+    if (S->tape) { S->tape->scale(S->tape->ctx, S->l - 1, *rh); }
 }
 
 
@@ -827,6 +829,7 @@ stoda_handle_corrector_failure(double* yh, int nyh, int* ncf, double told, const
     S->tn = told;  // Restore to value before step attempt
 
     // Retract yh array to values before prediction (430-445)
+    if (S->tape) { S->tape->retract(S->tape->ctx, S->nq); }
     int i1 = S->nqnyh;  // Start at end of column nq (0-based indexing)
     for (int jb = 1; jb <= S->nq; jb++) {
         i1 = i1 - nyh;  // Move to start of previous column
@@ -891,6 +894,7 @@ stoda_get_predicted_values(lsoda_common_struct_t* S, double* yh1)
     if (S->nst >= S->nslp + S->msbp) { S->ipup = S->miter; }
 
     S->tn = S->tn + S->h;
+    if (S->tape) { S->tape->predict(S->tape->ctx, S->nq); }
 
     int i1 = S->nqnyh; // First element of column nq
     for (int jb = 0; jb < S->nq; jb++)
@@ -1042,6 +1046,8 @@ stoda(
 
         // 450
         S->jcur = 0;
+        // The converged correction: acor = h f(tn, yh0 + el0 acor) - yh1 (predicted yh)
+        if (S->tape) { S->tape->correct(S->tape->ctx, S->tn, 1.0, S->h, S->el[0], acor, y); }
 
         if (m_corrector == 0)
         {
@@ -1062,6 +1068,7 @@ stoda(
             S->kflag -= 1;
             S->tn = told;
 
+            if (S->tape) { S->tape->retract(S->tape->ctx, S->nq); }
             int i1 = S->nqnyh;
             for (int jb = 0; jb < S->nq; jb++)
             {
@@ -1112,6 +1119,7 @@ stoda(
 
                 S->nfe++;
                 for (int i = 0; i < S->n; i++) { yh[i + nyh] = S->h * savf[i]; } // 650
+                if (S->tape) { S->tape->deriv(S->tape->ctx, S->tn, S->h, yh); }
                 S->ipup = S->miter;
                 S->ialth = 5;
                 if (S->nq == 1) {
@@ -1159,6 +1167,7 @@ stoda(
                     yh[i + j*nyh] = yh[i + j*nyh] + S->el[j] * acor[i];
                 }
             }
+            if (S->tape) { S->tape->update(S->tape->ctx, S->l - 1, S->el); }
             // 460
             S->icount -= 1;
             if (S->icount >= 0)
@@ -1316,6 +1325,7 @@ stoda(
                     {
                         yh[i + (S->lmax - 1)*nyh] = acor[i];
                     }
+                    if (S->tape) { S->tape->set_acor(S->tape->ctx, S->lmax - 1, 1.0); }
                 }
                 // go to 700
                 double r = 1.0 / S->tesco[1 + (S->nqu - 1)*3];
@@ -1380,6 +1390,7 @@ stoda(
                 for (int i = 0; i < S->n; i++) {
                     yh[i + newq * nyh] = acor[i] * r;
                 }
+                if (S->tape) { S->tape->set_acor(S->tape->ctx, newq, r); }
                 // 630
                 S->nq = newq;
                 S->l = S->nq + 1;
@@ -1870,6 +1881,7 @@ void lsoda(
         // Load h with h0 and scale yh(*,2) by h0
         S->h = h0;
         for (int i = 0; i < S->n; i++) { rwork[i + lf0] = h0 * rwork[i + lf0]; }
+        if (S->tape) { S->tape->init(S->tape->ctx, *t, h0, &rwork[S->lyh]); }
         // 190
 
         // go to 270

@@ -103,6 +103,9 @@ void adjoint_set_progress_fn(intptr_t table_idx) {
 #define ADJOINT_INFO_BUDGET_REACHED 4
 /* Negative: genuine failure (allocation, or a solver IDID<0). */
 #define ADJOINT_INFO_ERROR (-1)
+/* adjoint_vjp returns a failed solve's code (negative IDID or EXP_NOT_CONVERGED)
+ * offset by this, so it can't collide with its own setup errors (-1 .. -7). */
+#define ADJOINT_VJP_SOLVE_FAILED (-1000)
 
 /* ------------------------------------------------------------------ */
 /* Forward-trajectory snapshot + cubic Hermite interpolation.         */
@@ -505,8 +508,10 @@ static int backward_experiment(Pass *c, int e, const double *cot, double *grad_o
  * Returns 0, -1 on allocation failure, -3 if the experiment layout is
  * inconsistent, -4 if a parameter in theta_idx is also overridden, -5 if
  * derived targets lack set_derived_fn/set_derived_grad_fn, -7 without the
- * forward or adjoint function, or a failed experiment's negative solver code
- * (EXP_NOT_CONVERGED for a steady state that never converged).
+ * forward or adjoint function, or, for a failed forward or backward solve,
+ * ADJOINT_VJP_SOLVE_FAILED (-1000) plus the solver's negative code
+ * (EXP_NOT_CONVERGED for a steady state that never converged), so -1003 is
+ * RADAU5's IDID -3.
  */
 int adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta, int *theta_idx,
                 int n_targets, int *target_kind, int *target_index, int n_ovr, int *ovr_idx,
@@ -543,12 +548,13 @@ int adjoint_vjp(int n_y, double *y0, int n_pars, double *pars, int n_theta, int 
   }
   for (int e = 0; e < P.n_exp && rc == 0; e++) {
     rc = forward_experiment(&c, e, pars, y_work);
-    if (rc == EXP_NO_MEMORY) rc = -1;
-    if (rc == 0) {
+    if (rc == 0)
       rc = backward_experiment(&c, e, P.data_y, out_grad,
                                out_lambda0 ? out_lambda0 + (size_t)e * n_y : NULL);
-      if (rc == EXP_NO_MEMORY) rc = -1;
-    }
+    if (rc == EXP_NO_MEMORY)
+      rc = -1;
+    else if (rc < 0)
+      rc += ADJOINT_VJP_SOLVE_FAILED;
   }
   pass_free(&c);
   free(y_work);
